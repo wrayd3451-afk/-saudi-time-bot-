@@ -1,3 +1,4 @@
+import os
 import discord
 from discord.ext import commands
 
@@ -8,10 +9,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"تم تسجيل الدخول بنجاح باسم: {bot.user}")
+    print(f"تم تسجيل الدخول بنجاح باسم {bot.user}")
 
 @bot.command()
 async def ping(ctx):
-    await ctx.send("Pong! 🏓 بوت سعودي تايم شغال وزي الحلاوة.")
+    await ctx.send("Pong! 🏓")
 
-bot.run("MTUzOTQxNzUyMzYzNDgzNTUwNw.G14tR1.sBUYpabjAb1Fwxxxxxxxxxxxxxxxxxxxx")
+bot.run(os.environ['DISCORD_TOKEN'])

@@ -10,7 +10,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"تم تسجيل الدخول بنجاح باسم {bot.user}")
-
+⁠await bot.tree.sync
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong! 🏓")

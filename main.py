@@ -1,588 +1,481 @@
 import os
+import sqlite3
 import discord
 from discord.ext import commands
+from discord import app_commands
+
+# =========================================================
+# إعدادات البوت
+# =========================================================
+TOKEN = os.getenv("DISCORD_TOKEN")
+PREFIX = "-"
+
+if not TOKEN:
+    raise RuntimeError("ضع DISCORD_TOKEN في متغيرات البيئة قبل تشغيل البوت.")
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
-@bot.event
-async def on_ready():
-    print(f"تم تسجيل الدخول بنجاح باسم {bot.user}")
-⁠await await bot.tree.sync()
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong! 🏓")
+# =========================================================
+# قاعدة البيانات - النقاط + إعدادات السيرفر
+# =========================================================
+db = sqlite3.connect("wolf_style_bot.db")
+db.execute("""
+CREATE TABLE IF NOT EXISTS points (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    points INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+)
+""")
+db.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    guild_id INTEGER PRIMARY KEY,
+    flight_channel INTEGER,
+    ticket_category INTEGER,
+    log_channel INTEGER
+)
+""")
+db.commit()
 
-bot.run(os.environ['DISCORD_TOKEN'])
-class MyView(discord.ui.View):
-    def __init__(self):
-        super().__init__()
+def get_points(guild_id, user_id):
+    row = db.execute(
+        "SELECT points FROM points WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id)
+    ).fetchone()
+    return row[0] if row else 0
 
-    @discord.ui.button(label="إرسال تعميم", style=discord.ButtonStyle.primary)
-    async def button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("تم الضغط على الزر!", ephemeral=True)
+def add_points(guild_id, user_id, amount):
+    current = get_points(guild_id, user_id)
+    db.execute("""
+        INSERT INTO points(guild_id,user_id,points)
+        VALUES(?,?,?)
+        ON CONFLICT(guild_id,user_id)
+        DO UPDATE SET points=excluded.points
+    """, (guild_id, user_id, current + amount))
+    db.commit()
+    return current + amount
 
-@bot.command()
-async def panel(ctx):
-    await ctx.send("لوحة التحكم:", view=MyView())
-    import discord
-from discord.ext import commands
+def set_points(guild_id, user_id, amount):
+    db.execute("""
+        INSERT INTO points(guild_id,user_id,points)
+        VALUES(?,?,?)
+        ON CONFLICT(guild_id,user_id)
+        DO UPDATE SET points=excluded.points
+    """, (guild_id, user_id, amount))
+    db.commit()
 
-# 1. كلاس الأزرار (لوحة المفاتيح)
-class ControlPanel(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None) # الأزرار تبق شغالة دائمًا
+def get_setting(guild_id, name):
+    row = db.execute(
+        f"SELECT {name} FROM settings WHERE guild_id=?",
+        (guild_id,)
+    ).fetchone()
+    return row[0] if row else None
 
-import os
-import discord
-from discord.ext import commands
+def set_setting(guild_id, name, value):
+    db.execute(
+        "INSERT OR IGNORE INTO settings(guild_id) VALUES(?)",
+        (guild_id,)
+    )
+    db.execute(f"UPDATE settings SET {name}=? WHERE guild_id=?", (value, guild_id))
+    db.commit()
 
-# 1. إعدادات البوت والـ Intents
-intents = discord.Intents.default()
-intents.message_content = True
+# =========================================================
+# أدوات مساعدة
+# =========================================================
+async def log_action(guild, text):
+    channel_id = get_setting(guild.id, "log_channel")
+    if channel_id:
+        channel = guild.get_channel(channel_id)
+        if channel:
+            try:
+                await channel.send(text)
+            except discord.HTTPException:
+                pass
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+def admin_only():
+    return commands.has_permissions(administrator=True)
 
-# 2. كلاس الأزرار (لوحة المفاتيح)
-class ControlPanel(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None) # الأزرار تبق شغالة دائمًا
+# =========================================================
+# مودال الرحلة
+# =========================================================
+class FlightModal(discord.ui.Modal, title="✈️ إنشاء رحلة"):
+    host_id = discord.ui.TextInput(label="آيدي الهوست", placeholder="مثال: 12345")
+    assistant = discord.ui.TextInput(label="مساعد الهوست", placeholder="اسم أو منشن")
+    time = discord.ui.TextInput(label="موعد الرحلة", placeholder="مثال: 9:30 PM")
+    supervisor = discord.ui.TextInput(label="رقابي الرحلة", placeholder="اسم أو منشن")
 
-    # الزر الأول (أخضر)
-    @discord.ui.button(label="زر تفاعلي", style=discord.ButtonStyle.success, custom_id="btn_1")
-    async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("تم تنفيذ الأمر بنجاح! 🚀", ephemeral=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        channel_id = get_setting(interaction.guild.id, "flight_channel")
+        channel = interaction.guild.get_channel(channel_id) if channel_id else None
 
-    # الزر الثاني (أحمر)
-    @discord.ui.button(label="زر ثاني", style=discord.ButtonStyle.danger, custom_id="btn_2")
-    async def second_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("ضغطت الزر الثاني!", ephemeral=True)
+        if channel is None:
+            await interaction.response.send_message(
+                "❌ لم يتم تحديد روم الرحلات. استخدم `-تعيين_رحلات #الروم`.",
+                ephemeral=True
+            )
+            return
 
-    # الزر الثالث (رابط)
-    @discord.ui.button(label="رابط الموقع", style=discord.ButtonStyle.link, url="https://discord.com")
-    async def link_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
+        embed = discord.Embed(
+            title="✈️ تفاصيل الرحلة الجديدة",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="🆔 آيدي الهوست", value=self.host_id.value, inline=False)
+        embed.add_field(name="👥 مساعد الهوست", value=self.assistant.value, inline=False)
+        embed.add_field(name="⏰ الموعد", value=self.time.value, inline=False)
+        embed.add_field(name="🛡️ الرقابي", value=self.supervisor.value, inline=False)
+        embed.set_footer(text=f"بواسطة {interaction.user}")
 
-# 3. أحداث البوت والأوامر
-@bot.event
-async def on_ready():
-    bot.add_view(ControlPanel()) # لتفعيل الأزرار الدائمة
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print(e)
-    print(f"Logged in as {bot.user}")
+        await channel.send(embed=embed)
+        await log_action(interaction.guild, f"✈️ {interaction.user.mention} نشر رحلة.")
+        await interaction.response.send_message("✅ تم نشر الرحلة بنجاح.", ephemeral=True)
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong! 🏓")
+# =========================================================
+# نظام التفعيل
+# =========================================================
+class ActivationModal(discord.ui.Modal, title="✅ تفعيل عضو"):
+    member = discord.ui.TextInput(label="منشن العضو", placeholder="@الشخص")
+    psn = discord.ui.TextInput(label="آيدي سوني", placeholder="PSN ID")
 
-@bot.command()
-async def panel(ctx):
-    # تحقق من صلاحية الأدمن (اختياري)
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.send("ما عندك صلاحية!", ephemeral=True)
-    
-    view = ControlPanel()
-    await ctx.send("🎮 **لوحة التحكم الخاصة بالسيرفر:**\nاختر أحد الخيارات أدناه:", view=view)
+    async def on_submit(self, interaction: discord.Interaction):
+        member = None
+        if interaction.message:
+            member = interaction.guild.get_member(interaction.user.id)
 
-# 4. تشغيل البوت
-bot.run(os.environ['DISCORD_TOKEN'])
-import os
-import discord
-from discord.ext import commands
+        add_points(interaction.guild.id, interaction.user.id, 10)
 
-# 1. إعدادات البوت والـ Intents
-intents = discord.Intents.default()
-intents.message_content = True
+        embed = discord.Embed(
+            title="✅ تم التفعيل بنجاح",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="👤 العضو", value=self.member.value, inline=False)
+        embed.add_field(name="🎮 آيدي سوني", value=self.psn.value, inline=False)
+        embed.add_field(name="🛡️ الإداري المفعل", value=interaction.user.mention, inline=False)
+        embed.add_field(name="⭐ النقاط", value="+10", inline=False)
 
-bot = commands.Bot(command_prefix="-", intents=intents)
+        await interaction.channel.send(embed=embed)
+        await log_action(interaction.guild, f"✅ {interaction.user.mention} فعّل عضوًا وأضاف له النظام 10 نقاط للإداري.")
+        await interaction.response.send_message("تم التفعيل وإضافة 10 نقاط لك.", ephemeral=True)
 
-# 2. كلاس الأزرار (لوحة المفاتيح)
-class ControlPanel(discord.ui.View):
+# =========================================================
+# التذاكر
+# =========================================================
+class TicketCloseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="زر تفاعلي", style=discord.ButtonStyle.success, custom_id="btn_1")
-    async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("تم تنفيذ الأمر بنجاح! 🚀", ephemeral=True)
-
-    @discord.ui.button(label="زر ثاني", style=discord.ButtonStyle.danger, custom_id="btn_2")
-    async def second_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("ضغطت الزر الثاني!", ephemeral=True)
-
-    @discord.ui.button(label="رابط الموقع", style=discord.ButtonStyle.link, url="https://discord.com")
-    async def link_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
-
-# 3. أحداث البوت
-@bot.event
-async def on_ready():
-    bot.add_view(ControlPanel())
-    print(f"Logged in as {bot.user}")
-
-# 4. أمر الـ panel الرئيسي
-@bot.command()
-async def panel(ctx):
-    view = ControlPanel()
-    await ctx.send("🎮 **لوحة التحكم الخاصة بالسيرفر:**\nاختر أحد الخيارات أدناه:", view=view)
-
-# 5. أمر الرحلة (ينقل البيانات وينشرها في روم ثاني)
-@bot.command()
-async def رحله(ctx, id_الهوست: str = "غير محدد", مساعد_الهوست: str = "غير محدد", موعد_الرحله: str = "غير محدد", رقابي_الرحله: str = "غير محدد"):
-    
-    # 🔴 حط آيدي الروم الثاني اللي تبي الإمبد ينزل فيه هنا بين القوسين
-    target_channel_id = 123456789012345678  
-    
-    target_channel = bot.get_channel(target_channel_id)
-    
-    if not target_channel:
-        return await ctx.send("عذراً، لم أجد الروم المخصص لإرسال الرحلات! تأكد من آيدي الروم.", ephemeral=True)
-
-    # تصميم الإمبد
-    embed = discord.Embed(
-        title="✈️ **تفاصيل الرحلة الجديدة**",
-        color=discord.Color.blue()
+    @discord.ui.button(
+        label="إغلاق التذكرة 🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_close_permanent"
     )
-    embed.add_field(name="🆔 آيدي الهوست", value=id_الهوست, inline=False)
-    embed.add_field(name="👥 مساعد الهوست", value=مساعد_الهوست, inline=False)
-    embed.add_field(name="⏰ موعد الرحلة", value=موعد_الرحله, inline=False)
-    embed.add_field(name="🛡️ رقابي الرحلة", value=رقابي_الرحله, inline=False)
-    
-    view = ControlPanel()
-    
-    # يرسل الإمبد للروم الثاني
-    await target_channel.send(embed=embed, view=view)
-    
-    # يعطي رد خفيف للي كتب الأمر عشان يعرف إنه تم بنجاح
-    await ctx.send("✅ تم نشر تفاصيل الرحلة في روم الرحلات بنجاح!", ephemeral=True)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("❌ تحتاج صلاحية إدارة القنوات.", ephemeral=True)
+            return
+        await interaction.response.send_message("🔒 سيتم إغلاق التذكرة.", ephemeral=True)
+        await log_action(interaction.guild, f"🔒 {interaction.user.mention} أغلق {interaction.channel.mention}.")
+        await interaction.channel.delete()
 
-# تشغيل البوت
-bot.run(os.environ['DISCORD_TOKEN'])
-
-import os
-import discord
-from discord.ext import commands
-
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="-", intents=intents)
-
-# 1. كلاس الأزرار الخاصة بالتذكرة (خيارين)
 class TicketView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None) # الأزرار تبقا شغالة دائمًا
-
-    # الزر الأول (مثلاً: قبول / أو فتح تذكرة)
-    @discord.ui.button(label="فتح تذكرة", style=discord.ButtonStyle.success, custom_id="open_ticket_btn")
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("✅ تم فتح تذكرتك بنجاح! انتظر الإدارة.", ephemeral=True)
-
-    # الزر الثاني (مثلاً: إلغاء / أو مساعدة)
-    @discord.ui.button(label="مساعدة", style=discord.ButtonStyle.secondary, custom_id="help_ticket_btn")
-    async def help_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("ℹ️ تم طلب المساعدة، سيتم الرد عليك قريباً.", ephemeral=True)
-
-@bot.event
-async def on_ready():
-    bot.add_view(TicketView())
-    print(f"Logged in as {bot.user}")
-
-# 2. أمر T1 (يعرض الأسئلة والخيارين مثل الصورة)
-@bot.command()
-name = "t1" # يقدر العضو يكتب -t1
-@bot.command(name="t1")
-async def t1(ctx):
-    # مسح رسالة الأمر الأصلية عشان يكون الشات نظيف (اختياري)
-    try:
-        await ctx.message.delete()
-    except:
-        pass
-
-    # تصميم الإمبد اللي فيه الأسئلة
-    embed = discord.Embed(
-        title="📋 **نظام التذاكر والتفعيل**",
-        description="يرجى قراءة الأسئلة أدناه والضغط على الزر المناسب للبدء:",
-        color=discord.Color.blurple()
-    )
-    embed.add_field(name="❓ س1:", value="هل قرأت قوانين السيرفر جيداً؟", inline=False)
-    embed.add_field(name="❓ س2:", value="هل أنت مستعد لبدء التفعيل الآن؟", inline=False)
-    
-    # ربط الإمبد بالأزرار (الخيارين)
-    view = TicketView()
-    
-    # إرسال الرسالة في الروم
-    await ctx.send(embed=embed, view=view)
-
-# تشغيل البوت
-bot.run(os.environ['DISCORD_TOKEN'])
-import os
-import discord
-from discord.ext import commands
-
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="-", intents=intents)
-
-# قاموس لحفظ نقاط الأعضاء مؤقتاً (يفضل لاحقاً ربطه بقاعدة بيانات مثل SQLite)
-user_points = {}
-
-# ==========================================
-# 1. نظام أزرار الوظائف (التوظيف)
-# ==========================================
-class JobSelectView(discord.ui.View):
-    def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="مدير إداري", style=discord.ButtonStyle.primary, custom_id="job_manager")
-    async def job_manager(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.assign_job(interaction, "مدير إداري")
-
-    @discord.ui.button(label="مسؤول تذاكر", style=discord.ButtonStyle.success, custom_id="job_ticket")
-    async def job_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.assign_job(interaction, "مسؤول تذاكر")
-
-    @discord.ui.button(label="مراقب عام", style=discord.ButtonStyle.secondary, custom_id="job_monitor")
-    async def job_monitor(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.assign_job(interaction, "مراقب عام")
-
-    async def assign_job(self, interaction: discord.Interaction, job_name: str):
-        # هنا تقدر تحط شرط الرتبة المعينة المطلوبة للتوظيف
-        user = interaction.user
-        await interaction.response.send_message(f"✅ تم توظيفك بنجاح في وظيفة: **{job_name}** وتمت إضافة النقاط لرصيدك!", ephemeral=True)
-        
-        # إضافة نقاط للتوظيف تلقائياً
-        user_points[user.id] = user_points.get(user.id, 0) + 15
-
-# ==========================================
-# 2. الأحداث والأوامر
-# ==========================================
-@bot.event
-async def on_ready():
-    bot.add_view(JobSelectView())
-    print(f"Logged in as {bot.user} (نظام النقاط والتفاعل جاهز!)")
-
-# أمر التفعيل (-تفعيل [ايدي الشخص] [ايدي سوني])
-@bot.command(name="تفعيل")
-async def tfaeel(ctx, member: discord.Member = None, *, psn_id: str = "غير محدد"):
-    if not member:
-        return await ctx.send("❌ عذراً، يرجى تحديد الشخص المراد تفعيله. مثال: `-تفعيل @الشخص PSN_ID`", ephemeral=True)
-
-    # إضافة نقاط للي سوي التفعيل (مثلاً 10 نقاط)
-    user_points[ctx.author.id] = user_points.get(ctx.author.id, 0) + 10
-
-    embed = discord.Embed(
-        title="✅ **تم التفعيل بنجاح**",
-        color=discord.Color.green()
+    @discord.ui.button(
+        label="فتح تذكرة 🎫",
+        style=discord.ButtonStyle.success,
+        custom_id="ticket_open_permanent"
     )
-    embed.add_field(name="👤 العضو:", value=member.mention, inline=False)
-    embed.add_field(name="🎮 آيدي سوني:", value=psn_id, inline=False)
-    embed.add_field(name="🛡️ الإداري المفعل:", value=ctx.author.mention, inline=False)
-    embed.add_field(name="⭐ النقاط المضافة:", value="+10 نقاط للإداري", inline=False)
-
-    await ctx.send(embed=embed)
-
-# نظام إعطاء النقاط يدويًا (-اعطاء نقاط)
-@bot.command(name="اعطاء")
-async def give_points(ctx, action: str = None):
-    if action == "نقاط":
-        await ctx.send("✍️ أرسل الآن **من هو الشخص** و **كم عدد النقاط** التي تريد إضافتها؟ (مثلاً: `@الشخص 50`)")
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
-
-        try:
-            msg = await bot.wait_for('message', timeout=30.0, check=check)
-            parts = msg.content.split()
-            target_mention = msg.mentions[0]
-            points_to_add = int(parts[1])
-
-            user_points[target_mention.id] = user_points.get(target_mention.id, 0) + points_to_add
-            await ctx.send(f"✅ تم بنجاح إضافة `{points_to_add}` نقطة إلى العضو {target_mention.mention}!")
-        except Exception as e:
-            await ctx.send("⏰ انتهى الوقت أو الصيغة غير صحيحة، حاول مرة أخرى.")
-
-# أمر التوظيف وعرض خيارات الوظائف (-وظيفه)
-@bot.command(name="وظيفه")
-async def job_command(ctx):
-    # تحقق من صلاحية أو رتبه معينة للإداري اللي يكتب الأمر
-    embed = discord.Embed(
-        title="📋 **لوحة اختيار الوظائف**",
-        description="اختر الوظيفة المناسبة من الأزرار أدناه:",
-        color=discord.Color.blue()
-    )
-    await ctx.send(embed=embed, view=JobSelectView())
-
-# عرض رصيد النقاط (-نقاطي أو -نقاط)
-@bot.command(name="نقاط")
-async def my_points(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    points = user_points.get(target.id, 0)
-    await ctx.send(dict(f"⭐ العضو {target.mention} لديه رصيد: `{points}` نقطة."))
-
-# تشغيل البوت
-bot.run(os.environ['DISCORD_TOKEN'])
-
-import os
-import discord
-from discord.ext import commands
-
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="-", intents=intents)
-
-# قاموس لحفظ نقاط الأعضاء
-user_points = {}
-
-# ==========================================
-# 1. كلاس أزرار الوظائف (التوظيف)
-# ==========================================
-class JobSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="مدير إداري", style=discord.ButtonStyle.primary, custom_id="job_manager")
-    async def job_manager(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.assign_job(interaction, "مدير إداري")
-
-    @discord.ui.button(label="مسؤول تذاكر", style=discord.ButtonStyle.success, custom_id="job_ticket")
-    async def job_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.assign_job(interaction, "مسؤول تذاكر")
-
-    @discord.ui.button(label="مراقب عام", style=discord.ButtonStyle.secondary, custom_id="job_monitor")
-    async def job_monitor(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.assign_job(interaction, "مراقب عام")
-
-    async def assign_job(self, interaction: discord.Interaction, job_name: str):
-        user = interaction.user
-        await interaction.response.send_message(f"✅ تم توظيفك بنجاح في وظيفة: **{job_name}** وإضافة النقاط!", ephemeral=True)
-        
-        # إضافة نقاط للتوظيف تلقائياً
-        user_points[user.id] = user_points.get(user.id, 0) + 15
-
-# ==========================================
-# 2. أحداث البوت
-# ==========================================
-@bot.event
-async def on_ready():
-    bot.add_view(JobSelectView())
-    print(f"Logged in as {bot.user} (البوت شغال وجاهز!)")
-
-# ==========================================
-# 3. الأوامر الأساسية
-# ==========================================
-
-# أمر التفعيل (-تفعيل [@الشخص] [ايدي سوني])
-@bot.command(name="تفعيل")
-async def tfaeel(ctx, member: discord.Member = None, *, psn_id: str = "غير محدد"):
-    if not member:
-        return await ctx.send("❌ عذراً، يرجى إرفاق منشن الشخص. مثال: `-تفعيل @الشخص PSN_ID`", ephemeral=True)
-
-    # إضافة 10 نقاط للإداري اللي فعّل
-    user_points[ctx.author.id] = user_points.get(ctx.author.id, 0) + 10
-
-    embed = discord.Embed(
-        title="✅ **تم التفعيل بنجاح**",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="👤 العضو:", value=member.mention, inline=False)
-    embed.add_field(name="🎮 آيدي سوني:", value=psn_id, inline=False)
-    embed.add_field(name="🛡️ الإداري المفعل:", value=ctx.author.mention, inline=False)
-    embed.add_field(name="⭐ النقاط:", value="+10 نقاط للإداري", inline=False)
-
-    await ctx.send(embed=embed)
-
-# نظام إعطاء النقاط (-اعطاء نقاط)
-@bot.command(name="اعطاء")
-async def give_points(ctx, action: str = None):
-    if action == "نقاط":
-        await ctx.send("✍️ أرسل الآن بالمنشن الشخص والعدد المطلوبة (مثلاً: `@الشخص 50`)")
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
-
-        try:
-            msg = await bot.wait_for('message', timeout=30.0, check=check)
-            target_mention = msg.mentions[0]
-            parts = msg.content.split()
-            points_to_add = int(parts[1])
-
-            user_points[target_mention.id] = user_points.get(target_mention.id, 0) + points_to_add
-            await ctx.send(f"✅ تم بنجاح إضافة `{points_to_add}` نقطة إلى العضو {target_mention.mention}!")
-        except Exception:
-            await ctx.send("⏰ انتهى الوقت أو الصيغة غير صحيحة.")
-
-# أمر التوظيف (-وظيفه)
-@bot.command(name="وظيفه")
-async def job_command(ctx):
-    embed = discord.Embed(
-        title="📋 **لوحة اختيار الوظائف**",
-        description="اختر الوظيفة المناسبة من الأزرار أدناه:",
-        color=discord.Color.blue()
-    )
-    await ctx.send(embed=embed, view=JobSelectView())
-
-# عرض النقاط (-نقاط)
-@bot.command(name="نقاط")
-async def my_points(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    points = user_points.get(target.id, 0)
-    await ctx.send(f"⭐ رصيد النقاط للعضو {target.mention} هو: `{points}` نقطة.")
-
-# تشغيل البوت
-bot.run(os.environ['DISCORD_TOKEN'])
-
-import os
-import discord
-from discord.ext import commands
-
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="-", intents=intents)
-
-# قاموس لحفظ النقاط مؤقتاً
-user_points = {}
-
-# ==========================================
-# 1. لوحة التحكم الشاملة (الأزرار الأساسية لكل الأوامر)
-# ==========================================
-class MasterControlView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    # زر فتح التذكرة
-    @discord.ui.button(label="فتح تذكرة 🎫", style=discord.ButtonStyle.success, row=0, custom_id="btn_open_ticket")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         member = interaction.user
+
+        # منع فتح تذاكر متعددة بالاسم نفسه
+        existing = discord.utils.get(guild.text_channels, name=f"ticket-{member.id}")
+        if existing:
+            await interaction.response.send_message(
+                f"⚠️ عندك تذكرة مفتوحة بالفعل: {existing.mention}",
+                ephemeral=True
+            )
+            return
+
+        category_id = get_setting(guild.id, "ticket_category")
+        category = guild.get_channel(category_id) if category_id else None
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True
+            )
         }
-        ticket_channel = await guild.create_text_channel(name=f"ticket-{member.name}", overwrites=overwrites)
-        await interaction.response.send_message(f"✅ تم فتح تذكرتك بنجاح: {ticket_channel.mention}", ephemeral=True)
-        
-        embed = discord.Embed(title="🎫 تذكرة جديدة", description=f"مرحباً {member.mention}\nيرجى كتابة مشكلتك أو طلبك هنا.", color=discord.Color.blue())
-        await ticket_channel.send(embed=embed, view=InsideTicketView())
 
-    # زر الوظائف والتوظيف
-    @discord.ui.button(label="قائمة الوظائف 📋", style=discord.ButtonStyle.primary, row=0, custom_id="btn_jobs")
-    async def jobs_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(title="📋 لوحة الوظائف", description="اختر الوظيفة المناسبة لك:", color=discord.Color.blurple())
-        await interaction.response.send_message(embed=embed, view=JobSelectView(), ephemeral=True)
+        channel = await guild.create_text_channel(
+            f"ticket-{member.id}",
+            overwrites=overwrites,
+            category=category
+        )
 
-    # زر الاستعلام عن النقاط
-    @discord.ui.button(label="نقاطي ⭐", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_mypoints")
-    async def my_points_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        points = user_points.get(interaction.user.id, 0)
-        await interaction.response.send_message(f"⭐ رصيدك الحالي هو: **{points}** نقطة.", ephemeral=True)
+        embed = discord.Embed(
+            title="🎫 تذكرة جديدة",
+            description=(
+                f"مرحبًا {member.mention}\n"
+                "اكتب طلبك هنا، وانتظر الإدارة.\n\n"
+                "يمكن للإدارة إغلاق التذكرة من الزر."
+            ),
+            color=discord.Color.blurple()
+        )
 
+        await channel.send(embed=embed, view=TicketCloseView())
+        await interaction.response.send_message(
+            f"✅ تم فتح تذكرتك: {channel.mention}",
+            ephemeral=True
+        )
+        await log_action(guild, f"🎫 {member.mention} فتح تذكرة {channel.mention}.")
 
-# ==========================================
-# 2. لوحة أزرار الوظائف
-# ==========================================
-class JobSelectView(discord.ui.View):
+# =========================================================
+# الوظائف
+# =========================================================
+class JobsView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="مدير إداري", style=discord.ButtonStyle.primary, custom_id="job_manager")
-    async def job_manager(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_points[interaction.user.id] = user_points.get(interaction.user.id, 0) + 15
-        await interaction.response.send_message("✅ تم توظيفك كـ **مدير إداري** وإضافة 15 نقطة!", ephemeral=True)
+    async def choose(self, interaction, job):
+        add_points(interaction.guild.id, interaction.user.id, 15)
+        await interaction.response.send_message(
+            f"✅ تم تسجيلك في وظيفة **{job}** وإضافة 15 نقطة.",
+            ephemeral=True
+        )
+        await log_action(
+            interaction.guild,
+            f"📋 {interaction.user.mention} اختار وظيفة **{job}**."
+        )
 
-    @discord.ui.button(label="مسؤول تذاكر", style=discord.ButtonStyle.success, custom_id="job_ticket")
-    async def job_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_points[interaction.user.id] = user_points.get(interaction.user.id, 0) + 15
-        await interaction.response.send_message("✅ تم توظيفك كـ **مسؤول تذاكر** وإضافة 15 نقطة!", ephemeral=True)
+    @discord.ui.button(
+        label="مدير إداري",
+        style=discord.ButtonStyle.primary,
+        custom_id="job_manager_permanent"
+    )
+    async def manager(self, interaction, button):
+        await self.choose(interaction, "مدير إداري")
 
+    @discord.ui.button(
+        label="مسؤول تذاكر",
+        style=discord.ButtonStyle.success,
+        custom_id="job_ticket_permanent"
+    )
+    async def tickets(self, interaction, button):
+        await self.choose(interaction, "مسؤول تذاكر")
 
-# ==========================================
-# 3. لوحة أزرار داخل التذكرة (إغلاق)
-# ==========================================
-class InsideTicketView(discord.ui.View):
+    @discord.ui.button(
+        label="مراقب عام",
+        style=discord.ButtonStyle.secondary,
+        custom_id="job_monitor_permanent"
+    )
+    async def monitor(self, interaction, button):
+        await self.choose(interaction, "مراقب عام")
+
+# =========================================================
+# لوحة التحكم الرئيسية
+# =========================================================
+class MainPanel(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="إغلاق التذكرة 🔒", style=discord.ButtonStyle.danger, custom_id="btn_close_ticket")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🔒 جاري إغلاق التذكرة...", ephemeral=True)
-        try:
-            await interaction.channel.delete()
-        except:
-            pass
+    @discord.ui.button(
+        label="التذاكر 🎫",
+        style=discord.ButtonStyle.success,
+        row=0,
+        custom_id="main_ticket_permanent"
+    )
+    async def tickets(self, interaction, button):
+        embed = discord.Embed(
+            title="🎫 نظام التذاكر",
+            description="اضغط على الزر لفتح تذكرة جديدة.",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=TicketView(),
+            ephemeral=True
+        )
 
+    @discord.ui.button(
+        label="الوظائف 📋",
+        style=discord.ButtonStyle.primary,
+        row=0,
+        custom_id="main_jobs_permanent"
+    )
+    async def jobs(self, interaction, button):
+        embed = discord.Embed(
+            title="📋 الوظائف والتوظيف",
+            description="اختر الوظيفة المناسبة.",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=JobsView(),
+            ephemeral=True
+        )
 
-# ==========================================
-# 4. الأحداث وتشغيل البوت
-# ==========================================
+    @discord.ui.button(
+        label="نقاطي ⭐",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+        custom_id="main_points_permanent"
+    )
+    async def points(self, interaction, button):
+        pts = get_points(interaction.guild.id, interaction.user.id)
+        await interaction.response.send_message(
+            f"⭐ رصيدك الحالي: **{pts}** نقطة.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="رحلة ✈️",
+        style=discord.ButtonStyle.primary,
+        row=1,
+        custom_id="main_flight_permanent"
+    )
+    async def flight(self, interaction, button):
+        await interaction.response.send_modal(FlightModal())
+
+    @discord.ui.button(
+        label="تفعيل ✅",
+        style=discord.ButtonStyle.success,
+        row=1,
+        custom_id="main_activate_permanent"
+    )
+    async def activate(self, interaction, button):
+        await interaction.response.send_modal(ActivationModal())
+
+    @discord.ui.button(
+        label="مساعدة ℹ️",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="main_help_permanent"
+    )
+    async def help(self, interaction, button):
+        await interaction.response.send_message(
+            "🎛️ **لوحة النظام**\n"
+            "🎫 التذاكر — فتح تذكرة\n"
+            "📋 الوظائف — اختيار وظيفة\n"
+            "⭐ نقاطي — عرض الرصيد\n"
+            "✈️ رحلة — إنشاء رحلة\n"
+            "✅ تفعيل — تفعيل عضو",
+            ephemeral=True
+        )
+
+# =========================================================
+# أحداث البوت
+# =========================================================
 @bot.event
 async def on_ready():
-    bot.add_view(MasterControlView())
-    bot.add_view(JobSelectView())
-    bot.add_view(InsideTicketView())
-    print(f"Logged in as {bot.user} (لوحة التحكم الشاملة جاهزة!)")
+    # تسجيل الأزرار الدائمة مرة واحدة عند تشغيل البوت
+    bot.add_view(MainPanel())
+    bot.add_view(TicketView())
+    bot.add_view(TicketCloseView())
+    bot.add_view(JobsView())
 
-
-# ==========================================
-# 5. الأوامر النصية الأساسية
-# ==========================================
-
-# أمر إرسال لوحة التحكم الكاملة في الروم
-@bot.command(name="لوحه")
-@commands.has_permissions(administrator=True)
-async def control_panel(ctx):
     try:
-        await ctx.message.delete()
-    except:
-        pass
+        await bot.tree.sync()
+    except Exception as e:
+        print("Slash sync error:", e)
 
+    print(f"Logged in as {bot.user} | النظام جاهز.")
+
+# =========================================================
+# أمر إرسال اللوحة
+# =========================================================
+@bot.command(name="لوحه")
+@admin_only()
+async def panel(ctx):
     embed = discord.Embed(
-        title="🎛️ **لوحة التحكم المركزية للسيرفر**",
-        description="اختر الخدمة المطلوبة بالضغط على الأزرار أدناه بكل سهولة:",
+        title="🎛️ لوحة التحكم المركزية",
+        description=(
+            "اختر الخدمة المطلوبة من الأزرار بالأسفل.\n\n"
+            "🎫 التذاكر\n"
+            "📋 الوظائف والتوظيف\n"
+            "⭐ النقاط\n"
+            "✈️ الرحلات\n"
+            "✅ التفعيل"
+        ),
         color=discord.Color.dark_embed()
     )
-    embed.set_footer(text="Outfits Empire System")
-    await ctx.send(embed=embed, view=MasterControlView())
+    embed.set_footer(text="Wolf Style System")
+    await ctx.send(embed=embed, view=MainPanel())
 
-# أمر التفعيل السريع
-@bot.command(name="تفعيل")
-async def tfaeel(ctx, member: discord.Member = None, *, psn_id: str = "غير محدد"):
-    if not member:
-        return await ctx.send("❌ يرجى تحديد الشخص. مثال: `-تفعيل @الشخص PSN_ID`", ephemeral=True)
-    
-    user_points[ctx.author.id] = user_points.get(ctx.author.id, 0) + 10
-    
-    embed = discord.Embed(title="✅ تم التفعيل بنجاح", color=discord.Color.green())
-    embed.add_field(name="العضو:", value=member.mention, inline=False)
-    embed.add_field(name="آيدي سوني:", value=psn_id, inline=False)
-    embed.add_field(name="الإداري المفعل:", value=ctx.author.mention, inline=False)
-    embed.add_field(name="النقاط:", value="+10 نقاط", inline=False)
-    
-    await ctx.send(embed=embed)
+# =========================================================
+# أوامر إضافية
+# =========================================================
+@bot.command(name="نقاط")
+async def points(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    pts = get_points(ctx.guild.id, target.id)
+    await ctx.send(f"⭐ {target.mention} لديه **{pts}** نقطة.")
 
-# أمر إعطاء النقاط
 @bot.command(name="اعطاء")
-async def give_points(ctx, action: str = None):
-    if action == "نقاط":
-        await ctx.send("✍️ أرسل بالمنشن الشخص والعدد المطلوبة (مثلاً: `@الشخص 50`)")
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
-        try:
-            msg = await bot.wait_for('message', timeout=30.0, check=check)
-            target = msg.mentions[0]
-            pts = int(msg.content.split()[1])
-            user_points[target.id] = user_points.get(target.id, 0) + pts
-            await ctx.send(f"✅ تمت إضافة `{pts}` نقطة إلى {target.mention}!")
-        except:
-            await ctx.send("⏰ انتهى الوقت أو حدث خطأ في الصيغة.")
+@commands.has_permissions(administrator=True)
+async def give_points(ctx, member: discord.Member, amount: int):
+    if amount < 0:
+        await ctx.send("❌ لا يمكن إضافة رقم سالب.")
+        return
+    total = add_points(ctx.guild.id, member.id, amount)
+    await ctx.send(f"✅ تمت إضافة **{amount}** نقطة إلى {member.mention}. الرصيد: **{total}**.")
 
-# تشغيل البوت
-bot.run(os.environ['DISCORD_TOKEN'])
+@bot.command(name="خصم")
+@commands.has_permissions(administrator=True)
+async def remove_points(ctx, member: discord.Member, amount: int):
+    if amount < 0:
+        await ctx.send("❌ استخدم رقمًا موجبًا.")
+        return
+    total = max(0, get_points(ctx.guild.id, member.id) - amount)
+    set_points(ctx.guild.id, member.id, total)
+    await ctx.send(f"✅ تم خصم **{amount}** نقطة من {member.mention}. الرصيد: **{total}**.")
+
+@bot.command(name="تعيين_رحلات")
+@admin_only()
+async def set_flights(ctx, channel: discord.TextChannel):
+    set_setting(ctx.guild.id, "flight_channel", channel.id)
+    await ctx.send(f"✅ تم تعيين {channel.mention} كروم للرحلات.")
+
+@bot.command(name="تعيين_لوق")
+@admin_only()
+async def set_logs(ctx, channel: discord.TextChannel):
+    set_setting(ctx.guild.id, "log_channel", channel.id)
+    await ctx.send(f"✅ تم تعيين {channel.mention} كروم للسجلات.")
+
+@bot.command(name="تعيين_تذاكر")
+@admin_only()
+async def set_ticket_category(ctx, category: discord.CategoryChannel):
+    set_setting(ctx.guild.id, "ticket_category", category.id)
+    await ctx.send(f"✅ تم تعيين الكاتقوري {category.name} للتذاكر.")
+
+@bot.command(name="مساعدة")
+async def help_command(ctx):
+    await ctx.send(
+        "🎛️ **الأوامر:**\n"
+        "`-لوحه` — إرسال لوحة التحكم\n"
+        "`-نقاط` — عرض نقاطك\n"
+        "`-نقاط @عضو` — عرض نقاط عضو\n"
+        "`-اعطاء @عضو 10` — إضافة نقاط (إدارة)\n"
+        "`-خصم @عضو 10` — خصم نقاط (إدارة)\n"
+        "`-تعيين_رحلات #روم` — تحديد روم الرحلات\n"
+        "`-تعيين_لوق #روم` — تحديد روم السجلات\n"
+        "`-تعيين_تذاكر اسم-الكاتقوري` — تحديد قسم التذاكر"
+    )
+
+# =========================================================
+# تشغيل
+# =========================================================
+bot.run(TOKEN)

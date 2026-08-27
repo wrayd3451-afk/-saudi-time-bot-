@@ -438,3 +438,151 @@ async def my_points(ctx, member: discord.Member = None):
 # تشغيل البوت
 bot.run(os.environ['DISCORD_TOKEN'])
 
+import os
+import discord
+from discord.ext import commands
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="-", intents=intents)
+
+# قاموس لحفظ النقاط مؤقتاً
+user_points = {}
+
+# ==========================================
+# 1. لوحة التحكم الشاملة (الأزرار الأساسية لكل الأوامر)
+# ==========================================
+class MasterControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    # زر فتح التذكرة
+    @discord.ui.button(label="فتح تذكرة 🎫", style=discord.ButtonStyle.success, row=0, custom_id="btn_open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        }
+        ticket_channel = await guild.create_text_channel(name=f"ticket-{member.name}", overwrites=overwrites)
+        await interaction.response.send_message(f"✅ تم فتح تذكرتك بنجاح: {ticket_channel.mention}", ephemeral=True)
+        
+        embed = discord.Embed(title="🎫 تذكرة جديدة", description=f"مرحباً {member.mention}\nيرجى كتابة مشكلتك أو طلبك هنا.", color=discord.Color.blue())
+        await ticket_channel.send(embed=embed, view=InsideTicketView())
+
+    # زر الوظائف والتوظيف
+    @discord.ui.button(label="قائمة الوظائف 📋", style=discord.ButtonStyle.primary, row=0, custom_id="btn_jobs")
+    async def jobs_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(title="📋 لوحة الوظائف", description="اختر الوظيفة المناسبة لك:", color=discord.Color.blurple())
+        await interaction.response.send_message(embed=embed, view=JobSelectView(), ephemeral=True)
+
+    # زر الاستعلام عن النقاط
+    @discord.ui.button(label="نقاطي ⭐", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_mypoints")
+    async def my_points_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        points = user_points.get(interaction.user.id, 0)
+        await interaction.response.send_message(f"⭐ رصيدك الحالي هو: **{points}** نقطة.", ephemeral=True)
+
+
+# ==========================================
+# 2. لوحة أزرار الوظائف
+# ==========================================
+class JobSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="مدير إداري", style=discord.ButtonStyle.primary, custom_id="job_manager")
+    async def job_manager(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_points[interaction.user.id] = user_points.get(interaction.user.id, 0) + 15
+        await interaction.response.send_message("✅ تم توظيفك كـ **مدير إداري** وإضافة 15 نقطة!", ephemeral=True)
+
+    @discord.ui.button(label="مسؤول تذاكر", style=discord.ButtonStyle.success, custom_id="job_ticket")
+    async def job_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_points[interaction.user.id] = user_points.get(interaction.user.id, 0) + 15
+        await interaction.response.send_message("✅ تم توظيفك كـ **مسؤول تذاكر** وإضافة 15 نقطة!", ephemeral=True)
+
+
+# ==========================================
+# 3. لوحة أزرار داخل التذكرة (إغلاق)
+# ==========================================
+class InsideTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="إغلاق التذكرة 🔒", style=discord.ButtonStyle.danger, custom_id="btn_close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 جاري إغلاق التذكرة...", ephemeral=True)
+        try:
+            await interaction.channel.delete()
+        except:
+            pass
+
+
+# ==========================================
+# 4. الأحداث وتشغيل البوت
+# ==========================================
+@bot.event
+async def on_ready():
+    bot.add_view(MasterControlView())
+    bot.add_view(JobSelectView())
+    bot.add_view(InsideTicketView())
+    print(f"Logged in as {bot.user} (لوحة التحكم الشاملة جاهزة!)")
+
+
+# ==========================================
+# 5. الأوامر النصية الأساسية
+# ==========================================
+
+# أمر إرسال لوحة التحكم الكاملة في الروم
+@bot.command(name="لوحه")
+@commands.has_permissions(administrator=True)
+async def control_panel(ctx):
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+    embed = discord.Embed(
+        title="🎛️ **لوحة التحكم المركزية للسيرفر**",
+        description="اختر الخدمة المطلوبة بالضغط على الأزرار أدناه بكل سهولة:",
+        color=discord.Color.dark_embed()
+    )
+    embed.set_footer(text="Outfits Empire System")
+    await ctx.send(embed=embed, view=MasterControlView())
+
+# أمر التفعيل السريع
+@bot.command(name="تفعيل")
+async def tfaeel(ctx, member: discord.Member = None, *, psn_id: str = "غير محدد"):
+    if not member:
+        return await ctx.send("❌ يرجى تحديد الشخص. مثال: `-تفعيل @الشخص PSN_ID`", ephemeral=True)
+    
+    user_points[ctx.author.id] = user_points.get(ctx.author.id, 0) + 10
+    
+    embed = discord.Embed(title="✅ تم التفعيل بنجاح", color=discord.Color.green())
+    embed.add_field(name="العضو:", value=member.mention, inline=False)
+    embed.add_field(name="آيدي سوني:", value=psn_id, inline=False)
+    embed.add_field(name="الإداري المفعل:", value=ctx.author.mention, inline=False)
+    embed.add_field(name="النقاط:", value="+10 نقاط", inline=False)
+    
+    await ctx.send(embed=embed)
+
+# أمر إعطاء النقاط
+@bot.command(name="اعطاء")
+async def give_points(ctx, action: str = None):
+    if action == "نقاط":
+        await ctx.send("✍️ أرسل بالمنشن الشخص والعدد المطلوبة (مثلاً: `@الشخص 50`)")
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        try:
+            msg = await bot.wait_for('message', timeout=30.0, check=check)
+            target = msg.mentions[0]
+            pts = int(msg.content.split()[1])
+            user_points[target.id] = user_points.get(target.id, 0) + pts
+            await ctx.send(f"✅ تمت إضافة `{pts}` نقطة إلى {target.mention}!")
+        except:
+            await ctx.send("⏰ انتهى الوقت أو حدث خطأ في الصيغة.")
+
+# تشغيل البوت
+bot.run(os.environ['DISCORD_TOKEN'])

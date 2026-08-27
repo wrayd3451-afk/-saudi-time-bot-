@@ -163,4 +163,61 @@ async def رحله(ctx, id_الهوست: str = "غير محدد", مساعد_ا�
 # تشغيل البوت
 bot.run(os.environ['DISCORD_TOKEN'])
 
+import os
+import discord
+from discord.ext import commands
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="-", intents=intents)
+
+# 1. كلاس الأزرار الخاصة بالتذكرة (خيارين)
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None) # الأزرار تبقا شغالة دائمًا
+
+    # الزر الأول (مثلاً: قبول / أو فتح تذكرة)
+    @discord.ui.button(label="فتح تذكرة", style=discord.ButtonStyle.success, custom_id="open_ticket_btn")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("✅ تم فتح تذكرتك بنجاح! انتظر الإدارة.", ephemeral=True)
+
+    # الزر الثاني (مثلاً: إلغاء / أو مساعدة)
+    @discord.ui.button(label="مساعدة", style=discord.ButtonStyle.secondary, custom_id="help_ticket_btn")
+    async def help_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("ℹ️ تم طلب المساعدة، سيتم الرد عليك قريباً.", ephemeral=True)
+
+@bot.event
+async def on_ready():
+    bot.add_view(TicketView())
+    print(f"Logged in as {bot.user}")
+
+# 2. أمر T1 (يعرض الأسئلة والخيارين مثل الصورة)
+@bot.command()
+name = "t1" # يقدر العضو يكتب -t1
+@bot.command(name="t1")
+async def t1(ctx):
+    # مسح رسالة الأمر الأصلية عشان يكون الشات نظيف (اختياري)
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+    # تصميم الإمبد اللي فيه الأسئلة
+    embed = discord.Embed(
+        title="📋 **نظام التذاكر والتفعيل**",
+        description="يرجى قراءة الأسئلة أدناه والضغط على الزر المناسب للبدء:",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(name="❓ س1:", value="هل قرأت قوانين السيرفر جيداً؟", inline=False)
+    embed.add_field(name="❓ س2:", value="هل أنت مستعد لبدء التفعيل الآن؟", inline=False)
+    
+    # ربط الإمبد بالأزرار (الخيارين)
+    view = TicketView()
+    
+    # إرسال الرسالة في الروم
+    await ctx.send(embed=embed, view=view)
+
+# تشغيل البوت
+bot.run(os.environ['DISCORD_TOKEN'])
 

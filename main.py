@@ -220,4 +220,221 @@ async def t1(ctx):
 
 # تشغيل البوت
 bot.run(os.environ['DISCORD_TOKEN'])
+import os
+import discord
+from discord.ext import commands
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="-", intents=intents)
+
+# قاموس لحفظ نقاط الأعضاء مؤقتاً (يفضل لاحقاً ربطه بقاعدة بيانات مثل SQLite)
+user_points = {}
+
+# ==========================================
+# 1. نظام أزرار الوظائف (التوظيف)
+# ==========================================
+class JobSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="مدير إداري", style=discord.ButtonStyle.primary, custom_id="job_manager")
+    async def job_manager(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.assign_job(interaction, "مدير إداري")
+
+    @discord.ui.button(label="مسؤول تذاكر", style=discord.ButtonStyle.success, custom_id="job_ticket")
+    async def job_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.assign_job(interaction, "مسؤول تذاكر")
+
+    @discord.ui.button(label="مراقب عام", style=discord.ButtonStyle.secondary, custom_id="job_monitor")
+    async def job_monitor(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.assign_job(interaction, "مراقب عام")
+
+    async def assign_job(self, interaction: discord.Interaction, job_name: str):
+        # هنا تقدر تحط شرط الرتبة المعينة المطلوبة للتوظيف
+        user = interaction.user
+        await interaction.response.send_message(f"✅ تم توظيفك بنجاح في وظيفة: **{job_name}** وتمت إضافة النقاط لرصيدك!", ephemeral=True)
+        
+        # إضافة نقاط للتوظيف تلقائياً
+        user_points[user.id] = user_points.get(user.id, 0) + 15
+
+# ==========================================
+# 2. الأحداث والأوامر
+# ==========================================
+@bot.event
+async def on_ready():
+    bot.add_view(JobSelectView())
+    print(f"Logged in as {bot.user} (نظام النقاط والتفاعل جاهز!)")
+
+# أمر التفعيل (-تفعيل [ايدي الشخص] [ايدي سوني])
+@bot.command(name="تفعيل")
+async def tfaeel(ctx, member: discord.Member = None, *, psn_id: str = "غير محدد"):
+    if not member:
+        return await ctx.send("❌ عذراً، يرجى تحديد الشخص المراد تفعيله. مثال: `-تفعيل @الشخص PSN_ID`", ephemeral=True)
+
+    # إضافة نقاط للي سوي التفعيل (مثلاً 10 نقاط)
+    user_points[ctx.author.id] = user_points.get(ctx.author.id, 0) + 10
+
+    embed = discord.Embed(
+        title="✅ **تم التفعيل بنجاح**",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="👤 العضو:", value=member.mention, inline=False)
+    embed.add_field(name="🎮 آيدي سوني:", value=psn_id, inline=False)
+    embed.add_field(name="🛡️ الإداري المفعل:", value=ctx.author.mention, inline=False)
+    embed.add_field(name="⭐ النقاط المضافة:", value="+10 نقاط للإداري", inline=False)
+
+    await ctx.send(embed=embed)
+
+# نظام إعطاء النقاط يدويًا (-اعطاء نقاط)
+@bot.command(name="اعطاء")
+async def give_points(ctx, action: str = None):
+    if action == "نقاط":
+        await ctx.send("✍️ أرسل الآن **من هو الشخص** و **كم عدد النقاط** التي تريد إضافتها؟ (مثلاً: `@الشخص 50`)")
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        try:
+            msg = await bot.wait_for('message', timeout=30.0, check=check)
+            parts = msg.content.split()
+            target_mention = msg.mentions[0]
+            points_to_add = int(parts[1])
+
+            user_points[target_mention.id] = user_points.get(target_mention.id, 0) + points_to_add
+            await ctx.send(f"✅ تم بنجاح إضافة `{points_to_add}` نقطة إلى العضو {target_mention.mention}!")
+        except Exception as e:
+            await ctx.send("⏰ انتهى الوقت أو الصيغة غير صحيحة، حاول مرة أخرى.")
+
+# أمر التوظيف وعرض خيارات الوظائف (-وظيفه)
+@bot.command(name="وظيفه")
+async def job_command(ctx):
+    # تحقق من صلاحية أو رتبه معينة للإداري اللي يكتب الأمر
+    embed = discord.Embed(
+        title="📋 **لوحة اختيار الوظائف**",
+        description="اختر الوظيفة المناسبة من الأزرار أدناه:",
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed, view=JobSelectView())
+
+# عرض رصيد النقاط (-نقاطي أو -نقاط)
+@bot.command(name="نقاط")
+async def my_points(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    points = user_points.get(target.id, 0)
+    await ctx.send(dict(f"⭐ العضو {target.mention} لديه رصيد: `{points}` نقطة."))
+
+# تشغيل البوت
+bot.run(os.environ['DISCORD_TOKEN'])
+
+import os
+import discord
+from discord.ext import commands
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="-", intents=intents)
+
+# قاموس لحفظ نقاط الأعضاء
+user_points = {}
+
+# ==========================================
+# 1. كلاس أزرار الوظائف (التوظيف)
+# ==========================================
+class JobSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="مدير إداري", style=discord.ButtonStyle.primary, custom_id="job_manager")
+    async def job_manager(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.assign_job(interaction, "مدير إداري")
+
+    @discord.ui.button(label="مسؤول تذاكر", style=discord.ButtonStyle.success, custom_id="job_ticket")
+    async def job_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.assign_job(interaction, "مسؤول تذاكر")
+
+    @discord.ui.button(label="مراقب عام", style=discord.ButtonStyle.secondary, custom_id="job_monitor")
+    async def job_monitor(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.assign_job(interaction, "مراقب عام")
+
+    async def assign_job(self, interaction: discord.Interaction, job_name: str):
+        user = interaction.user
+        await interaction.response.send_message(f"✅ تم توظيفك بنجاح في وظيفة: **{job_name}** وإضافة النقاط!", ephemeral=True)
+        
+        # إضافة نقاط للتوظيف تلقائياً
+        user_points[user.id] = user_points.get(user.id, 0) + 15
+
+# ==========================================
+# 2. أحداث البوت
+# ==========================================
+@bot.event
+async def on_ready():
+    bot.add_view(JobSelectView())
+    print(f"Logged in as {bot.user} (البوت شغال وجاهز!)")
+
+# ==========================================
+# 3. الأوامر الأساسية
+# ==========================================
+
+# أمر التفعيل (-تفعيل [@الشخص] [ايدي سوني])
+@bot.command(name="تفعيل")
+async def tfaeel(ctx, member: discord.Member = None, *, psn_id: str = "غير محدد"):
+    if not member:
+        return await ctx.send("❌ عذراً، يرجى إرفاق منشن الشخص. مثال: `-تفعيل @الشخص PSN_ID`", ephemeral=True)
+
+    # إضافة 10 نقاط للإداري اللي فعّل
+    user_points[ctx.author.id] = user_points.get(ctx.author.id, 0) + 10
+
+    embed = discord.Embed(
+        title="✅ **تم التفعيل بنجاح**",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="👤 العضو:", value=member.mention, inline=False)
+    embed.add_field(name="🎮 آيدي سوني:", value=psn_id, inline=False)
+    embed.add_field(name="🛡️ الإداري المفعل:", value=ctx.author.mention, inline=False)
+    embed.add_field(name="⭐ النقاط:", value="+10 نقاط للإداري", inline=False)
+
+    await ctx.send(embed=embed)
+
+# نظام إعطاء النقاط (-اعطاء نقاط)
+@bot.command(name="اعطاء")
+async def give_points(ctx, action: str = None):
+    if action == "نقاط":
+        await ctx.send("✍️ أرسل الآن بالمنشن الشخص والعدد المطلوبة (مثلاً: `@الشخص 50`)")
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        try:
+            msg = await bot.wait_for('message', timeout=30.0, check=check)
+            target_mention = msg.mentions[0]
+            parts = msg.content.split()
+            points_to_add = int(parts[1])
+
+            user_points[target_mention.id] = user_points.get(target_mention.id, 0) + points_to_add
+            await ctx.send(f"✅ تم بنجاح إضافة `{points_to_add}` نقطة إلى العضو {target_mention.mention}!")
+        except Exception:
+            await ctx.send("⏰ انتهى الوقت أو الصيغة غير صحيحة.")
+
+# أمر التوظيف (-وظيفه)
+@bot.command(name="وظيفه")
+async def job_command(ctx):
+    embed = discord.Embed(
+        title="📋 **لوحة اختيار الوظائف**",
+        description="اختر الوظيفة المناسبة من الأزرار أدناه:",
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed, view=JobSelectView())
+
+# عرض النقاط (-نقاط)
+@bot.command(name="نقاط")
+async def my_points(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    points = user_points.get(target.id, 0)
+    await ctx.send(f"⭐ رصيد النقاط للعضو {target.mention} هو: `{points}` نقطة.")
+
+# تشغيل البوت
+bot.run(os.environ['DISCORD_TOKEN'])
 

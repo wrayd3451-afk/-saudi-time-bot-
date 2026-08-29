@@ -1,0 +1,985 @@
+# بوت import os
+VRP Discord — نسخة ملف واحد
+
+## التشغيل
+
+1. ثبّت Python 3.11 أو أحدث.
+2. ثبّت المكتبات:
+   `pip install -r requirements.txt`
+3. انسخ `.env.example` إلى `.env`.
+4. ضع توكن البوت في `DISCORD_TOKEN`.
+5. ضع `GUILD_ID` إذا تبي أوامر السلاش تظهر بسرعة في سيرفرك.
+6. شغّل:
+   `python bot.py`
+
+## الأنظمة الموجودة
+
+- لوحة `/لوحه`
+- التفعيل وربط Discord مع VRP ID
+- الاستدعاء
+- الوظائف والرتب
+- التوظيف والترقية والتقاعد والاستقالة والإخلاء والفصل
+- نظام نقاط محفوظ بقاعدة بيانات
+- العقوبات والسجل
+- البنك المحلي
+- نظام تذاكر
+- استلام التذكرة
+- إغلاق التذكرة
+- Transcript
+- Logs
+- قاعدة SQLite دائمة
+- VRP Adapter جاهز للربط الحقيقي
+
+## مهم
+
+البوت لا يخمّن جداول VRP. ربط الوظيفة والهوية والأموال الحقيقي يحتاج معرفة إصدار VRP ومخطط قاعدة البيانات عندك.
+لا ترسل توكن البوت أو كلمة مرور قاعدة البيانات لأي شخص.
+import os
+import io
+import sqlite3
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from dotenv import load_dotenv
+
+# ============================================================
+# VRP Discord Bot - Single File Edition
+# ============================================================
+
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+GUILD_ID = os.getenv("GUILD_ID", "").strip()
+DB_PATH = os.getenv("DB_PATH", "vrp_bot.sqlite3")
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0") or 0)
+TICKET_CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID", "0") or 0)
+
+if not TOKEN:
+    raise RuntimeError("ضع DISCORD_TOKEN في ملف .env")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+log = logging.getLogger("vrp-bot")
+
+
+# ============================================================
+# Database
+# ============================================================
+
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.row_factory = sqlite3.Row
+
+
+def db_init():
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS players (
+        discord_id INTEGER PRIMARY KEY,
+        vrp_id TEXT UNIQUE,
+        name TEXT NOT NULL,
+        activated INTEGER NOT NULL DEFAULT 0,
+        job TEXT NOT NULL DEFAULT 'مدني',
+        rank TEXT NOT NULL DEFAULT 'مواطن',
+        points INTEGER NOT NULL DEFAULT 0,
+        money INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS point_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discord_id INTEGER NOT NULL,
+        amount INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        moderator_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS punishments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discord_id INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        moderator_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS employment_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discord_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        job TEXT,
+        rank TEXT,
+        moderator_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS action_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        target_id INTEGER,
+        details TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+    db.commit()
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def get_player(discord_id: int):
+    return db.execute(
+        "SELECT * FROM players WHERE discord_id = ?",
+        (discord_id,)
+    ).fetchone()
+
+
+def upsert_player(discord_id: int, name: str, **fields):
+    current = get_player(discord_id)
+    stamp = now()
+
+    if not current:
+        allowed = {
+            "vrp_id": None,
+            "activated": 0,
+            "job": "مدني",
+            "rank": "مواطن",
+            "points": 0,
+            "money": 0,
+        }
+        allowed.update(fields)
+        db.execute("""
+            INSERT INTO players
+            (discord_id, vrp_id, name, activated, job, rank, points, money,
+             created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            discord_id, allowed["vrp_id"], name, allowed["activated"],
+            allowed["job"], allowed["rank"], allowed["points"],
+            allowed["money"], stamp, stamp
+        ))
+    else:
+        fields["name"] = name
+        fields["updated_at"] = stamp
+        if fields:
+            keys = list(fields.keys())
+            sql = "UPDATE players SET " + ", ".join(
+                f"{k} = ?" for k in keys
+            ) + " WHERE discord_id = ?"
+            db.execute(sql, [fields[k] for k in keys] + [discord_id])
+
+    db.commit()
+    return get_player(discord_id)
+
+
+def log_action(actor_id: int, action: str,
+               target_id: Optional[int] = None,
+               details: str = ""):
+    db.execute("""
+        INSERT INTO action_logs
+        (actor_id, action, target_id, details, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (actor_id, action, target_id, details, now()))
+    db.commit()
+
+
+# ============================================================
+# VRP Adapter
+# ============================================================
+
+class VRPAdapter:
+    """
+    طبقة الربط مع VRP.
+    هذه النسخة لا تخمّن أسماء جداول VRP.
+    عند معرفة إصدار VRP ومخطط قاعدة البيانات يتم وضع الاستعلامات هنا.
+    """
+
+    def get_player(self, vrp_id: str):
+        # TODO: اربط هنا قاعدة بيانات VRP الفعلية.
+        return None
+
+    def get_money(self, vrp_id: str):
+        # TODO: اربط رصيد اللاعب من VRP.
+        return None
+
+    def get_job(self, vrp_id: str):
+        # TODO: اربط وظيفة اللاعب من VRP.
+        return None
+
+
+vrp = VRPAdapter()
+
+
+# ============================================================
+# Discord setup
+# ============================================================
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+def is_admin(interaction: discord.Interaction) -> bool:
+    return bool(
+        interaction.user.guild_permissions.administrator
+        or interaction.user.guild_permissions.manage_guild
+    )
+
+
+def deny(interaction):
+    return interaction.response.send_message(
+        "❌ ما عندك صلاحية لاستخدام هذا الأمر.",
+        ephemeral=True
+    )
+
+
+async def send_log(guild: discord.Guild, title: str, description: str):
+    if not LOG_CHANNEL_ID:
+        return
+
+    channel = guild.get_channel(LOG_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    try:
+        await channel.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+# ============================================================
+# Panel
+# ============================================================
+
+class MainPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="التفعيل", emoji="⚡",
+                       style=discord.ButtonStyle.success)
+    async def activation(self, interaction: discord.Interaction, button):
+        await interaction.response.send_message(
+            "استخدم `/تفعيل` لتفعيل لاعب وربطه برقم VRP.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="الوظائف", emoji="👮",
+                       style=discord.ButtonStyle.primary)
+    async def jobs(self, interaction: discord.Interaction, button):
+        embed = discord.Embed(
+            title="🏢 الوظائف",
+            description="\n".join([
+                "👮 العسكرية",
+                "⚖️ القانون",
+                "🚑 الإسعاف",
+                "📺 الإعلام",
+                "🔫 الإجرام",
+                "🚕 الوظائف المدنية",
+            ]),
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="معلوماتي", emoji="👤",
+                       style=discord.ButtonStyle.secondary)
+    async def info(self, interaction: discord.Interaction, button):
+        player = get_player(interaction.user.id)
+        if not player:
+            await interaction.response.send_message(
+                "❌ ما عندك ملف لاعب. استخدم `/تفعيل` أولاً.",
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            embed=player_embed(player),
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="النقاط", emoji="⭐",
+                       style=discord.ButtonStyle.secondary)
+    async def points(self, interaction: discord.Interaction, button):
+        player = get_player(interaction.user.id)
+        points = player["points"] if player else 0
+        await interaction.response.send_message(
+            f"⭐ نقاطك الحالية: **{points}**",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="تذكرة", emoji="🎫",
+                       style=discord.ButtonStyle.primary)
+    async def ticket(self, interaction: discord.Interaction, button):
+        await create_ticket(interaction)
+
+
+def player_embed(player):
+    embed = discord.Embed(
+        title="👤 ملف اللاعب",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(name="الاسم", value=player["name"], inline=True)
+    embed.add_field(
+        name="VRP ID",
+        value=str(player["vrp_id"] or "غير مربوط"),
+        inline=True
+    )
+    embed.add_field(
+        name="التفعيل",
+        value="✅ مفعل" if player["activated"] else "❌ غير مفعل",
+        inline=True
+    )
+    embed.add_field(name="الوظيفة", value=player["job"], inline=True)
+    embed.add_field(name="الرتبة", value=player["rank"], inline=True)
+    embed.add_field(name="النقاط", value=str(player["points"]), inline=True)
+    embed.add_field(name="الرصيد", value=f'{player["money"]:,}$', inline=True)
+    return embed
+
+
+# ============================================================
+# Commands
+# ============================================================
+
+@bot.tree.command(name="لوحه", description="فتح لوحة تحكم VRP")
+async def panel(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🎛️ لوحة تحكم VRP",
+        description=(
+            "اختر النظام المطلوب من الأزرار.\n\n"
+            "⚡ التفعيل\n"
+            "👮 الوظائف\n"
+            "👤 ملف اللاعب\n"
+            "⭐ النقاط\n"
+            "🎫 التذاكر"
+        ),
+        color=discord.Color.blurple()
+    )
+    await interaction.response.send_message(
+        embed=embed, view=MainPanel(), ephemeral=True
+    )
+
+
+@bot.tree.command(name="تفعيل", description="تفعيل لاعب وربطه برقم VRP")
+@app_commands.describe(
+    العضو="العضو",
+    الرقم="رقم اللاعب في VRP",
+    الاسم="اسم اللاعب"
+)
+async def activate(interaction, العضو: discord.Member,
+                   الرقم: str, الاسم: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    player = upsert_player(
+        العضو.id,
+        الاسم,
+        vrp_id=الرقم,
+        activated=1
+    )
+    log_action(interaction.user.id, "تفعيل", العضو.id, f"VRP={الرقم}")
+    await send_log(
+        interaction.guild, "⚡ تفعيل لاعب",
+        f"{العضو.mention}\nVRP ID: `{الرقم}`\nبواسطة: {interaction.user.mention}"
+    )
+    await interaction.response.send_message(
+        f"✅ تم تفعيل {العضو.mention}\n"
+        f"🆔 VRP ID: `{الرقم}`\n"
+        f"📛 الاسم: `{الاسم}`"
+    )
+
+
+@bot.tree.command(name="استدعاء", description="استدعاء لاعب")
+@app_commands.describe(العضو="العضو المطلوب استدعاؤه", السبب="سبب الاستدعاء")
+async def summon(interaction, العضو: discord.Member, السبب: str = "بدون سبب"):
+    await interaction.response.send_message(
+        f"📢 {العضو.mention}\n"
+        f"تم استدعاؤك بواسطة {interaction.user.mention}\n"
+        f"السبب: **{السبب}**"
+    )
+    log_action(interaction.user.id, "استدعاء", العضو.id, السبب)
+
+
+@bot.tree.command(name="رتب", description="عرض رتب الوظائف")
+async def ranks(interaction):
+    embed = discord.Embed(title="🎖️ الرتب", color=discord.Color.gold())
+    embed.add_field(
+        name="👮 العسكرية",
+        value="متدرب → جندي → عريف → رقيب → ملازم → قائد",
+        inline=False
+    )
+    embed.add_field(
+        name="⚖️ القانون",
+        value="متدرب → محامي → وكيل → قاضي → رئيس",
+        inline=False
+    )
+    embed.add_field(
+        name="🚑 الإسعاف",
+        value="متدرب → مسعف → طبيب → مشرف → مدير",
+        inline=False
+    )
+    embed.add_field(
+        name="📺 الإعلام",
+        value="متدرب → مراسل → مصور → مذيع → مدير",
+        inline=False
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="اسماء", description="عرض أسماء اللاعبين المسجلين")
+async def names(interaction):
+    rows = db.execute(
+        "SELECT * FROM players ORDER BY created_at DESC LIMIT 25"
+    ).fetchall()
+    if not rows:
+        return await interaction.response.send_message(
+            "📋 لا توجد سجلات لاعبين."
+        )
+
+    lines = [
+        f"`{r['vrp_id'] or '-':>8}` — {r['name']} — {r['job']} — {r['rank']}"
+        for r in rows
+    ]
+    await interaction.response.send_message(
+        "📋 **قائمة اللاعبين**\n" + "\n".join(lines)
+    )
+
+
+@bot.tree.command(name="توظيف", description="توظيف لاعب")
+@app_commands.describe(العضو="العضو", الوظيفة="الوظيفة", الرتبة="الرتبة")
+async def hire(interaction, العضو: discord.Member,
+               الوظيفة: str, الرتبة: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    upsert_player(العضو.id, العضو.display_name,
+                  job=الوظيفة, rank=الرتبة)
+    db.execute("""
+        INSERT INTO employment_logs
+        (discord_id, action, job, rank, moderator_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (العضو.id, "توظيف", الوظيفة, الرتبة,
+          interaction.user.id, now()))
+    db.commit()
+    log_action(interaction.user.id, "توظيف", العضو.id,
+               f"{الوظيفة} / {الرتبة}")
+
+    await interaction.response.send_message(
+        f"✅ تم توظيف {العضو.mention}\n"
+        f"👔 الوظيفة: **{الوظيفة}**\n"
+        f"🎖️ الرتبة: **{الرتبة}**"
+    )
+
+
+@bot.tree.command(name="ترقية", description="ترقية لاعب")
+@app_commands.describe(العضو="العضو", الرتبة="الرتبة الجديدة")
+async def promote(interaction, العضو: discord.Member, الرتبة: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    upsert_player(العضو.id, العضو.display_name, rank=الرتبة)
+    db.execute("""
+        INSERT INTO employment_logs
+        (discord_id, action, job, rank, moderator_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (العضو.id, "ترقية", None, الرتبة,
+          interaction.user.id, now()))
+    db.commit()
+    log_action(interaction.user.id, "ترقية", العضو.id, الرتبة)
+
+    await interaction.response.send_message(
+        f"⬆️ تمت ترقية {العضو.mention} إلى **{الرتبة}**."
+    )
+
+
+@bot.tree.command(name="تقاعد", description="تسجيل تقاعد لاعب")
+@app_commands.describe(العضو="العضو")
+async def retire(interaction, العضو: discord.Member):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    upsert_player(العضو.id, العضو.display_name,
+                  job="متقاعد", rank="متقاعد")
+    log_action(interaction.user.id, "تقاعد", العضو.id)
+
+    await interaction.response.send_message(
+        f"📅 تم تسجيل تقاعد {العضو.mention}."
+    )
+
+
+@bot.tree.command(name="استقالة", description="تسجيل استقالة لاعب")
+@app_commands.describe(العضو="العضو")
+async def resign(interaction, العضو: discord.Member):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    upsert_player(العضو.id, العضو.display_name,
+                  job="مدني", rank="مواطن")
+    log_action(interaction.user.id, "استقالة", العضو.id)
+
+    await interaction.response.send_message(
+        f"📤 تم تسجيل استقالة {العضو.mention}."
+    )
+
+
+@bot.tree.command(name="إخلاء", description="إخلاء لاعب من وظيفته")
+@app_commands.describe(العضو="العضو", السبب="السبب")
+async def clear_job(interaction, العضو: discord.Member,
+                    السبب: str = "بدون سبب"):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    upsert_player(العضو.id, العضو.display_name,
+                  job="مدني", rank="مواطن")
+    log_action(interaction.user.id, "إخلاء", العضو.id, السبب)
+
+    await interaction.response.send_message(
+        f"🚪 تم إخلاء {العضو.mention}.\nالسبب: **{السبب}**"
+    )
+
+
+@bot.tree.command(name="حجز", description="تسجيل حجز إداري للاعب")
+@app_commands.describe(العضو="العضو", السبب="السبب", المدة="المدة")
+async def detention(interaction, العضو: discord.Member,
+                    السبب: str, المدة: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    log_action(
+        interaction.user.id, "حجز", العضو.id,
+        f"السبب={السبب}; المدة={المدة}"
+    )
+    await interaction.response.send_message(
+        f"🔒 تم تسجيل حجز {العضو.mention}\n"
+        f"السبب: **{السبب}**\nالمدة: **{المدة}**"
+    )
+
+
+@bot.tree.command(name="تأكيد", description="تأكيد عملية إدارية")
+@app_commands.describe(العملية="وصف العملية")
+async def confirm(interaction, العملية: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    log_action(interaction.user.id, "تأكيد", details=العملية)
+    await interaction.response.send_message(
+        f"✅ تم تأكيد العملية: **{العملية}**"
+    )
+
+
+@bot.tree.command(name="وظائف", description="عرض الوظائف")
+async def jobs(interaction):
+    embed = discord.Embed(title="🏢 الوظائف", color=discord.Color.green())
+    embed.description = (
+        "👮 العسكرية\n"
+        "⚖️ القانون\n"
+        "🚑 الإسعاف\n"
+        "📺 الإعلام\n"
+        "🔫 الإجرام\n"
+        "🚕 المدني"
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="نقاط", description="عرض نقاط لاعب")
+@app_commands.describe(العضو="العضو")
+async def points(interaction, العضو: discord.Member = None):
+    target = العضو or interaction.user
+    player = get_player(target.id)
+    amount = player["points"] if player else 0
+    await interaction.response.send_message(
+        f"⭐ نقاط {target.mention}: **{amount}**"
+    )
+
+
+@bot.tree.command(name="اعطاء_نقاط", description="إضافة نقاط")
+@app_commands.describe(العضو="العضو", العدد="عدد النقاط", السبب="السبب")
+async def add_points(interaction, العضو: discord.Member,
+                     العدد: int, السبب: str = "بدون سبب"):
+    if not is_admin(interaction):
+        return await deny(interaction)
+    if العدد <= 0:
+        return await interaction.response.send_message(
+            "❌ العدد يجب أن يكون أكبر من صفر.", ephemeral=True
+        )
+
+    player = upsert_player(العضو.id, العضو.display_name)
+    new_points = player["points"] + العدد
+    upsert_player(العضو.id, العضو.display_name, points=new_points)
+
+    db.execute("""
+        INSERT INTO point_logs
+        (discord_id, amount, reason, moderator_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (العضو.id, العدد, السبب, interaction.user.id, now()))
+    db.commit()
+    log_action(interaction.user.id, "إضافة نقاط", العضو.id,
+               f"+{العدد}; {السبب}")
+
+    await interaction.response.send_message(
+        f"⭐ تمت إضافة **{العدد}** نقطة إلى {العضو.mention}.\n"
+        f"السبب: **{السبب}**\n"
+        f"المجموع: **{new_points}**"
+    )
+
+
+@bot.tree.command(name="خصم_نقاط", description="خصم نقاط")
+@app_commands.describe(العضو="العضو", العدد="عدد النقاط", السبب="السبب")
+async def remove_points(interaction, العضو: discord.Member,
+                        العدد: int, السبب: str = "بدون سبب"):
+    if not is_admin(interaction):
+        return await deny(interaction)
+    if العدد <= 0:
+        return await interaction.response.send_message(
+            "❌ العدد يجب أن يكون أكبر من صفر.", ephemeral=True
+        )
+
+    player = upsert_player(العضو.id, العضو.display_name)
+    new_points = max(0, player["points"] - العدد)
+    actual = new_points - player["points"]
+
+    upsert_player(العضو.id, العضو.display_name, points=new_points)
+
+    db.execute("""
+        INSERT INTO point_logs
+        (discord_id, amount, reason, moderator_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (العضو.id, actual, السبب, interaction.user.id, now()))
+    db.commit()
+    log_action(interaction.user.id, "خصم نقاط", العضو.id,
+               f"-{abs(actual)}; {السبب}")
+
+    await interaction.response.send_message(
+        f"⭐ تم خصم **{abs(actual)}** نقطة من {العضو.mention}.\n"
+        f"السبب: **{السبب}**\n"
+        f"المجموع: **{new_points}**"
+    )
+
+
+@bot.tree.command(name="معلومات", description="عرض ملف لاعب")
+@app_commands.describe(العضو="العضو")
+async def info(interaction, العضو: discord.Member = None):
+    target = العضو or interaction.user
+    player = get_player(target.id)
+    if not player:
+        return await interaction.response.send_message(
+            "❌ اللاعب غير مسجل."
+        )
+    await interaction.response.send_message(
+        embed=player_embed(player)
+    )
+
+
+@bot.tree.command(name="عقوبات", description="عرض عقوبات لاعب")
+@app_commands.describe(العضو="العضو")
+async def punishments(interaction, العضو: discord.Member = None):
+    target = العضو or interaction.user
+    rows = db.execute("""
+        SELECT * FROM punishments
+        WHERE discord_id = ?
+        ORDER BY id DESC LIMIT 20
+    """, (target.id,)).fetchall()
+
+    if not rows:
+        return await interaction.response.send_message(
+            f"📋 لا توجد عقوبات مسجلة على {target.mention}."
+        )
+
+    lines = []
+    for r in rows:
+        lines.append(
+            f"#{r['id']} — {r['reason']} — <t:{int(datetime.fromisoformat(r['created_at']).timestamp())}:R>"
+        )
+    await interaction.response.send_message(
+        f"⚠️ **عقوبات {target.display_name}**\n" + "\n".join(lines)
+    )
+
+
+@bot.tree.command(name="فصل", description="فصل لاعب")
+@app_commands.describe(العضو="العضو", السبب="سبب الفصل")
+async def fire(interaction, العضو: discord.Member, السبب: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    upsert_player(العضو.id, العضو.display_name,
+                  job="مفصول", rank="مفصول")
+
+    db.execute("""
+        INSERT INTO punishments
+        (discord_id, reason, moderator_id, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (العضو.id, f"فصل: {السبب}", interaction.user.id, now()))
+    db.commit()
+
+    log_action(interaction.user.id, "فصل", العضو.id, السبب)
+
+    await interaction.response.send_message(
+        f"🚫 تم فصل {العضو.mention}.\nالسبب: **{السبب}**"
+    )
+
+
+@bot.tree.command(name="بنك", description="عرض الرصيد المسجل")
+@app_commands.describe(العضو="العضو")
+async def bank(interaction, العضو: discord.Member = None):
+    target = العضو or interaction.user
+    player = get_player(target.id)
+    money = player["money"] if player else 0
+
+    await interaction.response.send_message(
+        f"🏦 حساب {target.mention}\n"
+        f"💰 الرصيد المحلي المسجل: **{money:,}$**\n\n"
+        "ℹ️ الرصيد الحقيقي من VRP يحتاج ربط قاعدة بيانات VRP."
+    )
+
+
+@bot.tree.command(name="سجل", description="عرض آخر العمليات")
+@app_commands.describe(العضو="العضو")
+async def history(interaction, العضو: discord.Member = None):
+    target_id = العضو.id if العضو else interaction.user.id
+
+    rows = db.execute("""
+        SELECT * FROM action_logs
+        WHERE target_id = ? OR actor_id = ?
+        ORDER BY id DESC LIMIT 20
+    """, (target_id, target_id)).fetchall()
+
+    if not rows:
+        return await interaction.response.send_message(
+            "📋 لا يوجد سجل."
+        )
+
+    lines = []
+    for r in rows:
+        lines.append(
+            f"#{r['id']} **{r['action']}** — {r['details'] or '-'}"
+        )
+    await interaction.response.send_message(
+        "📜 **آخر العمليات**\n" + "\n".join(lines)
+    )
+
+
+# ============================================================
+# Tickets
+# ============================================================
+
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="استلام", emoji="🙋", style=discord.ButtonStyle.success,
+        custom_id="vrp_ticket_claim"
+    )
+    async def claim(self, interaction, button):
+        if not is_admin(interaction):
+            return await deny(interaction)
+
+        await interaction.channel.set_permissions(
+            interaction.user,
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True
+        )
+        await interaction.response.send_message(
+            f"🙋 تم استلام التذكرة بواسطة {interaction.user.mention}."
+        )
+
+    @discord.ui.button(
+        label="إغلاق", emoji="🔒", style=discord.ButtonStyle.danger,
+        custom_id="vrp_ticket_close"
+    )
+    async def close(self, interaction, button):
+        if not is_admin(interaction):
+            return await deny(interaction)
+
+        await interaction.response.send_message(
+            "🔒 سيتم إغلاق التذكرة بعد حفظ الـTranscript..."
+        )
+        await make_transcript(interaction.channel)
+        await interaction.channel.delete(
+            reason=f"Ticket closed by {interaction.user}"
+        )
+
+
+async def create_ticket(interaction):
+    guild = interaction.guild
+    if guild is None:
+        return await interaction.response.send_message(
+            "❌ هذا الأمر يعمل داخل السيرفر فقط.", ephemeral=True
+        )
+
+    existing = discord.utils.get(
+        guild.text_channels,
+        name=f"ticket-{interaction.user.id}"
+    )
+    if existing:
+        return await interaction.response.send_message(
+            f"🎫 عندك تذكرة مفتوحة: {existing.mention}",
+            ephemeral=True
+        )
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            manage_channels=True,
+            read_message_history=True
+        )
+    }
+
+    for role in guild.roles:
+        if role.permissions.administrator:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True
+            )
+
+    category = guild.get_channel(TICKET_CATEGORY_ID) if TICKET_CATEGORY_ID else None
+    channel = await guild.create_text_channel(
+        f"ticket-{interaction.user.id}",
+        category=category if isinstance(category, discord.CategoryChannel) else None,
+        overwrites=overwrites,
+        reason="VRP Ticket"
+    )
+
+    embed = discord.Embed(
+        title="🎫 تذكرة دعم",
+        description=(
+            f"أهلًا {interaction.user.mention}\n"
+            "اكتب طلبك بالتفصيل، وسيتم خدمتك من الإدارة."
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await channel.send(embed=embed, view=TicketView())
+    log_action(interaction.user.id, "فتح تذكرة",
+               details=channel.name)
+    await interaction.response.send_message(
+        f"🎫 تم فتح التذكرة: {channel.mention}",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="تذكرة", description="فتح تذكرة")
+async def ticket(interaction):
+    await create_ticket(interaction)
+
+
+@bot.tree.command(name="تحويل_تذكرة", description="تحويل التذكرة لقسم آخر")
+@app_commands.describe(القسم="اسم القسم الجديد")
+async def transfer_ticket(interaction, القسم: str):
+    if not is_admin(interaction):
+        return await deny(interaction)
+
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message(
+            "❌ هذا الأمر داخل التذاكر فقط.", ephemeral=True
+        )
+
+    old = interaction.channel.name
+    safe = "".join(
+        c for c in القسم.lower().replace(" ", "-")
+        if c.isalnum() or c == "-"
+    )[:20] or "قسم"
+    await interaction.channel.edit(name=f"{safe}-{interaction.channel.id}")
+    log_action(interaction.user.id, "تحويل تذكرة",
+               details=f"{old} -> {interaction.channel.name}")
+
+    await interaction.response.send_message(
+        f"🔄 تم تحويل التذكرة إلى قسم **{القسم}**."
+    )
+
+
+async def make_transcript(channel: discord.TextChannel):
+    messages = []
+    try:
+        async for msg in channel.history(limit=500, oldest_first=True):
+            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            messages.append(
+                f"[{timestamp}] {msg.author} ({msg.author.id}): "
+                f"{msg.content}\n"
+            )
+    except discord.HTTPException:
+        return
+
+    content = "".join(messages) or "لا توجد رسائل."
+    data = io.BytesIO(content.encode("utf-8"))
+    data.seek(0)
+
+    if LOG_CHANNEL_ID and channel.guild:
+        log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
+        if isinstance(log_channel, discord.TextChannel):
+            try:
+                await log_channel.send(
+                    content=f"📜 Transcript: `{channel.name}`",
+                    file=discord.File(data, filename=f"{channel.name}.txt")
+                )
+            except discord.HTTPException:
+                pass
+
+
+# ============================================================
+# Error handling + startup
+# ============================================================
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError
+):
+    log.exception("Slash command error", exc_info=error)
+    message = "❌ صار خطأ أثناء تنفيذ الأمر."
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+@bot.event
+async def on_ready():
+    db_init()
+
+    # Persistent ticket buttons
+    bot.add_view(TicketView())
+
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            log.info("Synced %s commands to guild %s", len(synced), GUILD_ID)
+        else:
+            synced = await bot.tree.sync()
+            log.info("Synced %s global commands", len(synced))
+    except Exception:
+        log.exception("Failed to sync slash commands")
+
+    log.info("Logged in as %s (%s)", bot.user, bot.user.id)
+
+
+db_init()
+bot.run(TOKEN)
+
+discord.py>=2.5.0
+python-dotenv>=1.0.1
+)

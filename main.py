@@ -188,3 +188,127 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing")
 
 bot.run(TOKEN)
+import os
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="-", intents=intents)
+
+
+@bot.event
+async def on_ready():
+    synced = await bot.tree.sync()
+    print(f"تم تشغيل البوت: {bot.user}")
+    print(f"تم تسجيل {len(synced)} أمر")
+
+
+# =========================
+# الأوامر العربية
+# =========================
+
+@bot.tree.command(
+    name="لوحه",
+    description="فتح لوحة التحكم"
+)
+async def لوحه(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "🎛️ **لوحة التحكم**\nاختر الأمر الذي تريده."
+    )
+
+
+@bot.tree.command(
+    name="تفعيل",
+    description="تفعيل عضو"
+)
+async def تفعيل(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "✅ تم فتح نظام التفعيل."
+    )
+
+
+@bot.tree.command(
+    name="تذاكر",
+    description="فتح نظام التذاكر"
+)
+async def تذاكر(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "🎫 تم فتح نظام التذاكر."
+    )
+
+
+@bot.tree.command(
+    name="وظائف",
+    description="عرض الوظائف"
+)
+async def وظائف(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "📋 **الوظائف**\nاختر الوظيفة المناسبة لك."
+    )
+
+
+@bot.tree.command(
+    name="نقاط",
+    description="عرض النقاط"
+)
+async def نقاط(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        f"⭐ نقاطك: **0**"
+    )
+
+
+@bot.tree.command(
+    name="بنك",
+    description="فتح نظام البنك"
+)
+async def بنك(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "🏦 تم فتح نظام البنك."
+    )
+
+
+@bot.tree.command(
+    name="رحله",
+    description="بدء رحلة"
+)
+async def رحله(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "🚗 تم بدء الرحلة."
+    )
+
+
+@bot.tree.command(
+    name="مطوّرين",
+    description="عرض المطورين"
+)
+async def مطورين(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "👨‍💻 **المطورين**"
+    )
+
+
+@bot.tree.command(
+    name="استدعاء",
+    description="استدعاء عضو"
+)
+@app_commands.describe(العضو="العضو المطلوب استدعاؤه")
+async def استدعاء(
+    interaction: discord.Interaction,
+    العضو: discord.Member
+):
+    await interaction.response.send_message(
+        f"📢 {العضو.mention} تم استدعاؤك."
+    )
+
+
+# =========================
+# تشغيل البوت
+# =========================
+
+if not TOKEN:
+    raise RuntimeError("لم يتم العثور على DISCORD_TOKEN")
+
+bot.run(TOKEN)

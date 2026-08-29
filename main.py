@@ -33,12 +33,12 @@ async def show_id(ctx, member: discord.Member = None):
 @bot.command(name="تسطيب")
 async def install_system(ctx, *, details: str = None):
     if not details:
-        await ctx.send("يرجى كتابة تفاصيل الطلب أو نوع التسطيب بجانب الأمر. مثال: `!تسطيب تركيب مودات VRP`")
+        await ctx.send("يرجى كتابة تفاصيل الطلب بجانب الأمر. مثال: `!تسطيب تركيب مودات VRP`")
         return
 
     embed = discord.Embed(
         title="📥 طلب تسطيب جديد",
-        description=f"تم استلام طلب التسطيب بنجاح.",
+        description="تم استلام طلب التسطيب بنجاح.",
         color=discord.Color.red()
     )
     embed.add_field(name="صاحب الطلب:", value=ctx.author.mention, inline=False)

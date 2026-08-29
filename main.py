@@ -1,50 +1,190 @@
+import os
 import discord
 from discord.ext import commands
+from discord import app_commands
+
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="-",
+    intents=intents
+)
+
+
+# =========================
+# BOT READY
+# =========================
 
 @bot.event
 async def on_ready():
-    print(f"تم تسجيل الدخول بنجاح باسم: {bot.user.name}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Logged in as: {bot.user}")
+        print(f"Synced {len(synced)} slash commands")
+    except Exception as e:
+        print(f"Sync Error: {e}")
 
-# أمر الآي دي (ID System)
-@bot.command(name="id")
-async def show_id(ctx, member: discord.Member = None):
-    if member is None:
-        member = ctx.author
 
-    embed = discord.Embed(
-        title="• WoLf System - ID •",
-        color=discord.Color.dark_red()
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="اسم العضو:", value=member.mention, inline=True)
-    embed.add_field(name="الآي دي (ID):", value=str(member.id), inline=True)
-    embed.add_field(name="تاريخ الانضمام:", value=member.joined_at.strftime("%Y-%m-%d"), inline=False)
-    embed.set_footer(text="صُنع لخدمة الأعضاء.", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    
-    await ctx.send(embed=embed)
+# =========================
+# /panel
+# =========================
 
-# نظام التسطيب (طلب تسطيب قراند / مودات / سيرفرات)
-@bot.command(name="تسطيب")
-async def install_system(ctx, *, details: str = None):
-    if not details:
-        await ctx.send("يرجى كتابة تفاصيل الطلب بجانب الأمر. مثال: `!تسطيب تركيب مودات VRP`")
-        return
+@bot.tree.command(
+    name="panel",
+    description="Open the server control panel"
+)
+async def panel(interaction: discord.Interaction):
 
     embed = discord.Embed(
-        title="📥 طلب تسطيب جديد",
-        description="تم استلام طلب التسطيب بنجاح.",
-        color=discord.Color.red()
+        title="🎛️ Server Control Panel",
+        description=(
+            "Welcome to the control panel.\n\n"
+            "Choose what you want to do from the buttons below."
+        ),
+        color=discord.Color.blurple()
     )
-    embed.add_field(name="صاحب الطلب:", value=ctx.author.mention, inline=False)
-    embed.add_field(name="التفاصيل:", value=details, inline=False)
-    embed.set_footer(text="جاري معالجة الطلب من قبل الإدارة...")
 
-    await ctx.send(embed=embed)
+    embed.set_footer(text="Server System")
 
-bot.run("YOUR_BOT_TOKEN")
+    view = PanelView()
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=view,
+        ephemeral=True
+    )
+
+
+# =========================
+# BUTTONS
+# =========================
+
+class PanelView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Tickets",
+        emoji="🎫",
+        style=discord.ButtonStyle.primary,
+        custom_id="panel:tickets"
+    )
+    async def tickets(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_message(
+            "🎫 Ticket System",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Jobs",
+        emoji="📋",
+        style=discord.ButtonStyle.success,
+        custom_id="panel:jobs"
+    )
+    async def jobs(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_message(
+            "📋 Jobs System",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Points",
+        emoji="⭐",
+        style=discord.ButtonStyle.secondary,
+        custom_id="panel:points"
+    )
+    async def points(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_message(
+            "⭐ Your points: 0",
+            ephemeral=True
+        )
+
+
+# =========================
+# /come
+# =========================
+
+@bot.tree.command(
+    name="come",
+    description="Request a member to come"
+)
+@app_commands.describe(member="Member you want to call")
+async def come(
+    interaction: discord.Interaction,
+    member: discord.Member
+):
+
+    await interaction.response.send_message(
+        f"📢 {member.mention} تم استدعاؤك من قبل {interaction.user.mention}"
+    )
+
+
+# =========================
+# /developers
+# =========================
+
+@bot.tree.command(
+    name="developers",
+    description="Show bot developers"
+)
+async def developers(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        title="👨‍💻 Developers",
+        description="Bot Development Team",
+        color=discord.Color.blurple()
+    )
+
+    await interaction.response.send_message(embed=embed)
+
+
+# =========================
+# /gamepanel
+# =========================
+
+@bot.tree.command(
+    name="gamepanel",
+    description="Open the game panel"
+)
+async def gamepanel(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        title="🎮 Game Panel",
+        description=(
+            "🎫 Tickets\n"
+            "📋 Jobs\n"
+            "⭐ Points\n"
+            "👤 Activation"
+        ),
+        color=discord.Color.green()
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=PanelView()
+    )
+
+
+# =========================
+# RUN
+# =========================
+
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is missing")
+
+bot.run(TOKEN)

@@ -1,187 +1,209 @@
+import os
 import discord
 from discord.ext import commands
-import asyncio
+from discord.ui import Button, View, Select
 import sqlite3
 
-# إعدادات البوت الأساسية
+# إعدادات البوت والصلاحيات
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
-# ==================== قاعدة البيانات (SQLite) ====================
-db = sqlite3.connect("server_system.db")
-cursor = db.cursor()
+# إعداد قاعدة البيانات
+conn = sqlite3.connect("server_system.db")
+cursor = conn.cursor()
 
-# إنشاء الجداول المطلوبة لأنظمة اللعبة والهوية والتذاكر والنقاط
-cursor.execute('''CREATE TABLE IF NOT EXISTS players (
-                    discord_id INTEGER PRIMARY KEY,
-                    player_id INTEGER,
-                    job TEXT DEFAULT 'مدني',
-                    rank TEXT DEFAULT 'مواطن',
-                    points INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'غير مفعل'
-                )''')
+# إنشاء الجداول الأساسية
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS players (
+        discord_id INTEGER PRIMARY KEY,
+        player_id INTEGER UNIQUE,
+        name TEXT,
+        status TEXT DEFAULT "غير مفعل",
+        job TEXT DEFAULT "مواطن",
+        rank TEXT DEFAULT "مبتدئ",
+        points INTEGER DEFAULT 0,
+        criminal_record TEXT DEFAULT "سجل نظيف",
+        penalties INTEGER DEFAULT 0,
+        balance INTEGER DEFAULT 0
+    )
+''')
 
-cursor.execute('''CREATE TABLE IF NOT EXISTS points_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER,
-                    target_id INTEGER,
-                    amount INTEGER,
-                    reason TEXT
-                )''')
-db.commit()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS points_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER,
+        player_id INTEGER,
+        amount INTEGER,
+        reason TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+conn.commit()
 
-@bot.event
-async def on_ready():
-    print(f"تم تشغيل نظام السيرفر بنجاح باسم: {bot.user}")
+# الوظائف المتاحة
+JOBS = {
+    "العسكرية": ["جندي", "عريف", "وكيل رقيب", "رقيب", "ملازم"],
+    "القانون": ["مفوض", "محقق", "نقيب", "قاضي"],
+    "الإجرام": ["مبتدئ", "محتراف", "زعيم عصابة"],
+    "الإعلام": ["مصور", "مراسل", "مدير إعلامي"],
+    "الإسعاف": ["مسعف", "مسعف أول", "طبيب"],
+    "الوظائف المدنية": ["موظف", "مشرف", "مدير عام"]
+}
 
-# ==================== 1. نظام الهوية والـ VRP ====================
-class VRPSystem:
-    @staticmethod
-    def get_player(discord_id):
-        cursor.execute("SELECT * FROM players WHERE discord_id = ?", (discord_id,))
-        return cursor.fetchone()
-
-    @staticmethod
-    def link_player(discord_id, player_id):
-        cursor.execute("INSERT OR REPLACE INTO players (discord_id, player_id, status) VALUES (?, ?, 'مفعل')", (discord_id, player_id))
-        db.commit()
-
-@bot.command(name="تفعيل")
-@commands.has_permissions(administrator=True)
-async def verify_player(ctx, member: discord.Member, player_id: int):
-    VRPSystem.link_player(member.id, player_id)
-    embed = discord.Embed(title="✅ تم التفعيل بنجاح", color=discord.Color.green())
-    embed.add_field(name="العضو", value=member.mention, inline=True)
-    embed.add_field(name="رقم اللاعب (ID)", value=str(player_id), inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command(name="اسماء")
-async def player_identity(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    data = VRPSystem.get_player(member.id)
-    
-    embed = discord.Embed(title=f"🪪 هوية اللاعب: {member.name}", color=discord.Color.blue())
-    if data:
-        embed.add_field(name="رقم اللاعب", value=str(data[1]), inline=True)
-        embed.add_field(name="الحالة", value=data[5], inline=True)
-        embed.add_field(name="الوظيفة", value=data[2], inline=True)
-        embed.add_field(name="الرتبة", value=data[3], inline=True)
-        embed.add_field(name="النقاط", value=str(data[4]), inline=True)
-    else:
-        embed.description = "❌ العضو غير مسجل أو غير مفعل في قاعدة بيانات الـ VRP."
-    await ctx.send(embed=embed)
-
-# ==================== 2. نظام الوظائف والترقيات ====================
-VALID_JOBS = ["العسكرية", "القانون", "الإجرام", "الإعلام", "الإسعاف", "الوظائف المدنية"]
-
-@bot.command(name="توظيف")
-@commands.has_permissions(administrator=True)
-async def hire(ctx, member: discord.Member, job_name: str, *, rank_name: str):
-    if job_name not in VALID_JOBS:
-        await ctx.send(f"❌ الوظيفة غير صالحة. الوظائف المتاحة: {', '.join(VALID_JOBS)}")
-        return
-    
-    cursor.execute("UPDATE players SET job = ?, rank = ? WHERE discord_id = ?", (job_name, rank_name, member.id))
-    db.commit()
-    await ctx.send(بنجاح `تم توظيف {member.mention} في قطاع **{job_name}** برتبة **{rank_name}** 🎖️`)
-
-@bot.command(name="استقالة")
-async def resign(ctx):
-    cursor.execute("UPDATE players SET job = 'مدني', rank = 'مواطن' WHERE discord_id = ?", (ctx.author.id,))
-    db.commit()
-    await ctx.send(f"📄 {ctx.author.mention}, تم قبول استقالتك وأصبحت الآن (مدني).")
-
-# ==================== 3. نظام التذاكر (Ticket System) ====================
-class TicketSelect(discord.ui.Select):
+# لوحة التحكم الرئيسية للتذاكر
+class TicketView(View):
     def __init__(self):
-        options = [
-            discord.SelectOption(label="الدعم الفني العام", emoji="🛠️", description="للاستفسارات والمشاكل العامة"),
-            discord.SelectOption(label="شكاوى الإدارة", emoji="⚖️", description="للشكاوى والاعتراضات"),
-            discord.SelectOption(label="قسم الشرطة والعسكرية", emoji="👮", description="كل ما يخص القطاع العسكري")
-        ]
-        super().__init__(placeholder="اختر قسم التذكرة المناسب...", min_values=1, max_values=1, options=options)
+        super().__init__(timeout=None)
 
-    async def callback(self, interaction: discord.Interaction):
+    @discord.ui.button(label="فتح تذكرة", style=discord.ButtonStyle.green, custom_id="open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: Button):
         guild = interaction.guild
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
-        }
         category = discord.utils.get(guild.categories, name="التذاكر")
         if not category:
             category = await guild.create_category("التذاكر")
 
-        channel = await guild.create_text_channel(f"ticket-{interaction.user.name}", category=category, overwrites=overwrites)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+
+        channel = await guild.create_text_channel(f"تذكرة-{interaction.user.name}", category=category, overwrites=overwrites)
         
-        embed = discord.Embed(title=f"🎟️ تذكرة جديدة: {self.values[0]}", description=f"أهلاً بك {interaction.user.mention}\nاشرح مشكلتك أو طلبك بالتفصيل وسيتم خدمتك قريباً.", color=discord.Color.green())
-        await channel.send(embed=embed)
-        await interaction.response.send_message(f"✅ تم فتح تذكرتك بنجاح: {channel.mention}", ephemeral=True)
+        select_view = View()
+        select = Select(placeholder="اختر قسم التذكرة", options=[
+            discord.SelectOption(label="الدعم الفني", value="support"),
+            discord.SelectOption(label="الشكاوى", value="complaints"),
+            discord.SelectOption(label="التوظيف", value="employment")
+        ])
+        
+        async def select_callback(inter: discord.Interaction):
+            await inter.response.send_message(f"تم اختيار القسم: {select.values[0]}", ephemeral=True)
 
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(TicketSelect())
+        select.callback = select_callback
+        select_view.add_item(select)
 
-@bot.command(name="ticket-setup")
-@commands.has_permissions(administrator=True)
-async def ticket_setup(ctx):
-    embed = discord.Embed(title="🎫 نظام التذاكر المركزي", description="اختر من القائمة أدناه لفتح تذكرة جديدة وسيقوم البوت بإنشاء روم خاص بك.", color=discord.Color.blue())
-    await ctx.send(embed=embed, view=TicketView())
+        await channel.send(f"مرحباً {interaction.user.mention}, الرجاء اختيار القسم المناسب:", view=select_view)
+        await interaction.response.send_message(f"تم فتح التذكرة بنجاح: {channel.mention}", ephemeral=True)
 
-@bot.command(name="إغلاق")
-async def close_ticket(ctx):
-    if "ticket-" in ctx.channel.name:
-        await ctx.send("🔒 جاري إغلاق وحذف التذكرة...")
-        await asyncio.sleep(3)
-        await ctx.channel.delete()
-    else:
-        await ctx.send("❌ هذا الأمر يختص برومات التذاكر فقط.")
+@bot.event
+async def on_ready():
+    print(f"تم تسجيل الدخول بنجاح باسم {bot.user}")
 
-# ==================== 4. نظام النقاط والترقيات ====================
-@bot.command(name="نقاط")
-async def manage_points(ctx, action: str, member: discord.Member, amount: int, *, reason: str = "بدون سبب"):
-    if not ctx.author.guild_permissions.administrator:
-        await ctx.send("❌ ليس لديك صلاحية لإدارة النقاط.")
-        return
+# 1. نظام التفعيل
+@bot.command(name="تفعيل")
+async def activate_player(ctx, member: discord.Member, player_id: int):
+    cursor.execute("INSERT OR REPLACE INTO players (discord_id, player_id, name, status) VALUES (?, ?, ?, ?)",
+                   (member.id, player_id, member.name, "مفعل"))
+    conn.commit()
+    await ctx.send(f"تم تفعيل اللاعب {member.name} برقم تعريف {player_id}.")
 
-    data = VRPSystem.get_player(member.id)
-    if not data:
-        await ctx.send("❌ هذا اللاعب غير مسجل بنظام الهوية.")
-        return
-
-    current_points = data[4]
-    if action == "إضافة":
-        new_points = current_points + amount
-        cursor.execute("UPDATE players SET points = ? WHERE discord_id = ?", (new_points, member.id))
-        cursor.execute("INSERT INTO points_log (admin_id, target_id, amount, reason) VALUES (?, ?, ?, ?)", (ctx.author.id, member.id, amount, reason))
-        db.commit()
-        await ctx.send(f"➕ تم إضافة **{amount}** نقطة لـ {member.mention}. (الرصيد الجديد: {new_points})")
-    elif action == "خصم":
-        new_points = max(0, current_points - amount)
-        cursor.execute("UPDATE players SET points = ? WHERE discord_id = ?", (new_points, member.id))
-        cursor.execute("INSERT INTO points_log (admin_id, target_id, amount, reason) VALUES (?, ?, ?, ?)", (ctx.author.id, member.id, -amount, reason))
-        db.commit()
-        await ctx.send(f"➖ تم خصم **{amount}** نقطة من {member.mention}. (الرصيد الجديد: {new_points})")
-
-# ==================== 5. أوامر إدارية وإضافية ====================
+# 2. نظام استدعاء اللاعبين
 @bot.command(name="استدعاء")
-@commands.has_permissions(manage_messages=True)
-async def summon(ctx, member: discord.Member, *, reason="بدون سبب"):
-    embed = discord.Embed(title="🚨 تنبيه استدعاء إداري", description=f"تم استدعاؤك يا {member.mention} بواسطة الإدارة.\n**السبب:** {reason}", color=discord.Color.red())
-    await ctx.send(embed=embed)
-    try:
-        await member.send(embed=embed)
-    except:
-        pass
+async def call_player(ctx, member: discord.Member, *, reason: str):
+    await ctx.send(f"{member.mention}, تم استدعاؤك من قبل الإدارة. السبب: {reason}")
 
+# 3. نظام رتب الوظائف
+@bot.command(name="رتب")
+async def set_rank(ctx, member: discord.Member, job: str, rank: str):
+    if job in JOBS and rank in JOBS[job]:
+        cursor.execute("UPDATE players SET job = ?, rank = ? WHERE discord_id = ?", (job, rank, member.id))
+        conn.commit()
+        await ctx.send(f"تم تعيين الرتبة {rank} في وظيفة {job} للمستخدم {member.name}.")
+    else:
+        await ctx.send("الوظيفة أو الرتبة غير صحيحة.")
+
+# 4. عرض اسماء اللاعبين المرتبطين
+@bot.command(name="اسماء")
+async def list_players(ctx):
+    cursor.execute("SELECT player_id, name, job, rank FROM players")
+    rows = cursor.fetchall()
+    if not rows:
+        await ctx.send("لا يوجد لاعبين مسجلين.")
+        return
+    
+    msg = "قائمة اللاعبين المسجلين:\n"
+    for row in rows:
+        msg += f"الرقم: {row[0]} | الاسم: {row[1]} | الوظيفة: {row[2]} | الرتبة: {row[3]}\n"
+    await ctx.send(msg)
+
+# 5. التوظيف
+@bot.command(name="توظيف")
+async def employ_player(ctx, member: discord.Member, job: str):
+    if job in JOBS:
+        default_rank = JOBS[job][0]
+        cursor.execute("UPDATE players SET job = ?, rank = ? WHERE discord_id = ?", (job, default_rank, member.id))
+        conn.commit()
+        await ctx.send(f"تم توظيف {member.name} في وظيفة {job} برتبة {default_rank}.")
+    else:
+        await ctx.send("الوظيفة غير موجودة.")
+
+# 6. التقاعد
+@bot.command(name="تقاعد")
+async def retire_player(ctx, member: discord.Member):
+    cursor.execute("UPDATE players SET job = 'متقاعد', rank = 'مفصول' WHERE discord_id = ?", (member.id,))
+    conn.commit()
+    await ctx.send(f"تم إحالة اللاعب {member.name} إلى التقاعد.")
+
+# 7. الاستقالة
+@bot.command(name="استقالة")
+async def resign_player(ctx):
+    cursor.execute("UPDATE players SET job = 'مواطن', rank = 'بدون' WHERE discord_id = ?", (ctx.author.id,))
+    conn.commit()
+    await ctx.send("تم قبول استقالتك وعودتك كمواطن.")
+
+# 8. إخلاء الموقع أو المكان
+@bot.command(name="إخلاء")
+async def evacuate_area(ctx, *, location: str):
+    await ctx.send(f"تنبيه إداري: يرجى إخلاء الموقع التالي فورا: {location}")
+
+# 9. حجز اللاعبين أو الأصول
 @bot.command(name="حجز")
-@commands.has_permissions(manage_roles=True)
-async def jail(ctx, member: discord.Member, minutes: int = 10, *, reason="مخالفة القوانين"):
-    await ctx.send(f"🔒 تم حجز اللاعب {member.mention} لمدة {minutes} دقائق. السبب: {reason}")
+async def detain_player(ctx, member: discord.Member, *, reason: str):
+    cursor.execute("UPDATE players SET penalties = penalties + 1 WHERE discord_id = ?", (member.id,))
+    conn.commit()
+    await ctx.send(f"تم حجز اللاعب {member.name}. السبب: {reason}")
 
-# ضع التوكن الخاص بك هنا
-bot.run("YOUR_BOT_TOKEN")
+# 10. تأكيد العمليات
+@bot.command(name="تأكيد")
+async def confirm_action(ctx, *, action_name: str):
+    await ctx.send(f"تم تأكيد عملية: {action_name} بنجاح بواسطة {ctx.author.name}.")
+
+# نظام النقاط: إضافة أو خصم
+@bot.command(name="نقاط")
+async def manage_points(ctx, member: discord.Member, amount: int, *, reason: str):
+    cursor.execute("UPDATE players SET points = points + ? WHERE discord_id = ?", (amount, member.id))
+    cursor.execute("INSERT INTO points_log (admin_id, player_id, amount, reason) VALUES (?, ?, ?, ?)",
+                   (ctx.author.id, member.id, amount, reason))
+    conn.commit()
+    await ctx.send(f"تم تعديل نقاط اللاعب {member.name} بقيمة {amount}. السبب: {reason}")
+
+# ربط VRP (قراءة بيانات من القاعدة وقاعدة بيانات خارجية وهمية)
+@bot.command(name="vrp")
+async def vrp_data(ctx, player_id: int):
+    cursor.execute("SELECT player_id, name, status, job, rank, balance FROM players WHERE player_id = ?", (player_id,))
+    row = cursor.fetchone()
+    if row:
+        response = (
+            f"بيانات اللاعب من النظام:\n"
+            f"رقم اللاعب: {row[0]}\n"
+            f"الاسم: {row[1]}\n"
+            f"الحالة: {row[2]}\n"
+            f"الوظيفة: {row[3]}\n"
+            f"الرتبة: {row[4]}\n"
+            f"الرصيد: {row[5]}"
+        )
+        await ctx.send(response)
+    else:
+        await ctx.send("لم يتم العثور على بيانات لهذا اللاعب في قاعدة البيانات.")
+
+# أمر لعرض لوحة التذاكر
+@bot.command(name="تذاكر")
+async def setup_tickets(ctx):
+    await ctx.send("اضغط على الزر أدناه لفتح تذكرة جديدة:", view=TicketView())
+
+# تشغيل البوت (ضع التوكن الخاص بك هنا)
+# bot.run("YOUR_BOT_TOKEN")

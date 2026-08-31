@@ -207,3 +207,6 @@ async def setup_tickets(ctx):
 
 # تشغيل البوت (ضع التوكن الخاص بك هنا)
 # bot.run("YOUR_BOT_TOKEN")
+import os
+
+bot.run(os.getenv("DISCORD_TOKEN"))

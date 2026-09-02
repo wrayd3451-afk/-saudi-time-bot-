@@ -1,915 +1,212 @@
 import os
-import re
-import sqlite3
-import asyncio
-from datetime import datetime
-
 import discord
-from discord import app_commands
 from discord.ext import commands
-from dotenv import load_dotenv
+from discord.ui import Button, View, Select
+import sqlite3
 
-# ============================================================
-# Crown Dream - VRP Discord System
-# Single-file bot.py
-# ============================================================
-
-load_dotenv()
-
-TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
-
-if not TOKEN:
-    raise RuntimeError("ضع توكن البوت في DISCORD_TOKEN داخل ملف .env")
-
+# إعدادات البوت والصلاحيات
 intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
 intents.message_content = True
+intents.members = True
 
-bot = commands.Bot(command_prefix="-", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
-DB_FILE = "crown_dream.db"
-db = sqlite3.connect(DB_FILE)
-db.row_factory = sqlite3.Row
+# إعداد قاعدة البيانات
+conn = sqlite3.connect("server_system.db")
+cursor = conn.cursor()
 
-# -----------------------------
-# Database
-# -----------------------------
-def db_init():
-    db.executescript("""
-    CREATE TABLE IF NOT EXISTS config (
-        guild_id INTEGER PRIMARY KEY,
-        category_id INTEGER DEFAULT 0,
-        ticket_log_id INTEGER DEFAULT 0,
-        admin_log_id INTEGER DEFAULT 0,
-        panel_channel_id INTEGER DEFAULT 0,
-        panel_message_id INTEGER DEFAULT 0
-    );
+# إنشاء الجداول الأساسية
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS players (
+        discord_id INTEGER PRIMARY KEY,
+        player_id INTEGER UNIQUE,
+        name TEXT,
+        status TEXT DEFAULT "غير مفعل",
+        job TEXT DEFAULT "مواطن",
+        rank TEXT DEFAULT "مبتدئ",
+        points INTEGER DEFAULT 0,
+        criminal_record TEXT DEFAULT "سجل نظيف",
+        penalties INTEGER DEFAULT 0,
+        balance INTEGER DEFAULT 0
+    )
+''')
 
-    CREATE TABLE IF NOT EXISTS points (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        points INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS tickets (
-        channel_id INTEGER PRIMARY KEY,
-        guild_id INTEGER NOT NULL,
-        owner_id INTEGER NOT NULL,
-        subject TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        claimed_by INTEGER DEFAULT 0,
-        closed INTEGER DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS activations (
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS points_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER NOT NULL,
-        member_id INTEGER NOT NULL,
-        psn TEXT NOT NULL,
-        activated_by INTEGER NOT NULL,
-        created_at TEXT NOT NULL
-    );
-    """)
-    db.commit()
-
-
-def get_config(guild_id: int):
-    row = db.execute("SELECT * FROM config WHERE guild_id = ?", (guild_id,)).fetchone()
-    if not row:
-        db.execute("INSERT INTO config(guild_id) VALUES(?)", (guild_id,))
-        db.commit()
-        row = db.execute("SELECT * FROM config WHERE guild_id = ?", (guild_id,)).fetchone()
-    return row
-
-
-def set_config(guild_id: int, **values):
-    allowed = {
-        "category_id", "ticket_log_id", "admin_log_id",
-        "panel_channel_id", "panel_message_id"
-    }
-    values = {k: v for k, v in values.items() if k in allowed}
-    if not values:
-        return
-    parts = ", ".join(f"{k} = ?" for k in values)
-    db.execute(
-        f"UPDATE config SET {parts} WHERE guild_id = ?",
-        (*values.values(), guild_id)
+        admin_id INTEGER,
+        player_id INTEGER,
+        amount INTEGER,
+        reason TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )
-    db.commit()
+''')
+conn.commit()
 
+# الوظائف المتاحة
+JOBS = {
+    "العسكرية": ["جندي", "عريف", "وكيل رقيب", "رقيب", "ملازم"],
+    "القانون": ["مفوض", "محقق", "نقيب", "قاضي"],
+    "الإجرام": ["مبتدئ", "محتراف", "زعيم عصابة"],
+    "الإعلام": ["مصور", "مراسل", "مدير إعلامي"],
+    "الإسعاف": ["مسعف", "مسعف أول", "طبيب"],
+    "الوظائف المدنية": ["موظف", "مشرف", "مدير عام"]
+}
 
-def add_points(guild_id: int, user_id: int, amount: int):
-    row = db.execute(
-        "SELECT points FROM points WHERE guild_id=? AND user_id=?",
-        (guild_id, user_id)
-    ).fetchone()
-    if row:
-        new_value = row["points"] + amount
-        db.execute(
-            "UPDATE points SET points=? WHERE guild_id=? AND user_id=?",
-            (new_value, guild_id, user_id)
-        )
-    else:
-        new_value = amount
-        db.execute(
-            "INSERT INTO points(guild_id,user_id,points) VALUES(?,?,?)",
-            (guild_id, user_id, amount)
-        )
-    db.commit()
-    return new_value
-
-
-def get_points(guild_id: int, user_id: int):
-    row = db.execute(
-        "SELECT points FROM points WHERE guild_id=? AND user_id=?",
-        (guild_id, user_id)
-    ).fetchone()
-    return row["points"] if row else 0
-
-
-def clean_name(text: str):
-    text = re.sub(r"[^a-zA-Z0-9\u0600-\u06FF_-]+", "-", text)
-    return text[:40].strip("-") or "ticket"
-
-
-# -----------------------------
-# Permissions / embeds
-# -----------------------------
-def is_admin(member: discord.Member):
-    return member.guild_permissions.administrator or member.guild_permissions.manage_guild
-
-
-def embed(title, description="", color=discord.Color.dark_red()):
-    return discord.Embed(
-        title=title,
-        description=description,
-        color=color,
-        timestamp=datetime.utcnow()
-    )
-
-
-async def send_log(guild: discord.Guild, message: str, color=discord.Color.red()):
-    cfg = get_config(guild.id)
-    channel_id = cfg["admin_log_id"]
-    if not channel_id:
-        return
-    channel = guild.get_channel(channel_id)
-    if channel:
-        await channel.send(embed=embed("سجل النظام", message, color))
-
-
-# -----------------------------
-# Main panel
-# -----------------------------
-def main_panel_embed():
-    return embed(
-        "— Crown Dream , VRP",
-        "## لوحة التحكم الإدارية\n"
-        "من هنا تقدر تدير نظام السيرفر كامل.\n\n"
-        "🎫 **التذاكر**\n"
-        "فتح تذكرة ورفع طلب رسمي للشؤون الإدارية.\n\n"
-        "🛡️ **الشؤون الإدارية**\n"
-        "إدارة الطلبات والتفعيل والوظائف.\n\n"
-        "⭐ **النقاط**\n"
-        "عرض نقاطك وإضافة/خصم النقاط للمشرفين.\n\n"
-        "⚙️ **إعداد النظام**\n"
-        "إنشاء التصنيفات والقنوات المطلوبة تلقائياً.\n\n"
-        "اختر الزر المناسب من الأسفل."
-    )
-
-
-class MainPanelView(discord.ui.View):
+# لوحة التحكم الرئيسية للتذاكر
+class TicketView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="فتح تذكرة 🎫", style=discord.ButtonStyle.danger, custom_id="cd:open_ticket")
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal())
-
-    @discord.ui.button(label="الشؤون الإدارية", style=discord.ButtonStyle.secondary, custom_id="cd:admin")
-    async def admin(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            return await interaction.response.send_message("❌ هذا القسم للإدارة فقط.", ephemeral=True)
-        await interaction.response.send_message(
-            embed=embed(
-                "الشؤون الإدارية",
-                "اختر العملية المطلوبة:",
-            ),
-            view=AdminPanelView(),
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="الوظائف 📋", style=discord.ButtonStyle.primary, custom_id="cd:jobs")
-    async def jobs(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            embed=embed("قائمة الوظائف", "اختر الوظيفة المطلوبة من القائمة."),
-            view=JobView(),
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="نقاطي ⭐", style=discord.ButtonStyle.success, custom_id="cd:my_points")
-    async def my_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        points = get_points(interaction.guild.id, interaction.user.id)
-        await interaction.response.send_message(
-            embed=embed("نقاطك ⭐", f"أهلاً {interaction.user.mention}\n\nرصيد نقاطك الحالي: **{points} نقطة**", discord.Color.gold()),
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="إعداد النظام ⚙️", style=discord.ButtonStyle.secondary, custom_id="cd:setup")
-    async def setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            return await interaction.response.send_message("❌ هذا الزر للإدارة فقط.", ephemeral=True)
-        await interaction.response.send_message(
-            embed=embed(
-                "إعداد النظام ⚙️",
-                "اضغط **تسطيب النظام** لإنشاء التصنيف والقنوات الأساسية تلقائياً.\n"
-                "بعدها استخدم **نشر اللوحة** لوضع لوحة التحكم في القناة الحالية."
-            ),
-            view=SetupView(),
-            ephemeral=True
-        )
-
-
-# -----------------------------
-# Ticket modal + system
-# -----------------------------
-class TicketModal(discord.ui.Modal, title="فتح تذكرة جديدة"):
-    subject = discord.ui.TextInput(
-        label="موضوع الطلب",
-        placeholder="مثال: طلب إداري / شكوى / اقتراح",
-        max_length=100
-    )
-    details = discord.ui.TextInput(
-        label="تفاصيل الطلب",
-        placeholder="اكتب تفاصيل طلبك بشكل واضح ومختصر...",
-        style=discord.TextStyle.paragraph,
-        max_length=1000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
+    @discord.ui.button(label="فتح تذكرة", style=discord.ButtonStyle.green, custom_id="open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: Button):
         guild = interaction.guild
-        cfg = get_config(guild.id)
-
-        category = guild.get_channel(cfg["category_id"]) if cfg["category_id"] else None
-
+        category = discord.utils.get(guild.categories, name="التذاكر")
         if not category:
-            return await interaction.response.send_message(
-                "❌ نظام التذاكر غير مسطب بعد. الإدارة تحتاج تضغط **إعداد النظام > تسطيب النظام**.",
-                ephemeral=True
-            )
-
-        # Prevent duplicate open ticket
-        existing = db.execute(
-            "SELECT channel_id FROM tickets WHERE guild_id=? AND owner_id=? AND closed=0",
-            (guild.id, interaction.user.id)
-        ).fetchone()
-
-        if existing and guild.get_channel(existing["channel_id"]):
-            return await interaction.response.send_message(
-                f"❌ عندك تذكرة مفتوحة بالفعل: <#{existing['channel_id']}>",
-                ephemeral=True
-            )
+            category = await guild.create_category("التذاكر")
 
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True
-            )
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
 
-        # Admins can see tickets
-        for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_guild:
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True,
-                    manage_messages=True
-                )
-
-        channel = await guild.create_text_channel(
-            name=f"ticket-{clean_name(interaction.user.name)}",
-            category=category,
-            overwrites=overwrites,
-            reason=f"Ticket opened by {interaction.user}"
-        )
-
-        db.execute(
-            "INSERT INTO tickets(channel_id,guild_id,owner_id,subject,created_at) VALUES(?,?,?,?,?)",
-            (channel.id, guild.id, interaction.user.id, str(self.subject), datetime.utcnow().isoformat())
-        )
-        db.commit()
-
-        await channel.send(
-            content=interaction.user.mention,
-            embed=embed(
-                f"🎫 {self.subject}",
-                f"**صاحب التذكرة:** {interaction.user.mention}\n"
-                f"**الموضوع:** {self.subject}\n\n"
-                f"**التفاصيل:**\n{self.details}\n\n"
-                "سيتم مراجعة الطلب من الإدارة. يرجى عدم تكرار الرسائل وانتظار الرد."
-            ),
-            view=TicketControlView()
-        )
-
-        await interaction.response.send_message(
-            f"✅ تم فتح تذكرتك: {channel.mention}",
-            ephemeral=True
-        )
-
-        await send_log(
-            guild,
-            f"تم فتح تذكرة جديدة\n"
-            f"العضو: {interaction.user.mention}\n"
-            f"القناة: {channel.mention}\n"
-            f"الموضوع: {self.subject}"
-        )
-
-
-class TicketControlView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="استلام التذكرة", style=discord.ButtonStyle.primary, custom_id="cd:ticket_claim")
-    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            return await interaction.response.send_message("❌ للإدارة فقط.", ephemeral=True)
-
-        row = db.execute(
-            "SELECT * FROM tickets WHERE channel_id=? AND closed=0",
-            (interaction.channel.id,)
-        ).fetchone()
-
-        if not row:
-            return await interaction.response.send_message("❌ هذه ليست تذكرة مسجلة.", ephemeral=True)
-
-        db.execute(
-            "UPDATE tickets SET claimed_by=? WHERE channel_id=?",
-            (interaction.user.id, interaction.channel.id)
-        )
-        db.commit()
-
-        await interaction.response.send_message(
-            embed=embed(
-                "تم استلام التذكرة",
-                f"تم استلام التذكرة بواسطة {interaction.user.mention}.\n"
-                "سيتم متابعة الطلب من المسؤول المستلم."
-            )
-        )
-        await send_log(
-            interaction.guild,
-            f"تم استلام التذكرة {interaction.channel.mention} بواسطة {interaction.user.mention}",
-            discord.Color.blue()
-        )
-
-    @discord.ui.button(label="إغلاق التذكرة 🔒", style=discord.ButtonStyle.danger, custom_id="cd:ticket_close")
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        row = db.execute(
-            "SELECT * FROM tickets WHERE channel_id=? AND closed=0",
-            (interaction.channel.id,)
-        ).fetchone()
-
-        if not row:
-            return await interaction.response.send_message("❌ التذكرة غير موجودة.", ephemeral=True)
-
-        if interaction.user.id != row["owner_id"] and not is_admin(interaction.user):
-            return await interaction.response.send_message("❌ صاحب التذكرة أو الإدارة فقط.", ephemeral=True)
-
-        db.execute(
-            "UPDATE tickets SET closed=1 WHERE channel_id=?",
-            (interaction.channel.id,)
-        )
-        db.commit()
-
-        await interaction.response.send_message(
-            embed=embed("🔒 تم إغلاق التذكرة", "سيتم حذف القناة بعد ثوانٍ.", discord.Color.dark_grey())
-        )
-
-        await send_log(
-            interaction.guild,
-            f"تم إغلاق التذكرة `{interaction.channel.name}` بواسطة {interaction.user.mention}",
-            discord.Color.dark_grey()
-        )
-
-        await asyncio.sleep(5)
-        try:
-            await interaction.channel.delete(reason="Ticket closed")
-        except discord.HTTPException:
-            pass
-
-    @discord.ui.button(label="إضافة عضو", style=discord.ButtonStyle.secondary, custom_id="cd:ticket_add")
-    async def add_member(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            return await interaction.response.send_message("❌ للإدارة فقط.", ephemeral=True)
-        await interaction.response.send_modal(AddMemberModal())
-
-
-class AddMemberModal(discord.ui.Modal, title="إضافة عضو للتذكرة"):
-    user_id = discord.ui.TextInput(
-        label="ID العضو",
-        placeholder="ضع Discord User ID",
-        max_length=25
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            member = await interaction.guild.fetch_member(int(str(self.user_id)))
-        except (ValueError, discord.NotFound, discord.HTTPException):
-            return await interaction.response.send_message("❌ ID غير صحيح أو العضو غير موجود.", ephemeral=True)
-
-        await interaction.channel.set_permissions(
-            member,
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True
-        )
-        await interaction.response.send_message(f"✅ تمت إضافة {member.mention} إلى التذكرة.")
-
-
-# -----------------------------
-# Jobs
-# -----------------------------
-class JobSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="مدير إداري", value="manager", emoji="👑"),
-            discord.SelectOption(label="مسؤول تذاكر", value="tickets", emoji="🎫"),
-            discord.SelectOption(label="مراقب عام", value="moderator", emoji="🛡️"),
-            discord.SelectOption(label="دعم إداري", value="support", emoji="📋"),
-        ]
-        super().__init__(
-            placeholder="اختر الوظيفة...",
-            options=options,
-            custom_id="cd:job_select"
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        labels = {
-            "manager": "مدير إداري",
-            "tickets": "مسؤول تذاكر",
-            "moderator": "مراقب عام",
-            "support": "دعم إداري"
-        }
-        selected = self.values[0]
-        role_name = f"CD | {labels[selected]}"
-
-        role = discord.utils.get(interaction.guild.roles, name=role_name)
-        if not role:
-            role = await interaction.guild.create_role(
-                name=role_name,
-                reason="Crown Dream job system"
-            )
-
-        await interaction.user.add_roles(role, reason="Selected job from Crown Dream panel")
-        total = add_points(interaction.guild.id, interaction.user.id, 15)
-
-        await interaction.response.send_message(
-            embed=embed(
-                "تم تسجيل الوظيفة ✅",
-                f"تم تعيينك على وظيفة **{labels[selected]}**.\n"
-                f"تمت إضافة **15 نقطة**.\n\n"
-                f"رصيدك الحالي: **{total} نقطة**",
-                discord.Color.green()
-            ),
-            ephemeral=True
-        )
-
-
-class JobView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=120)
-        self.add_item(JobSelect())
-
-
-# -----------------------------
-# Admin panel
-# -----------------------------
-class AdminPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=120)
-
-    @discord.ui.button(label="التفعيل", style=discord.ButtonStyle.success)
-    async def activate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ActivationModal())
-
-    @discord.ui.button(label="إعطاء نقاط", style=discord.ButtonStyle.primary)
-    async def give_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PointsModal(add=True))
-
-    @discord.ui.button(label="خصم نقاط", style=discord.ButtonStyle.danger)
-    async def remove_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PointsModal(add=False))
-
-    @discord.ui.button(label="بحث عن عضو", style=discord.ButtonStyle.secondary)
-    async def member_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(MemberInfoModal())
-
-
-class ActivationModal(discord.ui.Modal, title="تفعيل عضو"):
-    member_id = discord.ui.TextInput(
-        label="ID العضو",
-        placeholder="Discord User ID",
-        max_length=25
-    )
-    psn = discord.ui.TextInput(
-        label="PSN ID",
-        placeholder="اكتب PSN ID",
-        max_length=80
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            member = await interaction.guild.fetch_member(int(str(self.member_id)))
-        except (ValueError, discord.NotFound, discord.HTTPException):
-            return await interaction.response.send_message("❌ العضو غير موجود.", ephemeral=True)
-
-        add_points(interaction.guild.id, interaction.user.id, 10)
-
-        db.execute(
-            "INSERT INTO activations(guild_id,member_id,psn,activated_by,created_at) VALUES(?,?,?,?,?)",
-            (
-                interaction.guild.id,
-                member.id,
-                str(self.psn),
-                interaction.user.id,
-                datetime.utcnow().isoformat()
-            )
-        )
-        db.commit()
-
-        await interaction.response.send_message(
-            embed=embed(
-                "تم التفعيل ✅",
-                f"**العضو:** {member.mention}\n"
-                f"**PSN:** `{self.psn}`\n"
-                f"**المفعل:** {interaction.user.mention}\n\n"
-                "تمت إضافة **10 نقاط** للمسؤول.",
-                discord.Color.green()
-            )
-        )
-
-        await send_log(
-            interaction.guild,
-            f"تفعيل جديد\nالعضو: {member.mention}\nPSN: `{self.psn}`\nالمفعل: {interaction.user.mention}",
-            discord.Color.green()
-        )
-
-
-class PointsModal(discord.ui.Modal):
-    def __init__(self, add=True):
-        self.add_mode = add
-        super().__init__(title="إعطاء نقاط" if add else "خصم نقاط")
-
-    member_id = discord.ui.TextInput(
-        label="ID العضو",
-        placeholder="Discord User ID",
-        max_length=25
-    )
-    amount = discord.ui.TextInput(
-        label="عدد النقاط",
-        placeholder="مثال: 15",
-        max_length=6
-    )
-    reason = discord.ui.TextInput(
-        label="السبب",
-        placeholder="سبب العملية",
-        required=False,
-        max_length=150
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            uid = int(str(self.member_id))
-            amount = int(str(self.amount))
-        except ValueError:
-            return await interaction.response.send_message("❌ تأكد من الـ ID وعدد النقاط.", ephemeral=True)
-
-        if amount <= 0 or amount > 10000:
-            return await interaction.response.send_message("❌ عدد النقاط يجب أن يكون بين 1 و10000.", ephemeral=True)
-
-        member = interaction.guild.get_member(uid)
-        if not member:
-            try:
-                member = await interaction.guild.fetch_member(uid)
-            except (discord.NotFound, discord.HTTPException):
-                return await interaction.response.send_message("❌ العضو غير موجود.", ephemeral=True)
-
-        final_amount = amount if self.add_mode else -amount
-        total = add_points(interaction.guild.id, uid, final_amount)
-
-        action = "إضافة" if self.add_mode else "خصم"
-        await interaction.response.send_message(
-            embed=embed(
-                f"تم {action} النقاط ✅",
-                f"العضو: {member.mention}\n"
-                f"العملية: **{final_amount:+d} نقطة**\n"
-                f"السبب: {self.reason or 'بدون سبب'}\n"
-                f"الرصيد الجديد: **{total} نقطة**",
-                discord.Color.green() if self.add_mode else discord.Color.red()
-            )
-        )
-
-
-class MemberInfoModal(discord.ui.Modal, title="بحث عن عضو"):
-    member_id = discord.ui.TextInput(
-        label="ID العضو",
-        placeholder="Discord User ID",
-        max_length=25
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            uid = int(str(self.member_id))
-            member = interaction.guild.get_member(uid) or await interaction.guild.fetch_member(uid)
-        except (ValueError, discord.NotFound, discord.HTTPException):
-            return await interaction.response.send_message("❌ العضو غير موجود.", ephemeral=True)
-
-        points = get_points(interaction.guild.id, member.id)
-        activation = db.execute(
-            "SELECT * FROM activations WHERE guild_id=? AND member_id=? ORDER BY id DESC LIMIT 1",
-            (interaction.guild.id, member.id)
-        ).fetchone()
-
-        text = (
-            f"**العضو:** {member.mention}\n"
-            f"**ID:** `{member.id}`\n"
-            f"**النقاط:** **{points}**\n"
-        )
-
-        if activation:
-            text += (
-                f"**PSN:** `{activation['psn']}`\n"
-                f"**آخر تفعيل:** <t:{int(datetime.fromisoformat(activation['created_at']).timestamp())}:R>"
-            )
-        else:
-            text += "**التفعيل:** لا يوجد سجل"
-
-        await interaction.response.send_message(embed=embed("بيانات العضو", text), ephemeral=True)
-
-
-# -----------------------------
-# Setup system
-# -----------------------------
-class SetupView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=120)
-
-    @discord.ui.button(label="تسطيب النظام", style=discord.ButtonStyle.danger)
-    async def setup_system(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        guild = interaction.guild
-
-        category = discord.utils.get(guild.categories, name="CROWN DREAM | TICKETS")
-        if not category:
-            category = await guild.create_category("CROWN DREAM | TICKETS")
-
-        admin_log = discord.utils.get(guild.text_channels, name="cd-admin-logs")
-        if not admin_log:
-            admin_log = await guild.create_text_channel("cd-admin-logs")
-
-        ticket_log = discord.utils.get(guild.text_channels, name="cd-ticket-logs")
-        if not ticket_log:
-            ticket_log = await guild.create_text_channel("cd-ticket-logs")
-
-        # Hide logs from @everyone
-        for ch in (admin_log, ticket_log):
-            try:
-                await ch.set_permissions(
-                    guild.default_role,
-                    view_channel=False
-                )
-            except discord.HTTPException:
-                pass
-
-        set_config(
-            guild.id,
-            category_id=category.id,
-            admin_log_id=admin_log.id,
-            ticket_log_id=ticket_log.id
-        )
-
-        await interaction.followup.send(
-            embed=embed(
-                "تم تسطيب النظام ✅",
-                f"📁 التصنيف: {category.mention}\n"
-                f"📋 سجل الإدارة: {admin_log.mention}\n"
-                f"🎫 سجل التذاكر: {ticket_log.mention}\n\n"
-                "النظام جاهز. الآن اضغط **نشر اللوحة** من الإعدادات."
-            ),
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="نشر اللوحة", style=discord.ButtonStyle.primary)
-    async def publish_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            return await interaction.response.send_message("❌ للإدارة فقط.", ephemeral=True)
-
-        msg = await interaction.channel.send(
-            embed=main_panel_embed(),
-            view=MainPanelView()
-        )
-        set_config(
-            interaction.guild.id,
-            panel_channel_id=interaction.channel.id,
-            panel_message_id=msg.id
-        )
-
-        await interaction.response.send_message("✅ تم نشر لوحة التحكم هنا.", ephemeral=True)
-
-
-# -----------------------------
-# Slash commands
-# -----------------------------
-@bot.tree.command(name="لوحه", description="فتح لوحة التحكم الخاصة بنظام Crown Dream")
-async def panel_command(interaction: discord.Interaction):
-    await interaction.response.send_message(
-        embed=main_panel_embed(),
-        view=MainPanelView()
-    )
-
-
-@bot.tree.command(name="تفعيل", description="تفعيل عضو مع PSN ID")
-@app_commands.describe(member="العضو", psn="PSN ID")
-async def activation_command(interaction: discord.Interaction, member: discord.Member, psn: str):
-    if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ هذا الأمر للإدارة فقط.", ephemeral=True)
-
-    if len(psn) > 80:
-        return await interaction.response.send_message("❌ PSN طويل جداً.", ephemeral=True)
-
-    add_points(interaction.guild.id, interaction.user.id, 10)
-
-    db.execute(
-        "INSERT INTO activations(guild_id,member_id,psn,activated_by,created_at) VALUES(?,?,?,?,?)",
-        (
-            interaction.guild.id,
-            member.id,
-            psn,
-            interaction.user.id,
-            datetime.utcnow().isoformat()
-        )
-    )
-    db.commit()
-
-    await interaction.response.send_message(
-        embed=embed(
-            "تم التفعيل ✅",
-            f"العضو: {member.mention}\n"
-            f"PSN: `{psn}`\n"
-            f"المفعل: {interaction.user.mention}\n"
-            "تمت إضافة **10 نقاط** للمسؤول.",
-            discord.Color.green()
-        )
-    )
-
-
-@bot.tree.command(name="نقاط", description="عرض نقاط عضو")
-@app_commands.describe(member="العضو")
-async def points_command(interaction: discord.Interaction, member: discord.Member | None = None):
-    target = member or interaction.user
-    points = get_points(interaction.guild.id, target.id)
-
-    await interaction.response.send_message(
-        embed=embed(
-            "النقاط ⭐",
-            f"العضو: {target.mention}\nالرصيد: **{points} نقطة**",
-            discord.Color.gold()
-        ),
-        ephemeral=True
-    )
-
-
-@bot.tree.command(name="اعطاء", description="إعطاء نقاط لعضو")
-@app_commands.describe(member="العضو", amount="عدد النقاط", reason="السبب")
-async def give_points_command(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    amount: int,
-    reason: str = "بدون سبب"
-):
-    if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ للإدارة فقط.", ephemeral=True)
-
-    if amount <= 0 or amount > 10000:
-        return await interaction.response.send_message("❌ العدد يجب أن يكون بين 1 و10000.", ephemeral=True)
-
-    total = add_points(interaction.guild.id, member.id, amount)
-
-    await interaction.response.send_message(
-        embed=embed(
-            "تم إعطاء النقاط ✅",
-            f"العضو: {member.mention}\n"
-            f"الزيادة: **+{amount}**\n"
-            f"السبب: {reason}\n"
-            f"الرصيد الجديد: **{total}**",
-            discord.Color.green()
-        )
-    )
-
-
-@bot.tree.command(name="خصم", description="خصم نقاط من عضو")
-@app_commands.describe(member="العضو", amount="عدد النقاط", reason="السبب")
-async def remove_points_command(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    amount: int,
-    reason: str = "بدون سبب"
-):
-    if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ للإدارة فقط.", ephemeral=True)
-
-    if amount <= 0 or amount > 10000:
-        return await interaction.response.send_message("❌ العدد يجب أن يكون بين 1 و10000.", ephemeral=True)
-
-    total = add_points(interaction.guild.id, member.id, -amount)
-
-    await interaction.response.send_message(
-        embed=embed(
-            "تم خصم النقاط",
-            f"العضو: {member.mention}\n"
-            f"الخصم: **-{amount}**\n"
-            f"السبب: {reason}\n"
-            f"الرصيد الجديد: **{total}**",
-            discord.Color.red()
-        )
-    )
-
-
-@bot.tree.command(name="اعداد", description="إعداد نظام Crown Dream")
-async def setup_command(interaction: discord.Interaction):
-    if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ للإدارة فقط.", ephemeral=True)
-
-    await interaction.response.send_message(
-        embed=embed("إعداد النظام", "اختر العملية من الأزرار."),
-        view=SetupView(),
-        ephemeral=True
-    )
-
-
-# -----------------------------
-# Prefix compatibility commands
-# -----------------------------
-@bot.command(name="لوحه")
-@commands.has_guild_permissions(administrator=True)
-async def old_panel(ctx):
-    await ctx.send(embed=main_panel_embed(), view=MainPanelView())
-
-
-@bot.command(name="نقاطي")
-async def old_points(ctx):
-    points = get_points(ctx.guild.id, ctx.author.id)
-    await ctx.send(f"{ctx.author.mention} نقاطك الحالية: **{points}**")
-
-
-# -----------------------------
-# Error handling
-# -----------------------------
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if interaction.response.is_done():
-        return
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ ما عندك الصلاحية.", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"❌ حدث خطأ: `{error}`", ephemeral=True)
-
-
-@old_panel.error
-async def old_panel_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ هذا الأمر للإدارة فقط.", delete_after=5)
-
-
-# -----------------------------
-# Startup
-# -----------------------------
-db_init()
+        channel = await guild.create_text_channel(f"تذكرة-{interaction.user.name}", category=category, overwrites=overwrites)
+        
+        select_view = View()
+        select = Select(placeholder="اختر قسم التذكرة", options=[
+            discord.SelectOption(label="الدعم الفني", value="support"),
+            discord.SelectOption(label="الشكاوى", value="complaints"),
+            discord.SelectOption(label="التوظيف", value="employment")
+        ])
+        
+        async def select_callback(inter: discord.Interaction):
+            await inter.response.send_message(f"تم اختيار القسم: {select.values[0]}", ephemeral=True)
+
+        select.callback = select_callback
+        select_view.add_item(select)
+
+        await channel.send(f"مرحباً {interaction.user.mention}, الرجاء اختيار القسم المناسب:", view=select_view)
+        await interaction.response.send_message(f"تم فتح التذكرة بنجاح: {channel.mention}", ephemeral=True)
 
 @bot.event
 async def on_ready():
-    # Persistent views: buttons keep working after restart
-    bot.add_view(MainPanelView())
-    bot.add_view(TicketControlView())
+    print(f"تم تسجيل الدخول بنجاح باسم {bot.user}")
 
-    try:
-        if GUILD_ID:
-            guild_obj = discord.Object(id=GUILD_ID)
-            synced = await bot.tree.sync(guild=guild_obj)
-            print(f"[SYNC] Synced {len(synced)} commands to guild {GUILD_ID}")
-        else:
-            synced = await bot.tree.sync()
-            print(f"[SYNC] Synced {len(synced)} global commands")
-    except Exception as e:
-        print("[SYNC ERROR]", repr(e))
+# 1. نظام التفعيل
+@bot.command(name="تفعيل")
+async def activate_player(ctx, member: discord.Member, player_id: int):
+    cursor.execute("INSERT OR REPLACE INTO players (discord_id, player_id, name, status) VALUES (?, ?, ?, ?)",
+                   (member.id, player_id, member.name, "مفعل"))
+    conn.commit()
+    await ctx.send(f"تم تفعيل اللاعب {member.name} برقم تعريف {player_id}.")
 
-    print("==========================================")
-    print(f"Logged in as: {bot.user} ({bot.user.id})")
-    print("Crown Dream VRP system is ONLINE")
-    print("==========================================")
+# 2. نظام استدعاء اللاعبين
+@bot.command(name="استدعاء")
+async def call_player(ctx, member: discord.Member, *, reason: str):
+    await ctx.send(f"{member.mention}, تم استدعاؤك من قبل الإدارة. السبب: {reason}")
 
+# 3. نظام رتب الوظائف
+@bot.command(name="رتب")
+async def set_rank(ctx, member: discord.Member, job: str, rank: str):
+    if job in JOBS and rank in JOBS[job]:
+        cursor.execute("UPDATE players SET job = ?, rank = ? WHERE discord_id = ?", (job, rank, member.id))
+        conn.commit()
+        await ctx.send(f"تم تعيين الرتبة {rank} في وظيفة {job} للمستخدم {member.name}.")
+    else:
+        await ctx.send("الوظيفة أو الرتبة غير صحيحة.")
 
-if __name__ == "__main__":
-    bot.run(TOKEN)
+# 4. عرض اسماء اللاعبين المرتبطين
+@bot.command(name="اسماء")
+async def list_players(ctx):
+    cursor.execute("SELECT player_id, name, job, rank FROM players")
+    rows = cursor.fetchall()
+    if not rows:
+        await ctx.send("لا يوجد لاعبين مسجلين.")
+        return
+    
+    msg = "قائمة اللاعبين المسجلين:\n"
+    for row in rows:
+        msg += f"الرقم: {row[0]} | الاسم: {row[1]} | الوظيفة: {row[2]} | الرتبة: {row[3]}\n"
+    await ctx.send(msg)
+
+# 5. التوظيف
+@bot.command(name="توظيف")
+async def employ_player(ctx, member: discord.Member, job: str):
+    if job in JOBS:
+        default_rank = JOBS[job][0]
+        cursor.execute("UPDATE players SET job = ?, rank = ? WHERE discord_id = ?", (job, default_rank, member.id))
+        conn.commit()
+        await ctx.send(f"تم توظيف {member.name} في وظيفة {job} برتبة {default_rank}.")
+    else:
+        await ctx.send("الوظيفة غير موجودة.")
+
+# 6. التقاعد
+@bot.command(name="تقاعد")
+async def retire_player(ctx, member: discord.Member):
+    cursor.execute("UPDATE players SET job = 'متقاعد', rank = 'مفصول' WHERE discord_id = ?", (member.id,))
+    conn.commit()
+    await ctx.send(f"تم إحالة اللاعب {member.name} إلى التقاعد.")
+
+# 7. الاستقالة
+@bot.command(name="استقالة")
+async def resign_player(ctx):
+    cursor.execute("UPDATE players SET job = 'مواطن', rank = 'بدون' WHERE discord_id = ?", (ctx.author.id,))
+    conn.commit()
+    await ctx.send("تم قبول استقالتك وعودتك كمواطن.")
+
+# 8. إخلاء الموقع أو المكان
+@bot.command(name="إخلاء")
+async def evacuate_area(ctx, *, location: str):
+    await ctx.send(f"تنبيه إداري: يرجى إخلاء الموقع التالي فورا: {location}")
+
+# 9. حجز اللاعبين أو الأصول
+@bot.command(name="حجز")
+async def detain_player(ctx, member: discord.Member, *, reason: str):
+    cursor.execute("UPDATE players SET penalties = penalties + 1 WHERE discord_id = ?", (member.id,))
+    conn.commit()
+    await ctx.send(f"تم حجز اللاعب {member.name}. السبب: {reason}")
+
+# 10. تأكيد العمليات
+@bot.command(name="تأكيد")
+async def confirm_action(ctx, *, action_name: str):
+    await ctx.send(f"تم تأكيد عملية: {action_name} بنجاح بواسطة {ctx.author.name}.")
+
+# نظام النقاط: إضافة أو خصم
+@bot.command(name="نقاط")
+async def manage_points(ctx, member: discord.Member, amount: int, *, reason: str):
+    cursor.execute("UPDATE players SET points = points + ? WHERE discord_id = ?", (amount, member.id))
+    cursor.execute("INSERT INTO points_log (admin_id, player_id, amount, reason) VALUES (?, ?, ?, ?)",
+                   (ctx.author.id, member.id, amount, reason))
+    conn.commit()
+    await ctx.send(f"تم تعديل نقاط اللاعب {member.name} بقيمة {amount}. السبب: {reason}")
+
+# ربط VRP (قراءة بيانات من القاعدة وقاعدة بيانات خارجية وهمية)
+@bot.command(name="vrp")
+async def vrp_data(ctx, player_id: int):
+    cursor.execute("SELECT player_id, name, status, job, rank, balance FROM players WHERE player_id = ?", (player_id,))
+    row = cursor.fetchone()
+    if row:
+        response = (
+            f"بيانات اللاعب من النظام:\n"
+            f"رقم اللاعب: {row[0]}\n"
+            f"الاسم: {row[1]}\n"
+            f"الحالة: {row[2]}\n"
+            f"الوظيفة: {row[3]}\n"
+            f"الرتبة: {row[4]}\n"
+            f"الرصيد: {row[5]}"
+        )
+        await ctx.send(response)
+    else:
+        await ctx.send("لم يتم العثور على بيانات لهذا اللاعب في قاعدة البيانات.")
+
+# أمر لعرض لوحة التذاكر
+@bot.command(name="تذاكر")
+async def setup_tickets(ctx):
+    await ctx.send("اضغط على الزر أدناه لفتح تذكرة جديدة:", view=TicketView())
+
+# تشغيل البوت (ضع التوكن الخاص بك هنا)
+# bot.run("YOUR_BOT_TOKEN")
+import os
+
+bot.run(os.getenv("DISCORD_TOKEN"))

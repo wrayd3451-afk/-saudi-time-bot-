@@ -105,5 +105,5 @@ async def gamepanel(interaction: discord.Interaction):
   )
 
 
-# تشغيل البوت (ضع توكن بوتك هنا بدل النص التجريبي)
-bot.run("YOUR_BOT_TOKEN")
+# تشغيل البوت باستخدام السيكريتس في رندر
+bot.run(os.getenv("TOKEN"))

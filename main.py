@@ -1,12 +1,11 @@
 import discord
 from discord.ext import commands, tasks
-import os
 import sqlite3
 
 # =====================================================================
-# إعدادات البوت والبيانات الأساسية
+# إعدادات البوت والبيانات الأساسية (التوكن مباشر هنا)
 # =====================================================================
-TOKEN = os.getenv("TOKEN")
+TOKEN = "YOUR_BOT_TOKEN_HERE"  # <--- امسح الكلام وحط توكنك هنا
 PREFIX = "!"
 
 intents = discord.Intents.default()
@@ -61,8 +60,8 @@ async def on_ready():
     print(f" تم تشغيل السيرفر الأسطوري بنجاح: {bot.user.name} 🔥")
     print(f" جميع الأنظمة (الهويات، التذاكر، البنك، السجل، الرواتب) شغالين!")
     print(f"----------------------------------------")
-    # تشغيل نظام توزيع الرواتب التلقائي في الخلفية
-    auto_salary.start()
+    if not auto_salary.is_running():
+        auto_salary.start()
 
 
 # =====================================================================
@@ -85,13 +84,11 @@ JOBS_LIST = {
 @commands.has_permissions(manage_roles=True)
 async def create_id(ctx, member: discord.Member, game_id: int, job_name: str = "مواطن", *, rank_name: str = "مستجد"):
     try:
-        # تسجيل أو تحديث الهوية
         db_cursor.execute(
             "INSERT OR REPLACE INTO player_ids (discord_id, game_id, job, rank, status) VALUES (?, ?, ?, ?, ?)",
             (member.id, game_id, job_name, rank_name, "مفعل")
         )
         
-        # إنشاء حساب بنكي تلقائي مع الهوية
         acc_num = f"SA-VRP-{game_id}"
         db_cursor.execute(
             "INSERT OR IGNORE INTO bank_accounts (discord_id, account_number, balance) VALUES (?, ?, ?)",
@@ -121,15 +118,12 @@ async def show_id(ctx, member: discord.Member = None):
     if member is None:
         member = ctx.author
 
-    # جلب بيانات الهوية
     db_cursor.execute("SELECT game_id, job, rank, status, created_date FROM player_ids WHERE discord_id = ?", (member.id,))
     p_data = db_cursor.fetchone()
 
-    # جلب بيانات البنك
     db_cursor.execute("SELECT account_number, balance, is_frozen FROM bank_accounts WHERE discord_id = ?", (member.id,))
     b_data = db_cursor.fetchone()
 
-    # جلب عدد المخالفات الأمنية
     db_cursor.execute("SELECT COUNT(*) FROM criminal_records WHERE target_id = ?", (member.id,))
     violations_count = db_cursor.fetchone()[0]
 
@@ -224,7 +218,10 @@ async def setup_tickets(ctx):
     )
     embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
     await ctx.send(embed=embed, view=TicketView())
-    await ctx.message.delete()
+    try:
+        await ctx.message.delete()
+    except discord.Forbidden:
+        pass
 
 
 # =====================================================================
@@ -344,8 +341,5 @@ async def check_ping(ctx):
     await ctx.send(f"🏓 سرعة استجابة البوت: **{latency}ms** (السيرفر الأسطوري يعمل بكفاءة 🔥)")
 
 
-# تشغيل البوت عبر التوكن في Secrets
-if TOKEN:
-    bot.run(TOKEN)
-else:
-    print("❌ خطأ: لم يتم العثور على التوكن في متغيرات البيئة (Secrets)!")
+# تشغيل البوت مباشرة بالتوكن
+bot.run(TOKEN)

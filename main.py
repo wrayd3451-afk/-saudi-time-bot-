@@ -1,345 +1,748 @@
-import discord
-from discord.ext import commands, tasks
-import sqlite3
+/**
+ * ===================================================================
+ *  بوت إدارة سيرفر رول بلاي (FiveM) - ملف واحد شامل
+ * ===================================================================
+ *  يحتوي:
+ *   - إدارة السيرفر: تفعيل / استدعاء / رتب / اسماء / توظيف / تقاعد /
+ *                     استقالة / إخلاء / حجز / تأكيد
+ *   - نظام الوظائف الست + رتب وصلاحيات
+ *   - نظام اللاعبين (ربط ديسكورد بهوية اللاعب، حالة، نقاط، سجل، عقوبات)
+ *   - نظام التذاكر الكامل (فتح/استلام/تحويل/إغلاق/Transcript/Logs)
+ *   - نظام النقاط (إضافة/خصم/سجل/ترقيات)
+ *   - نظام VRP (قراءة اختيارية من قاعدة بيانات السيرفر عبر MySQL)
+ *
+ *  التشغيل:
+ *   1) npm install
+ *   2) انسخ .env.example إلى .env واملأ القيم
+ *   3) node index.js
+ * ===================================================================
+ */
 
-# =====================================================================
-# إعدادات البوت والبيانات الأساسية (حط توكنك هنا مباشرة)
-# =====================================================================
-TOKEN = "حط_التوكن_هنا_بين_العلامتين"
-PREFIX = "!"
+require('dotenv').config();
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  ChannelType,
+  AttachmentBuilder,
+} = require('discord.js');
+const Database = require('better-sqlite3');
+const path = require('path');
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.members = True
+// ===================================================================
+// 1) الإعدادات العامة
+// ===================================================================
+const CONFIG = {
+  token: process.env.DISCORD_TOKEN,
+  clientId: process.env.CLIENT_ID,
+  guildId: process.env.GUILD_ID,
+  logChannelId: process.env.LOG_CHANNEL_ID || null,
+  ticketLogChannelId: process.env.TICKET_LOG_CHANNEL_ID || null,
+  adminRoleId: process.env.ADMIN_ROLE_ID || null,
+  activeRoleId: process.env.ACTIVE_ROLE_ID || null,
+  // نقاط مطلوبة للترقية للرتبة التالية داخل نفس الوظيفة (عدّلها كما تحب)
+  pointsPerRank: 100,
+  vrp: {
+    enabled: (process.env.VRP_ENABLED || 'false').toLowerCase() === 'true',
+    host: process.env.VRP_DB_HOST || 'localhost',
+    port: Number(process.env.VRP_DB_PORT || 3306),
+    user: process.env.VRP_DB_USER || 'root',
+    password: process.env.VRP_DB_PASSWORD || '',
+    database: process.env.VRP_DB_NAME || '',
+    table: process.env.VRP_TABLE_USERS || 'users',
+    colIdentifier: process.env.VRP_COL_IDENTIFIER || 'identifier',
+    colMoney: process.env.VRP_COL_MONEY || 'bank',
+    colJob: process.env.VRP_COL_JOB || 'job',
+  },
+};
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+// ===================================================================
+// 2) تعريف الوظائف والرتب
+// ===================================================================
+const JOBS = {
+  military: { name: 'العسكرية', emoji: '👮', ranks: ['متطوع', 'جندي', 'عريف', 'رقيب', 'ملازم', 'نقيب', 'قائد'] },
+  law: { name: 'القانون', emoji: '⚖️', ranks: ['متدرب', 'محامي', 'مستشار', 'قاضي مساعد', 'قاضي', 'رئيس المحكمة'] },
+  crime: { name: 'الإجرام', emoji: '🔫', ranks: ['مبتدئ', 'عضو', 'موثوق', 'يد يمنى', 'زعيم'] },
+  media: { name: 'الإعلام', emoji: '📺', ranks: ['متدرب', 'مراسل', 'محرر', 'رئيس تحرير'] },
+  ems: { name: 'الإسعاف', emoji: '🚑', ranks: ['متدرب', 'مسعف', 'ممرض', 'طبيب', 'رئيس الأطباء'] },
+  civil: { name: 'الوظائف المدنية', emoji: '🚕', ranks: ['موظف', 'موظف أول', 'مشرف'] },
+};
 
-# إعداد قاعدة البيانات الشاملة SQLite
-db_conn = sqlite3.connect("server_database.db")
-db_cursor = db_conn.cursor()
-
-# 1. جدول الهويات واللاعبين والوظائف
-db_cursor.execute("""
-CREATE TABLE IF NOT EXISTS player_ids (
-    discord_id INTEGER PRIMARY KEY,
-    game_id INTEGER UNIQUE,
-    job TEXT DEFAULT 'مواطن',
-    rank TEXT DEFAULT 'مستجد',
-    status TEXT DEFAULT 'مفعل',
-    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-# 2. جدول النظام البنكي والمالي
-db_cursor.execute("""
-CREATE TABLE IF NOT EXISTS bank_accounts (
-    discord_id INTEGER PRIMARY KEY,
-    account_number TEXT UNIQUE,
-    balance REAL DEFAULT 1000.0,
-    is_frozen INTEGER DEFAULT 0
-)
-""")
-
-# 3. جدول السجل الأمني والمخالفات (MDC System)
-db_cursor.execute("""
-CREATE TABLE IF NOT EXISTS criminal_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_id INTEGER,
-    officer_id INTEGER,
-    reason TEXT,
-    date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-db_conn.commit()
-
-
-@bot.event
-async def on_ready():
-    print(f"----------------------------------------")
-    print(f" تم تشغيل السيرفر الأسطوري بنجاح: {bot.user.name} 🔥")
-    print(f" جميع الأنظمة (الهويات، التذاكر، البنك، السجل، الرواتب) شغالين!")
-    print(f"----------------------------------------")
-    if not auto_salary.is_running():
-        auto_salary.start()
-
-
-# =====================================================================
-# قائمة الوظائف والرواتب المعتمدة
-# =====================================================================
-JOBS_LIST = {
-    "عسكرية": {"name": "👮 العسكرية", "salary": 1500},
-    "قانون": {"name": "⚖️ القانون", "salary": 1400},
-    "إجرام": {"name": "🔫 الإجرام", "salary": 800},
-    "إعلام": {"name": "📺 الإعلام", "salary": 1000},
-    "إسعاف": {"name": "🚑 الإسعاف", "salary": 1300},
-    "مدنية": {"name": "🚕 الوظائف المدنية", "salary": 900}
+function jobChoices() {
+  return Object.entries(JOBS).map(([key, j]) => ({ name: `${j.emoji} ${j.name}`, value: key }));
 }
 
+// ===================================================================
+// 3) قاعدة البيانات (SQLite - ملف واحد: data.sqlite)
+// ===================================================================
+const db = new Database(path.join(__dirname, 'data.sqlite'));
+db.pragma('journal_mode = WAL');
 
-# =====================================================================
-# 1. نظام الهويات وصورة البطاقة (ID Card System)
-# =====================================================================
-@bot.command(name="صنع_هوية", aliases=["إنشاء_هوية", "تفعيل"])
-@commands.has_permissions(manage_roles=True)
-async def create_id(ctx, member: discord.Member, game_id: int, job_name: str = "مواطن", *, rank_name: str = "مستجد"):
-    try:
-        db_cursor.execute(
-            "INSERT OR REPLACE INTO player_ids (discord_id, game_id, job, rank, status) VALUES (?, ?, ?, ?, ?)",
-            (member.id, game_id, job_name, rank_name, "مفعل")
-        )
-        
-        acc_num = f"SA-VRP-{game_id}"
-        db_cursor.execute(
-            "INSERT OR IGNORE INTO bank_accounts (discord_id, account_number, balance) VALUES (?, ?, ?)",
-            (member.id, acc_num, 5000.0)
-        )
-        db_conn.commit()
+db.exec(`
+CREATE TABLE IF NOT EXISTS players (
+  discord_id   TEXT PRIMARY KEY,
+  player_id    TEXT,
+  active       INTEGER DEFAULT 0,
+  job          TEXT,
+  rank_index   INTEGER DEFAULT 0,
+  points       INTEGER DEFAULT 0,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
 
-        embed = discord.Embed(
-            title="🪪 نظام الهويات الرسمي | إصدار بطاقة",
-            description=f"تم إصدار الهوية الحكومية وفتح الحساب البنكي للعضو {member.mention} بنجاح!",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="🆔 رقم الـ ID", value=f"**{game_id}**", inline=True)
-        embed.add_field(name="💼 الوظيفة", value=f"**{job_name}**", inline=True)
-        embed.add_field(name="⭐ الرتبة", value=f"**{rank_name}**", inline=True)
-        embed.add_field(name="🏦 رقم الحساب", value=f"`{acc_num}`", inline=False)
-        embed.set_footer(text=f"بواسطة الإداري: {ctx.author.display_name}")
+CREATE TABLE IF NOT EXISTS records (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id   TEXT,
+  type         TEXT,     -- hire, fire, resign, retire, points_add, points_sub, penalty, note, activate
+  detail       TEXT,
+  moderator_id TEXT,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
 
-        await ctx.send(embed=embed)
+CREATE TABLE IF NOT EXISTS reservations (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  type         TEXT,
+  details      TEXT,
+  requested_by TEXT,
+  status       TEXT DEFAULT 'pending', -- pending, confirmed, rejected
+  confirmed_by TEXT,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
 
-    except sqlite3.IntegrityError:
-        await ctx.send(f"❌ عذراً، رقم الـ ID (**{game_id}**) أو اللاعب مسجل مسبقاً في النظام!")
+CREATE TABLE IF NOT EXISTS tickets (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id   TEXT UNIQUE,
+  user_id      TEXT,
+  department   TEXT,
+  status       TEXT DEFAULT 'open', -- open, claimed, closed
+  claimed_by   TEXT,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  closed_at    TEXT
+);
 
+CREATE TABLE IF NOT EXISTS ticket_config (
+  guild_id     TEXT PRIMARY KEY,
+  category_id  TEXT
+);
+`);
 
-@bot.command(name="id", aliases=["هويتي", "ملفي"])
-async def show_id(ctx, member: discord.Member = None):
-    if member is None:
-        member = ctx.author
+// دوال مساعدة لقاعدة البيانات
+function getPlayer(discordId) {
+  let row = db.prepare('SELECT * FROM players WHERE discord_id = ?').get(discordId);
+  if (!row) {
+    db.prepare('INSERT INTO players (discord_id) VALUES (?)').run(discordId);
+    row = db.prepare('SELECT * FROM players WHERE discord_id = ?').get(discordId);
+  }
+  return row;
+}
 
-    db_cursor.execute("SELECT game_id, job, rank, status, created_date FROM player_ids WHERE discord_id = ?", (member.id,))
-    p_data = db_cursor.fetchone()
+function updatePlayer(discordId, fields) {
+  getPlayer(discordId); // تضمن وجود الصف
+  const keys = Object.keys(fields);
+  if (keys.length === 0) return;
+  const setClause = keys.map((k) => `${k} = ?`).join(', ');
+  const values = keys.map((k) => fields[k]);
+  db.prepare(`UPDATE players SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?`).run(...values, discordId);
+}
 
-    db_cursor.execute("SELECT account_number, balance, is_frozen FROM bank_accounts WHERE discord_id = ?", (member.id,))
-    b_data = db_cursor.fetchone()
+function addRecord(discordId, type, detail, moderatorId) {
+  db.prepare('INSERT INTO records (discord_id, type, detail, moderator_id) VALUES (?, ?, ?, ?)').run(discordId, type, detail || '', moderatorId || null);
+}
 
-    db_cursor.execute("SELECT COUNT(*) FROM criminal_records WHERE target_id = ?", (member.id,))
-    violations_count = db_cursor.fetchone()[0]
+// ===================================================================
+// 4) ربط اختياري بقاعدة بيانات VRP (MySQL) - لقراءة بيانات اللاعب من السيرفر
+// ===================================================================
+let mysqlPool = null;
+if (CONFIG.vrp.enabled) {
+  const mysql = require('mysql2/promise');
+  mysqlPool = mysql.createPool({
+    host: CONFIG.vrp.host,
+    port: CONFIG.vrp.port,
+    user: CONFIG.vrp.user,
+    password: CONFIG.vrp.password,
+    database: CONFIG.vrp.database,
+    waitForConnections: true,
+    connectionLimit: 5,
+  });
+  console.log('[VRP] الاتصال بقاعدة بيانات السيرفر مُفعّل.');
+}
 
-    embed = discord.Embed(title=f"🪪 بطاقة الهوية الشخصية", color=discord.Color.gold())
-    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+/**
+ * يجلب بيانات اللاعب من قاعدة بيانات السيرفر (VRP/ESX/QBCore) عبر identifier.
+ * ⚠️ عدّل اسم الجدول والأعمدة في .env حسب مخطط قاعدة بياناتك الفعلي،
+ * لأن أسماء الجداول تختلف بين vRP وESX وQBCore.
+ */
+async function getVrpPlayerData(identifier) {
+  if (!mysqlPool) return null;
+  try {
+    const [rows] = await mysqlPool.query(
+      `SELECT ${CONFIG.vrp.colIdentifier} AS identifier, ${CONFIG.vrp.colMoney} AS money, ${CONFIG.vrp.colJob} AS job
+       FROM ${CONFIG.vrp.table} WHERE ${CONFIG.vrp.colIdentifier} = ? LIMIT 1`,
+      [identifier]
+    );
+    return rows[0] || null;
+  } catch (err) {
+    console.error('[VRP] خطأ في الاستعلام:', err.message);
+    return null;
+  }
+}
 
-    if not p_data:
-        embed.description = f"العضو {member.mention} لا يمتلك بطاقة هوية مسجلة في النظام."
-        embed.color = discord.Color.red()
-        embed.add_field(name="📌 الحالة", value="غير مسجل (يحتاج إصدار هوية من الإدارة)", inline=False)
-    else:
-        game_id, job, rank, status, created_date = p_data
-        acc_num = b_data[0] if b_data else "لا يوجد"
-        balance = b_data[1] if b_data else 0.0
-        is_frozen = b_data[2] if b_data else 0
+// ===================================================================
+// 5) إعداد عميل الديسكورد
+// ===================================================================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [Partials.Channel],
+});
 
-        bank_status = "🔒 مجمد" if is_frozen == 1 else f"${balance:,.2f}"
-        security_status = f"🚨 عليه {violations_count} مخالفة" if violations_count > 0 else "🟢 السجل نظيف"
+function isAdmin(interaction) {
+  if (interaction.member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  if (CONFIG.adminRoleId && interaction.member.roles.cache.has(CONFIG.adminRoleId)) return true;
+  return false;
+}
 
-        embed.description = f"بطاقة هوية رسمية معتمدة للمواطن: **{member.display_name}**"
-        embed.add_field(name="🆔 رقم اللاعب (ID)", value=f"`{game_id}`", inline=True)
-        embed.add_field(name="📌 الحالة", value=f"🟢 {status}", inline=True)
-        embed.add_field(name="💼 الوظيفة", value=f"**{job}**", inline=True)
-        embed.add_field(name="⭐ الرتبة", value=f"**{rank}**", inline=True)
-        embed.add_field(name="🏦 الرصيد المالي", value=f"**{bank_status}**", inline=True)
-        embed.add_field(name="📋 رقم الحساب", value=f"`{acc_num}`", inline=True)
-        embed.add_field(name="🛡️ السجل الأمني", value=security_status, inline=False)
+async function denyNotAdmin(interaction) {
+  await interaction.reply({ content: '❌ ما عندك صلاحية استخدام هذا الأمر.', ephemeral: true });
+}
 
-    embed.set_footer(text=f"طلب بواسطة: {ctx.author.display_name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    await ctx.send(embed=embed)
+async function sendLog(embed) {
+  if (!CONFIG.logChannelId) return;
+  try {
+    const channel = await client.channels.fetch(CONFIG.logChannelId);
+    if (channel) await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error('[Log] تعذر إرسال اللوق:', err.message);
+  }
+}
 
+function baseEmbed(title, color = 0x2b6cff) {
+  return new EmbedBuilder().setTitle(title).setColor(color).setTimestamp();
+}
 
-# =====================================================================
-# 2. نظام التذاكر والخدمات (Tickets System)
-# =====================================================================
-class DepartmentSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="الدعم الفني العام", emoji="🛠️", description="استفسارات ومشاكل الديسكورد"),
-            discord.SelectOption(label="قسم التوظيف", emoji="📋", description="التقديم على العسكرية والوظائف"),
-            discord.SelectOption(label="شكاوى الإدارة", emoji="⚖️", description="لتقديم شكوى أو استفسار إداري"),
-            discord.SelectOption(label="شؤون البنك والمالية", emoji="🏦", description="مواضيع الحسابات والتحويلات المالية")
-        ]
-        super().__init__(placeholder="اختر القسم المناسب لفتح تذكرتك...", min_values=1, max_values=1, options=options)
+// ===================================================================
+// 6) تعريف أوامر Slash
+// ===================================================================
+const commands = [
+  // ---------- إدارة السيرفر ----------
+  new SlashCommandBuilder()
+    .setName('تفعيل')
+    .setDescription('تفعيل عضوية لاعب في السيرفر')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو المطلوب تفعيله').setRequired(true)),
 
-    async def callback(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="TICKETS SYSTEM")
-        if not category:
-            category = await guild.create_category("TICKETS SYSTEM")
+  new SlashCommandBuilder()
+    .setName('استدعاء')
+    .setDescription('استدعاء عضو من قبل الإدارة')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو المطلوب استدعاؤه').setRequired(true))
+    .addStringOption((o) => o.setName('السبب').setDescription('سبب الاستدعاء').setRequired(true)),
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        }
+  new SlashCommandBuilder()
+    .setName('رتب')
+    .setDescription('تعديل رتبة اللاعب داخل وظيفته الحالية')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو').setRequired(true))
+    .addIntegerOption((o) => o.setName('الرتبة').setDescription('رقم الرتبة (0 = الأدنى)').setRequired(true).setMinValue(0)),
 
-        channel = await guild.create_text_channel(f"ticket-{interaction.user.name}", overwrites=overwrites, category=category)
-        
-        embed = discord.Embed(
-            title=f"🎫 تذكرة جديدة - القسم: {self.values[0]}",
-            description=f"أهلاً بك {interaction.user.mention}!\nتم فتح التذكرة بنجاح. يرجى توضيح طلبك بالكامل وسنتواجد لخدمتك قريباً.",
-            color=discord.Color.blue()
-        )
-        await channel.send(embed=embed, view=TicketControlView())
-        await interaction.response.send_message(f"تم إنشاء تذكرتك بنجاح في الغرفة: {channel.mention}", ephemeral=True)
+  new SlashCommandBuilder()
+    .setName('اسماء')
+    .setDescription('عرض قائمة اللاعبين المسجلين'),
 
+  new SlashCommandBuilder()
+    .setName('توظيف')
+    .setDescription('توظيف عضو في إحدى الوظائف')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو').setRequired(true))
+    .addStringOption((o) => o.setName('الوظيفة').setDescription('الوظيفة').setRequired(true).addChoices(...jobChoices())),
 
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(DepartmentSelect())
+  new SlashCommandBuilder()
+    .setName('تقاعد')
+    .setDescription('إنهاء خدمة اللاعب (تقاعد)')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو').setRequired(true)),
 
+  new SlashCommandBuilder()
+    .setName('استقالة')
+    .setDescription('تقديم استقالة عضو من وظيفته')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو').setRequired(true)),
 
-class TicketControlView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+  new SlashCommandBuilder()
+    .setName('إخلاء')
+    .setDescription('إخلاء طرف / فصل عضو من وظيفته')
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو').setRequired(true))
+    .addStringOption((o) => o.setName('السبب').setDescription('سبب الإخلاء').setRequired(true)),
 
-    @discord.ui.button(label="🔒 إغلاق التذكرة", style=discord.ButtonStyle.danger, custom_id="close_ticket")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("⚠️ جاري إغلاق الغرفة...")
-        await interaction.channel.delete()
+  new SlashCommandBuilder()
+    .setName('حجز')
+    .setDescription('تقديم طلب حجز (اسم/رقم/موعد..)')
+    .addStringOption((o) => o.setName('النوع').setDescription('نوع الحجز').setRequired(true))
+    .addStringOption((o) => o.setName('التفاصيل').setDescription('تفاصيل الحجز').setRequired(true)),
 
+  new SlashCommandBuilder()
+    .setName('تأكيد')
+    .setDescription('تأكيد طلب حجز عبر رقمه')
+    .addIntegerOption((o) => o.setName('رقم_الطلب').setDescription('رقم طلب الحجز').setRequired(true)),
 
-@bot.command(name="تذاكر")
-@commands.has_permissions(administrator=True)
-async def setup_tickets(ctx):
-    embed = discord.Embed(
-        title="📌 مركز المساعدة والتذاكر الرسمي",
-        description="إذا احتجت أي استفسار، تفعيل، توظيف، أو خدمات بنكية، اختر القسم المناسب من القائمة بالأسفل لفتح تذكرة.",
-        color=discord.Color.gold()
+  // ---------- نظام اللاعبين ----------
+  new SlashCommandBuilder()
+    .setName('ربط')
+    .setDescription('ربط حسابك في الديسكورد برقم هويتك داخل السيرفر')
+    .addStringOption((o) => o.setName('رقم_اللاعب').setDescription('معرف/هوية اللاعب (identifier)').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('بطاقة')
+    .setDescription('عرض بطاقة بيانات لاعب (الوظيفة، الرتبة، النقاط، السجل)')
+    .addUserOption((o) => o.setName('العضو').setDescription('اتركه فارغًا لعرض بطاقتك').setRequired(false)),
+
+  // ---------- نظام النقاط ----------
+  new SlashCommandBuilder()
+    .setName('نقاط')
+    .setDescription('إضافة أو خصم نقاط من عضو')
+    .addStringOption((o) =>
+      o.setName('العملية').setDescription('إضافة أو خصم').setRequired(true).addChoices({ name: 'إضافة', value: 'add' }, { name: 'خصم', value: 'sub' })
     )
-    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
-    await ctx.send(embed=embed, view=TicketView())
-    try:
-        await ctx.message.delete()
-    except discord.Forbidden:
-        pass
+    .addUserOption((o) => o.setName('العضو').setDescription('العضو').setRequired(true))
+    .addIntegerOption((o) => o.setName('العدد').setDescription('عدد النقاط').setRequired(true).setMinValue(1))
+    .addStringOption((o) => o.setName('السبب').setDescription('سبب إضافة/خصم النقاط').setRequired(false)),
+
+  // ---------- نظام التذاكر ----------
+  new SlashCommandBuilder()
+    .setName('تذاكر_اعداد')
+    .setDescription('نشر لوحة فتح التذاكر في هذه القناة (للإدارة فقط)')
+    .addChannelOption((o) => o.setName('التصنيف').setDescription('تصنيف (Category) إنشاء التذاكر بداخله').addChannelTypes(ChannelType.GuildCategory).setRequired(false)),
+].map((c) => c.toJSON());
+
+// ===================================================================
+// 7) تسجيل الأوامر عند الإقلاع
+// ===================================================================
+client.once('ready', async () => {
+  console.log(`✅ تم تسجيل الدخول باسم ${client.user.tag}`);
+  try {
+    const rest = new REST({ version: '10' }).setToken(CONFIG.token);
+    await rest.put(Routes.applicationGuildCommands(CONFIG.clientId, CONFIG.guildId), { body: commands });
+    console.log('✅ تم تسجيل جميع الأوامر بنجاح على السيرفر.');
+  } catch (err) {
+    console.error('❌ فشل تسجيل الأوامر:', err);
+  }
+});
+
+// ===================================================================
+// 8) معالجة تفاعلات الأوامر (Slash Commands)
+// ===================================================================
+client.on('interactionCreate', async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      await handleSlashCommand(interaction);
+    } else if (interaction.isStringSelectMenu()) {
+      await handleSelectMenu(interaction);
+    } else if (interaction.isButton()) {
+      await handleButton(interaction);
+    }
+  } catch (err) {
+    console.error('خطأ أثناء معالجة التفاعل:', err);
+    const payload = { content: '⚠️ حدث خطأ غير متوقع أثناء تنفيذ الأمر.', ephemeral: true };
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(payload).catch(() => {});
+    } else {
+      await interaction.reply(payload).catch(() => {});
+    }
+  }
+});
+
+async function handleSlashCommand(interaction) {
+  const { commandName } = interaction;
+
+  // ------------------- /تفعيل -------------------
+  if (commandName === 'تفعيل') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    updatePlayer(member.id, { active: 1 });
+    addRecord(member.id, 'activate', 'تم تفعيل العضوية', interaction.user.id);
+    if (CONFIG.activeRoleId) {
+      const guildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+      if (guildMember) await guildMember.roles.add(CONFIG.activeRoleId).catch(() => {});
+    }
+    const embed = baseEmbed('✅ تفعيل عضوية', 0x2ecc71)
+      .setDescription(`تم تفعيل عضوية ${member} بواسطة ${interaction.user}`);
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+  }
+
+  // ------------------- /استدعاء -------------------
+  else if (commandName === 'استدعاء') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    const reason = interaction.options.getString('السبب');
+    addRecord(member.id, 'summon', reason, interaction.user.id);
+    const embed = baseEmbed('📢 استدعاء إداري', 0xf39c12)
+      .setDescription(`تم استدعاء ${member} بواسطة ${interaction.user}`)
+      .addFields({ name: 'السبب', value: reason });
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+    await member.send({ embeds: [baseEmbed('📢 تم استدعاؤك من قبل الإدارة', 0xf39c12).addFields({ name: 'السبب', value: reason })] }).catch(() => {});
+  }
+
+  // ------------------- /رتب -------------------
+  else if (commandName === 'رتب') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    const rankIndex = interaction.options.getInteger('الرتبة');
+    const player = getPlayer(member.id);
+    if (!player.job || !JOBS[player.job]) {
+      return interaction.reply({ content: '❌ هذا العضو غير موظف حاليًا في أي وظيفة.', ephemeral: true });
+    }
+    const job = JOBS[player.job];
+    if (rankIndex >= job.ranks.length) {
+      return interaction.reply({ content: `❌ أعلى رتبة متاحة في وظيفة ${job.name} هي رقم ${job.ranks.length - 1}.`, ephemeral: true });
+    }
+    updatePlayer(member.id, { rank_index: rankIndex });
+    addRecord(member.id, 'rank_change', `${job.name} -> ${job.ranks[rankIndex]}`, interaction.user.id);
+    const embed = baseEmbed('🎖️ تعديل رتبة', 0x3498db)
+      .setDescription(`تم تعديل رتبة ${member} إلى **${job.ranks[rankIndex]}** في وظيفة ${job.emoji} ${job.name}`);
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+  }
+
+  // ------------------- /اسماء -------------------
+  else if (commandName === 'اسماء') {
+    const rows = db.prepare('SELECT * FROM players WHERE job IS NOT NULL ORDER BY job, rank_index DESC').all();
+    if (rows.length === 0) {
+      return interaction.reply({ content: 'لا يوجد لاعبون مسجلون في أي وظيفة حاليًا.', ephemeral: true });
+    }
+    const grouped = {};
+    for (const r of rows) {
+      grouped[r.job] = grouped[r.job] || [];
+      grouped[r.job].push(r);
+    }
+    const embed = baseEmbed('📋 قائمة الموظفين المسجلين');
+    for (const [jobKey, list] of Object.entries(grouped)) {
+      const job = JOBS[jobKey];
+      if (!job) continue;
+      const lines = list.map((r) => `<@${r.discord_id}> — ${job.ranks[r.rank_index] || 'غير محدد'} (${r.points} نقطة)`);
+      embed.addFields({ name: `${job.emoji} ${job.name}`, value: lines.join('\n').slice(0, 1024) });
+    }
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // ------------------- /توظيف -------------------
+  else if (commandName === 'توظيف') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    const jobKey = interaction.options.getString('الوظيفة');
+    const job = JOBS[jobKey];
+    updatePlayer(member.id, { job: jobKey, rank_index: 0, active: 1 });
+    addRecord(member.id, 'hire', `تم توظيفه في ${job.name}`, interaction.user.id);
+    const embed = baseEmbed('🧑‍💼 توظيف جديد', 0x2ecc71)
+      .setDescription(`تم توظيف ${member} في وظيفة ${job.emoji} **${job.name}** برتبة **${job.ranks[0]}**`);
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+    await member.send({ embeds: [embed] }).catch(() => {});
+  }
+
+  // ------------------- /تقاعد -------------------
+  else if (commandName === 'تقاعد') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    const player = getPlayer(member.id);
+    const jobName = JOBS[player.job]?.name || 'غير محدد';
+    updatePlayer(member.id, { job: null, rank_index: 0 });
+    addRecord(member.id, 'retire', `تقاعد من وظيفة ${jobName}`, interaction.user.id);
+    const embed = baseEmbed('🏅 تقاعد', 0x9b59b6).setDescription(`تم تسجيل تقاعد ${member} من وظيفة **${jobName}**`);
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+  }
+
+  // ------------------- /استقالة -------------------
+  else if (commandName === 'استقالة') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    const player = getPlayer(member.id);
+    const jobName = JOBS[player.job]?.name || 'غير محدد';
+    updatePlayer(member.id, { job: null, rank_index: 0 });
+    addRecord(member.id, 'resign', `استقالة من وظيفة ${jobName}`, interaction.user.id);
+    const embed = baseEmbed('📄 استقالة', 0xe67e22).setDescription(`تم تسجيل استقالة ${member} من وظيفة **${jobName}**`);
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+  }
+
+  // ------------------- /إخلاء -------------------
+  else if (commandName === 'إخلاء') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const member = interaction.options.getUser('العضو');
+    const reason = interaction.options.getString('السبب');
+    const player = getPlayer(member.id);
+    const jobName = JOBS[player.job]?.name || 'غير محدد';
+    updatePlayer(member.id, { job: null, rank_index: 0 });
+    addRecord(member.id, 'fire', `إخلاء طرف من وظيفة ${jobName} - السبب: ${reason}`, interaction.user.id);
+    const embed = baseEmbed('⛔ إخلاء طرف', 0xe74c3c)
+      .setDescription(`تم إخلاء طرف ${member} من وظيفة **${jobName}**`)
+      .addFields({ name: 'السبب', value: reason });
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+    await member.send({ embeds: [embed] }).catch(() => {});
+  }
+
+  // ------------------- /حجز -------------------
+  else if (commandName === 'حجز') {
+    const type = interaction.options.getString('النوع');
+    const details = interaction.options.getString('التفاصيل');
+    const info = db.prepare('INSERT INTO reservations (type, details, requested_by) VALUES (?, ?, ?)').run(type, details, interaction.user.id);
+    const embed = baseEmbed('📌 طلب حجز جديد', 0xf1c40f)
+      .setDescription(`رقم الطلب: **#${info.lastInsertRowid}**`)
+      .addFields({ name: 'النوع', value: type }, { name: 'التفاصيل', value: details }, { name: 'مقدّم الطلب', value: `${interaction.user}` });
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+  }
+
+  // ------------------- /تأكيد -------------------
+  else if (commandName === 'تأكيد') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const id = interaction.options.getInteger('رقم_الطلب');
+    const reservation = db.prepare('SELECT * FROM reservations WHERE id = ?').get(id);
+    if (!reservation) return interaction.reply({ content: '❌ لا يوجد طلب حجز بهذا الرقم.', ephemeral: true });
+    db.prepare("UPDATE reservations SET status = 'confirmed', confirmed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(interaction.user.id, id);
+    const embed = baseEmbed('✅ تأكيد حجز', 0x2ecc71).setDescription(`تم تأكيد طلب الحجز **#${id}** (${reservation.type}) بواسطة ${interaction.user}`);
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+    const requester = await client.users.fetch(reservation.requested_by).catch(() => null);
+    if (requester) await requester.send({ embeds: [embed] }).catch(() => {});
+  }
+
+  // ------------------- /ربط -------------------
+  else if (commandName === 'ربط') {
+    const playerId = interaction.options.getString('رقم_اللاعب');
+    updatePlayer(interaction.user.id, { player_id: playerId });
+    await interaction.reply({ content: `✅ تم ربط حسابك بهوية اللاعب: **${playerId}**`, ephemeral: true });
+  }
+
+  // ------------------- /بطاقة -------------------
+  else if (commandName === 'بطاقة') {
+    const target = interaction.options.getUser('العضو') || interaction.user;
+    const player = getPlayer(target.id);
+    const job = JOBS[player.job];
+    const embed = baseEmbed(`🪪 بطاقة ${target.username}`)
+      .setThumbnail(target.displayAvatarURL())
+      .addFields(
+        { name: 'رقم اللاعب', value: player.player_id || 'غير مربوط', inline: true },
+        { name: 'الحالة', value: player.active ? '🟢 مفعّل' : '🔴 غير مفعّل', inline: true },
+        { name: 'النقاط', value: String(player.points), inline: true },
+        { name: 'الوظيفة', value: job ? `${job.emoji} ${job.name}` : 'بدون وظيفة', inline: true },
+        { name: 'الرتبة', value: job ? job.ranks[player.rank_index] || '-' : '-', inline: true }
+      );
+
+    // إن كان الربط بـ VRP مفعّلًا، أضف بيانات مباشرة من قاعدة بيانات السيرفر
+    if (CONFIG.vrp.enabled && player.player_id) {
+      const vrpData = await getVrpPlayerData(player.player_id);
+      if (vrpData) {
+        embed.addFields({ name: '💰 الرصيد (من السيرفر)', value: String(vrpData.money ?? 'غير متوفر'), inline: true });
+      }
+    }
+
+    const records = db.prepare('SELECT * FROM records WHERE discord_id = ? ORDER BY id DESC LIMIT 5').all(target.id);
+    if (records.length > 0) {
+      embed.addFields({
+        name: '🕓 آخر 5 أحداث في السجل',
+        value: records.map((r) => `• [${r.type}] ${r.detail}`).join('\n').slice(0, 1024),
+      });
+    }
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // ------------------- /نقاط -------------------
+  else if (commandName === 'نقاط') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const op = interaction.options.getString('العملية');
+    const member = interaction.options.getUser('العضو');
+    const amount = interaction.options.getInteger('العدد');
+    const reason = interaction.options.getString('السبب') || 'بدون سبب محدد';
+    const player = getPlayer(member.id);
+    const newPoints = op === 'add' ? player.points + amount : Math.max(0, player.points - amount);
+    updatePlayer(member.id, { points: newPoints });
+    addRecord(member.id, op === 'add' ? 'points_add' : 'points_sub', `${amount} نقطة - ${reason}`, interaction.user.id);
+
+    const embed = baseEmbed(op === 'add' ? '➕ إضافة نقاط' : '➖ خصم نقاط', op === 'add' ? 0x2ecc71 : 0xe74c3c)
+      .setDescription(`${op === 'add' ? 'تم إضافة' : 'تم خصم'} **${amount}** نقطة ${op === 'add' ? 'إلى' : 'من'} ${member}`)
+      .addFields({ name: 'السبب', value: reason }, { name: 'الرصيد الجديد', value: String(newPoints) });
+    await interaction.reply({ embeds: [embed] });
+    await sendLog(embed);
+
+    // تنبيه ترقية تلقائي عند بلوغ حد النقاط للرتبة التالية
+    const job = JOBS[player.job];
+    if (job) {
+      const nextRankIndex = player.rank_index + 1;
+      const requiredPoints = nextRankIndex * CONFIG.pointsPerRank;
+      if (nextRankIndex < job.ranks.length && newPoints >= requiredPoints) {
+        await interaction.followUp({
+          content: `🎉 ${member} أصبح مؤهلاً للترقية إلى رتبة **${job.ranks[nextRankIndex]}** (استخدم أمر /رتب لتفعيلها).`,
+        });
+      }
+    }
+  }
+
+  // ------------------- /تذاكر_اعداد -------------------
+  else if (commandName === 'تذاكر_اعداد') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const category = interaction.options.getChannel('التصنيف');
+    if (category) {
+      db.prepare('INSERT INTO ticket_config (guild_id, category_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET category_id = excluded.category_id').run(
+        interaction.guild.id,
+        category.id
+      );
+    }
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('ticket_open_select')
+      .setPlaceholder('اختر القسم المناسب لفتح تذكرة')
+      .addOptions(
+        { label: 'الدعم الفني', value: 'support', emoji: '🛠️' },
+        { label: 'شكاوى', value: 'complaints', emoji: '📢' },
+        { label: 'استفسارات التوظيف', value: 'jobs', emoji: '🧑‍💼' },
+        { label: 'الإدارة العليا', value: 'management', emoji: '👑' }
+      );
+    const row = new ActionRowBuilder().addComponents(menu);
+    const embed = baseEmbed('🎫 نظام التذاكر').setDescription('اختر القسم المناسب من القائمة أدناه لفتح تذكرة دعم.');
+    await interaction.reply({ embeds: [embed], components: [row] });
+  }
+}
+
+const DEPARTMENTS = {
+  support: '🛠️ الدعم الفني',
+  complaints: '📢 شكاوى',
+  jobs: '🧑‍💼 استفسارات التوظيف',
+  management: '👑 الإدارة العليا',
+};
+
+function ticketControlsRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_claim').setLabel('استلام').setEmoji('🙋').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ticket_transfer').setLabel('تحويل').setEmoji('🔀').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ticket_close').setLabel('إغلاق').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+  );
+}
+
+// ===================================================================
+// 9) معالجة القوائم المنسدلة (فتح تذكرة / تحويل تذكرة)
+// ===================================================================
+async function handleSelectMenu(interaction) {
+  if (interaction.customId === 'ticket_open_select') {
+    await interaction.deferReply({ ephemeral: true });
+    const dept = interaction.values[0];
+    const existing = db.prepare("SELECT * FROM tickets WHERE user_id = ? AND department = ? AND status != 'closed'").get(interaction.user.id, dept);
+    if (existing) {
+      return interaction.editReply({ content: `⚠️ لديك تذكرة مفتوحة بالفعل: <#${existing.channel_id}>` });
+    }
+
+    const guildCfg = db.prepare('SELECT * FROM ticket_config WHERE guild_id = ?').get(interaction.guild.id);
+    const channel = await interaction.guild.channels.create({
+      name: `ticket-${interaction.user.username}`.toLowerCase().slice(0, 90),
+      type: ChannelType.GuildText,
+      parent: guildCfg?.category_id || undefined,
+      permissionOverwrites: [
+        { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        ...(CONFIG.adminRoleId ? [{ id: CONFIG.adminRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
+      ],
+    });
+
+    db.prepare('INSERT INTO tickets (channel_id, user_id, department) VALUES (?, ?, ?)').run(channel.id, interaction.user.id, dept);
+
+    const embed = baseEmbed(`🎫 تذكرة جديدة - ${DEPARTMENTS[dept]}`)
+      .setDescription(`مرحبًا ${interaction.user}!\nيرجى وصف مشكلتك أو طلبك بالتفصيل وسيقوم أحد المسؤولين بالرد عليك قريبًا.`);
+    await channel.send({ content: `${interaction.user}`, embeds: [embed], components: [ticketControlsRow()] });
+
+    await interaction.editReply({ content: `✅ تم فتح تذكرتك: ${channel}` });
+  }
+
+  else if (interaction.customId === 'ticket_transfer_select') {
+    const ticket = db.prepare('SELECT * FROM tickets WHERE channel_id = ?').get(interaction.channel.id);
+    if (!ticket) return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
+    const newDept = interaction.values[0];
+    db.prepare('UPDATE tickets SET department = ? WHERE channel_id = ?').run(newDept, interaction.channel.id);
+    await interaction.reply({ embeds: [baseEmbed('🔀 تحويل التذكرة', 0xf39c12).setDescription(`تم تحويل التذكرة إلى قسم: **${DEPARTMENTS[newDept]}**`)] });
+  }
+}
+
+// ===================================================================
+// 10) معالجة الأزرار (استلام / تحويل / إغلاق التذكرة)
+// ===================================================================
+async function handleButton(interaction) {
+  const ticket = db.prepare('SELECT * FROM tickets WHERE channel_id = ?').get(interaction.channel.id);
+  if (!ticket) return interaction.reply({ content: '❌ هذه ليست قناة تذكرة صالحة.', ephemeral: true });
+
+  if (interaction.customId === 'ticket_claim') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    db.prepare("UPDATE tickets SET status = 'claimed', claimed_by = ? WHERE channel_id = ?").run(interaction.user.id, interaction.channel.id);
+    await interaction.reply({ embeds: [baseEmbed('🙋 تم استلام التذكرة', 0x3498db).setDescription(`تم استلام هذه التذكرة بواسطة ${interaction.user}`)] });
+  }
+
+  else if (interaction.customId === 'ticket_transfer') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('ticket_transfer_select')
+      .setPlaceholder('اختر القسم الجديد')
+      .addOptions(Object.entries(DEPARTMENTS).map(([value, label]) => ({ label, value })));
+    await interaction.reply({ content: 'اختر القسم الذي تريد تحويل التذكرة إليه:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+  }
+
+  else if (interaction.customId === 'ticket_close') {
+    if (!isAdmin(interaction)) return denyNotAdmin(interaction);
+    await interaction.reply('🔒 يتم الآن إغلاق التذكرة وحفظ نسخة من المحادثة...');
+
+    // بناء transcript نصي بسيط من آخر 100 رسالة
+    const messages = await interaction.channel.messages.fetch({ limit: 100 });
+    const sorted = [...messages.values()].reverse();
+    const lines = sorted.map((m) => `[${m.createdAt.toISOString()}] ${m.author.tag}: ${m.content}`);
+    const transcriptText = lines.join('\n') || 'لا توجد رسائل.';
+    const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf-8'), { name: `transcript-${ticket.id}.txt` });
+
+    db.prepare("UPDATE tickets SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE channel_id = ?").run(interaction.channel.id);
+
+    if (CONFIG.ticketLogChannelId) {
+      const logChannel = await client.channels.fetch(CONFIG.ticketLogChannelId).catch(() => null);
+      if (logChannel) {
+        const embed = baseEmbed('🔒 تم إغلاق تذكرة', 0xe74c3c).addFields(
+          { name: 'صاحب التذكرة', value: `<@${ticket.user_id}>`, inline: true },
+          { name: 'القسم', value: DEPARTMENTS[ticket.department] || ticket.department, inline: true },
+          { name: 'أُغلقت بواسطة', value: `${interaction.user}`, inline: true }
+        );
+        await logChannel.send({ embeds: [embed], files: [attachment] }).catch(() => {});
+      }
+    }
+
+    setTimeout(() => {
+      interaction.channel.delete().catch(() => {});
+    }, 5000);
+  }
+}
+
+// ===================================================================
+// 11) تسجيل الدخول
+// ===================================================================
+client.login(CONFIG.token);
 
 
-# =====================================================================
-# 3. الوظائف الإدارية والتوظيف والسجل الأمني
-# =====================================================================
-@bot.command(name="توظيف")
-@commands.has_permissions(manage_roles=True)
-async def hire_player(ctx, member: discord.Member, job_name: str, *, rank_name: str):
-    db_cursor.execute("UPDATE player_ids SET job = ?, rank = ? WHERE discord_id = ?", (job_name, rank_name, member.id))
-    db_conn.commit()
-
-    embed = discord.Embed(
-        title="📋 قرار توظيف رسمي",
-        description=f"تم ترقية وتوظيف العضو {member.mention}\nالقطاع: **{job_name}**\nالرتبة: **{rank_name}**",
-        color=discord.Color.blurple()
-    )
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="سجل")
-@commands.has_permissions(manage_roles=True)
-async def criminal_record(ctx, member: discord.Member, *, reason: str):
-    db_cursor.execute("INSERT INTO criminal_records (target_id, officer_id, reason) VALUES (?, ?, ?)", 
-                      (member.id, ctx.author.id, reason))
-    db_conn.commit()
-
-    embed = discord.Embed(
-        title="🚨 تسجيل مخالفة أمنية جديدة",
-        description=f"تم تسجيل مخالفة بحق العضو: {member.mention}\nالتفاصيل: **{reason}**\nبواسطة العسكري: {ctx.author.mention}",
-        color=discord.Color.red()
-    )
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="كشف")
-@commands.has_permissions(manage_roles=True)
-async def check_criminal_record(ctx, member: discord.Member):
-    db_cursor.execute("SELECT reason, date_recorded FROM criminal_records WHERE target_id = ?", (member.id,))
-    records = db_cursor.fetchall()
-
-    embed = discord.Embed(title=f"📋 السجل الأمني للاعب: {member.display_name}", color=discord.Color.dark_red())
-
-    if not records:
-        embed.description = "سجل هذا اللاعب نظيف تماماً 🟢 ولا توجد أي مخالفات مسجلة."
-    else:
-        text = ""
-        for idx, rec in enumerate(records, 1):
-            text += f"**{idx}.** {rec[0]} *(التاريخ: {rec[1]})*\n"
-        embed.description = text
-
-    await ctx.send(embed=embed)
-
-
-# =====================================================================
-# 4. النظام البنكي والتحويل والرواتب التلقائية
-# =====================================================================
-@bot.command(name="رصيدي", aliases=["بنك"])
-async def check_bank(ctx):
-    db_cursor.execute("SELECT account_number, balance, is_frozen FROM bank_accounts WHERE discord_id = ?", (ctx.author.id,))
-    res = db_cursor.fetchone()
-
-    if not res:
-        await ctx.send(f"❌ {ctx.author.mention}, ليس لديك حساب بنكي مفعل!")
-        return
-
-    acc_num, balance, frozen = res
-    status_text = "🔒 مجمد" if frozen == 1 else "🟢 نشط"
-
-    embed = discord.Embed(title="🏦 الحساب البنكي الشخصي", color=discord.Color.green() if frozen == 0 else discord.Color.red())
-    embed.add_field(name="رقم الحساب", value=acc_num, inline=False)
-    embed.add_field(name="الرصيد الحالي", value=f"${balance:,.2f}", inline=True)
-    embed.add_field(name="حالة الحساب", value=status_text, inline=True)
-    
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="تحويل")
-async def bank_transfer(ctx, target: discord.Member, amount: float):
-    if amount <= 0 or target.id == ctx.author.id:
-        await ctx.send("❌ عملية تحويل غير صالحة!")
-        return
-
-    db_cursor.execute("SELECT balance, is_frozen FROM bank_accounts WHERE discord_id = ?", (ctx.author.id,))
-    sender_res = db_cursor.fetchone()
-    if not sender_res or sender_res[1] == 1 or sender_res[0] < amount:
-        await ctx.send("❌ رصيدك لا يكفي أو حسابك غير متاح للتحويل.")
-        return
-
-    db_cursor.execute("SELECT is_frozen FROM bank_accounts WHERE discord_id = ?", (target.id,))
-    target_res = db_cursor.fetchone()
-    if not target_res or target_res[0] == 1:
-        await ctx.send("❌ حساب المستلم غير موجود أو مجمد.")
-        return
-
-    db_cursor.execute("UPDATE bank_accounts SET balance = balance - ? WHERE discord_id = ?", (amount, ctx.author.id))
-    db_cursor.execute("UPDATE bank_accounts SET balance = balance + ? WHERE discord_id = ?", (amount, target.id))
-    db_conn.commit()
-
-    await ctx.send(f"🔄 تم تحويل **${amount:,.2f}** بنجاح من {ctx.author.mention} إلى {target.mention}")
-
-
-@tasks.loop(hours=1.0)
-async def auto_salary():
-    db_cursor.execute("SELECT discord_id, job FROM player_ids WHERE status = 'مفعل'")
-    players = db_cursor.fetchall()
-    
-    for p in players:
-        discord_id, job = p
-        salary = JOBS_LIST.get(job, {}).get("salary", 500)
-        db_cursor.execute("UPDATE bank_accounts SET balance = balance + ? WHERE discord_id = ?", (salary, discord_id))
-    db_conn.commit()
-
-
-@bot.command(name="ping")
-async def check_ping(ctx):
-    latency = round(bot.latency * 1000)
-    await ctx.send(f"🏓 سرعة استجابة البوت: **{latency}ms** (السيرفر الأسطوري يعمل بكفاءة 🔥)")
-
-
-# تشغيل البوت مباشرة بالتوكن
-bot.run(TOKEN)
+{
+  "name": "rp-server-bot",
+  "version": "1.0.0",
+  "description": "بوت ديسكورد لإدارة سيرفر رول بلاي (FiveM) - ملف واحد",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "better-sqlite3": "^11.3.0",
+    "mysql2": "^3.11.3",
+    "dotenv": "^16.4.5"
+  }
+}

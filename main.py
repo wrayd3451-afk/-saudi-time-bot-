@@ -86,7 +86,6 @@ python main.py
 
 وإذا كانت التذاكر تحتاج إرسال ملفات:
 - Attach Files
-
 # -*- coding: utf-8 -*-
 """
 سعودي تايم — Complete VRP Discord Bot
@@ -1585,5 +1584,3 @@ async def on_ready():
 
 
 bot.run(TOKEN)
-
-discord.py>=2.4,<3

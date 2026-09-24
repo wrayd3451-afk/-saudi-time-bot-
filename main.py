@@ -176,6 +176,13 @@ CREATE TABLE IF NOT EXISTS activations (
     created_at TEXT,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS auto_replies (
+    guild_id INTEGER,
+    trigger  TEXT,
+    response TEXT,
+    as_embed INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, trigger)
+);
 CREATE TABLE IF NOT EXISTS settings (
     guild_id INTEGER,
     key      TEXT,
@@ -788,6 +795,7 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="👮 الشرطة", value="/مخالفة · /اضافة_سجل · /سجل · /تفتيش · /هوية", inline=False)
     e.add_field(name="🛠️ الإدارة", value="/تسطيب_رومات · /تسطيب_رتب · /تعيين_وظيفة · /اضافة_فلوس · /خصم_فلوس · /مسح_سجل · /حذف_هوية", inline=False)
     e.add_field(name="🎫 التذاكر", value="/تسطيب_تذكرة · /حذف_تذكرة · /ارسال_التذاكر", inline=False)
+    e.add_field(name="💬 الردود والإيمبد", value="/اضافة_رد · /حذف_رد · /الردود · /ايمبد · /رسالة_للكل", inline=False)
     e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · /الاسئلة · /حذف_سؤال · `-تفعيل @العضو ايدي_سوني`", inline=False)
     e.add_field(name="✈️ الأقيام", value="اكتب `-قيم` في روم إنشاء القيم (لرتبة الأقيام)", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
@@ -953,7 +961,7 @@ async def on_message(message: discord.Message):
     if message.content.strip().startswith("-تفعيل"):
         return await activate_command(message)
     if message.content.strip() != "-قيم":
-        return
+        return await auto_reply(message)
     gid = message.guild.id
     game_ch = get_setting(gid, "ch_game")
     ticket_ch_id = get_setting(gid, "ch_ticket")
@@ -1006,6 +1014,263 @@ async def on_message(message: discord.Message):
         await log(f"{message.author.mention} نشر رحلة في {ticket_ch.mention}", message.guild)
     finally:
         active_games.discard(key)
+
+
+# ============================================================
+# الرد التلقائي
+# ============================================================
+async def auto_reply(message: discord.Message):
+    text = message.content.strip()
+    if not text:
+        return
+    row = db.execute(
+        "SELECT * FROM auto_replies WHERE guild_id = ? AND trigger = ?", (message.guild.id, text)
+    ).fetchone()
+    if not row:
+        return
+    try:
+        if row["as_embed"]:
+            e = discord.Embed(description=row["response"], color=0x006C35)
+            e.set_footer(text=config.SERVER_NAME)
+            await message.reply(embed=e, mention_author=False)
+        else:
+            await message.reply(row["response"], mention_author=False)
+    except discord.HTTPException:
+        pass
+
+
+class AutoReplyModal(discord.ui.Modal, title="💬 الرد التلقائي"):
+    response = discord.ui.TextInput(
+        label="الرد", style=discord.TextStyle.paragraph, max_length=2000,
+        placeholder="اكتب الرد اللي يرسله البوت، وتقدر تنزل سطر",
+    )
+
+    def __init__(self, trigger: str, as_embed: bool):
+        super().__init__()
+        self.trigger = trigger
+        self.as_embed = as_embed
+
+    async def on_submit(self, inter: discord.Interaction):
+        db.execute(
+            "INSERT INTO auto_replies (guild_id, trigger, response, as_embed) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, trigger) DO UPDATE SET response = excluded.response, as_embed = excluded.as_embed",
+            (inter.guild.id, self.trigger, self.response.value, int(self.as_embed)),
+        )
+        db.commit()
+        await inter.response.send_message(
+            embed=embed("✅ انضاف الرد", f"إذا أحد كتب **{self.trigger}** يرد البوت بـ{'ايمبد' if self.as_embed else 'رسالة'}:\n\n{self.response.value}"[:4000]),
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(name="اضافة_رد", description="إضافة رد تلقائي على كلمة")
+@app_commands.describe(الكلمة="الكلمة اللي إذا أحد كتبها يرد البوت", ايمبد="الرد يطلع ايمبد؟")
+@app_commands.choices(ايمبد=[app_commands.Choice(name="لا، رسالة عادية", value=0), app_commands.Choice(name="إيه، ايمبد", value=1)])
+async def add_auto_reply(inter: discord.Interaction, الكلمة: app_commands.Range[str, 1, 100], ايمبد: app_commands.Choice[int] = None):
+    if not is_admin(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
+    await inter.response.send_modal(AutoReplyModal(الكلمة.strip(), bool(ايمبد and ايمبد.value)))
+
+
+@bot.tree.command(name="حذف_رد", description="حذف رد تلقائي")
+async def delete_auto_reply(inter: discord.Interaction, الكلمة: str):
+    if not is_admin(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
+    cur = db.execute("DELETE FROM auto_replies WHERE guild_id = ? AND trigger = ?", (inter.guild.id, الكلمة.strip()))
+    db.commit()
+    if not cur.rowcount:
+        return await inter.response.send_message(embed=err("ما لقيت رد على هالكلمة. شف /الردود"), ephemeral=True)
+    await inter.response.send_message(embed=embed("🗑️ انحذف الرد", الكلمة), ephemeral=True)
+
+
+@delete_auto_reply.autocomplete("الكلمة")
+async def auto_reply_autocomplete(inter: discord.Interaction, current: str):
+    rows = db.execute("SELECT trigger FROM auto_replies WHERE guild_id = ?", (inter.guild.id,)).fetchall()
+    return [app_commands.Choice(name=r["trigger"][:100], value=r["trigger"]) for r in rows if current in r["trigger"]][:25]
+
+
+@bot.tree.command(name="الردود", description="عرض الردود التلقائية")
+async def list_auto_replies(inter: discord.Interaction):
+    if not is_admin(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
+    rows = db.execute("SELECT * FROM auto_replies WHERE guild_id = ? ORDER BY trigger", (inter.guild.id,)).fetchall()
+    if not rows:
+        return await inter.response.send_message(embed=err("ما فيه ردود. أضف بـ /اضافة_رد"), ephemeral=True)
+    text = "\n".join(
+        f"• **{r['trigger']}** {'(ايمبد)' if r['as_embed'] else ''} ← {r['response'][:60]}{'…' if len(r['response']) > 60 else ''}"
+        for r in rows
+    )
+    await inter.response.send_message(embed=embed("💬 الردود التلقائية", text[:4000]), ephemeral=True)
+
+
+# ============================================================
+# رسالة ايمبد
+# ============================================================
+EMBED_COLORS = {"green": 0x006C35, "red": 0xB3261E, "blue": 0x2B6CB0, "gold": 0xC9A227, "black": 0x1F1F1F, "white": 0xF2F2F2}
+
+
+class EmbedModal(discord.ui.Modal, title="📝 رسالة ايمبد"):
+    title_in = discord.ui.TextInput(label="العنوان (اختياري)", required=False, max_length=256)
+    body_in = discord.ui.TextInput(
+        label="الكلام", style=discord.TextStyle.paragraph, max_length=4000,
+        placeholder="اكتب الكلام، وتقدر تنزل سطر وتستخدم **خط عريض**",
+    )
+
+    def __init__(self, channel: discord.TextChannel, color: int, image: discord.Attachment, mention: str):
+        super().__init__()
+        self.channel = channel
+        self.color = color
+        self.image = image
+        self.mention = mention
+
+    async def on_submit(self, inter: discord.Interaction):
+        e = discord.Embed(title=self.title_in.value or None, description=self.body_in.value, color=self.color)
+        e.set_footer(text=config.SERVER_NAME, icon_url=inter.guild.icon.url if inter.guild.icon else None)
+        kwargs = {"embed": e}
+        if self.mention:
+            kwargs["content"] = self.mention
+            kwargs["allowed_mentions"] = discord.AllowedMentions(everyone=True, roles=True)
+        await inter.response.defer(ephemeral=True)
+        if self.image:
+            try:
+                f = await self.image.to_file()
+                e.set_image(url=f"attachment://{f.filename}")
+                kwargs["file"] = f
+            except discord.HTTPException:
+                pass
+        try:
+            await self.channel.send(**kwargs)
+        except discord.Forbidden:
+            return await inter.followup.send(embed=err(f"ما أقدر أرسل في {self.channel.mention}."), ephemeral=True)
+        await inter.followup.send(embed=embed("✅ انرسل الايمبد", self.channel.mention), ephemeral=True)
+        await log(f"{inter.user.mention} أرسل ايمبد في {self.channel.mention}", inter.guild)
+
+
+@bot.tree.command(name="ايمبد", description="إرسال رسالة ايمبد في روم")
+@app_commands.describe(الروم="الروم اللي ينرسل فيه", اللون="لون الايمبد", صورة="صورة تطلع تحت الكلام (اختياري)", منشن="منشن فوق الايمبد")
+@app_commands.choices(
+    اللون=[
+        app_commands.Choice(name="أخضر", value="green"), app_commands.Choice(name="أحمر", value="red"),
+        app_commands.Choice(name="أزرق", value="blue"), app_commands.Choice(name="ذهبي", value="gold"),
+        app_commands.Choice(name="أسود", value="black"), app_commands.Choice(name="أبيض", value="white"),
+    ],
+    منشن=[
+        app_commands.Choice(name="بدون", value="none"),
+        app_commands.Choice(name="@everyone", value="@everyone"),
+        app_commands.Choice(name="@here", value="@here"),
+    ],
+)
+async def send_embed(
+    inter: discord.Interaction,
+    الروم: discord.TextChannel,
+    اللون: app_commands.Choice[str] = None,
+    صورة: discord.Attachment = None,
+    منشن: app_commands.Choice[str] = None,
+):
+    if not is_admin(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
+    if صورة and not (صورة.content_type or "").startswith("image/"):
+        return await inter.response.send_message(embed=err("المرفق لازم يكون صورة."), ephemeral=True)
+    color = EMBED_COLORS[اللون.value] if اللون else EMBED_COLORS["green"]
+    mention = منشن.value if منشن and منشن.value != "none" else ""
+    await inter.response.send_modal(EmbedModal(الروم, color, صورة, mention))
+
+
+# ============================================================
+# رسالة في الخاص لكل الأعضاء
+# ============================================================
+broadcast_running = set()  # guild ids
+
+
+async def run_broadcast(guild: discord.Guild, members: list, e: discord.Embed, status_msg, author):
+    sent = failed = 0
+    try:
+        for i, m in enumerate(members, 1):
+            try:
+                await m.send(embed=e)
+                sent += 1
+            except discord.HTTPException:
+                failed += 1  # خاصه مقفل
+            await asyncio.sleep(1.5)  # بطيء عشان ديسكورد ما يحظر البوت
+            if i % 25 == 0:
+                try:
+                    await status_msg.edit(embed=embed("📨 جاري الإرسال...", f"{i} / {len(members)}"))
+                except discord.HTTPException:
+                    pass
+    finally:
+        broadcast_running.discard(guild.id)
+    try:
+        await status_msg.edit(embed=embed(
+            "✅ خلص الإرسال",
+            f"وصلت لـ **{sent}** عضو\nما وصلت لـ **{failed}** عضو (خاصهم مقفل)",
+        ))
+    except discord.HTTPException:
+        pass
+    await log(f"{author.mention} أرسل رسالة في الخاص لـ {sent} عضو", guild)
+
+
+class BroadcastConfirm(discord.ui.View):
+    def __init__(self, members: list, e: discord.Embed, author_id: int):
+        super().__init__(timeout=120)
+        self.members = members
+        self.e = e
+        self.author_id = author_id
+
+    @discord.ui.button(label="أرسل", emoji="📨", style=discord.ButtonStyle.success)
+    async def confirm(self, inter: discord.Interaction, button: discord.ui.Button):
+        if inter.user.id != self.author_id:
+            return await inter.response.send_message(embed=err("مو لك."), ephemeral=True)
+        if inter.guild.id in broadcast_running:
+            return await inter.response.edit_message(embed=err("فيه إرسال شغال الحين، انتظره يخلص."), view=None)
+        broadcast_running.add(inter.guild.id)
+        mins = max(1, round(len(self.members) * 1.5 / 60))
+        await inter.response.edit_message(
+            embed=embed("📨 بدأ الإرسال", f"بيوصل لـ {len(self.members)} عضو، وياخذ تقريباً {mins} دقيقة."), view=None
+        )
+        status = await inter.original_response()
+        asyncio.create_task(run_broadcast(inter.guild, self.members, self.e, status, inter.user))
+        self.stop()
+
+    @discord.ui.button(label="إلغاء", style=discord.ButtonStyle.secondary)
+    async def cancel(self, inter: discord.Interaction, button: discord.ui.Button):
+        await inter.response.edit_message(embed=embed("❌ انلغى"), view=None)
+        self.stop()
+
+
+class BroadcastModal(discord.ui.Modal, title="📨 رسالة لكل الأعضاء"):
+    title_in = discord.ui.TextInput(label="العنوان (اختياري)", required=False, max_length=256)
+    body_in = discord.ui.TextInput(label="الرسالة", style=discord.TextStyle.paragraph, max_length=4000)
+
+    def __init__(self, role: discord.Role):
+        super().__init__()
+        self.role = role
+
+    async def on_submit(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        guild = inter.guild
+        if not guild.chunked:
+            await guild.chunk()
+        members = [m for m in (self.role.members if self.role else guild.members) if not m.bot]
+        if not members:
+            return await inter.followup.send(embed=err("ما لقيت أعضاء."), ephemeral=True)
+        e = discord.Embed(title=self.title_in.value or None, description=self.body_in.value, color=0x006C35, timestamp=now())
+        e.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+        e.set_footer(text=config.SERVER_NAME)
+        who = f"كل اللي معهم رتبة {self.role.mention}" if self.role else "كل أعضاء السيرفر"
+        await inter.followup.send(
+            content=f"**هذي معاينة الرسالة، بتنرسل لـ {who} ({len(members)} عضو). متأكد؟**",
+            embed=e, view=BroadcastConfirm(members, e, inter.user.id), ephemeral=True,
+        )
+
+
+@bot.tree.command(name="رسالة_للكل", description="يرسل رسالتك في الخاص لكل الأعضاء (لصاحب صلاحية الأدمن)")
+@app_commands.describe(رتبة="ترسل بس للي معهم هالرتبة (اختياري، بدونها ترسل للكل)")
+async def broadcast(inter: discord.Interaction, رتبة: discord.Role = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    if inter.guild.id in broadcast_running:
+        return await inter.response.send_message(embed=err("فيه إرسال شغال الحين، انتظره يخلص."), ephemeral=True)
+    await inter.response.send_modal(BroadcastModal(رتبة))
 
 
 # ============================================================

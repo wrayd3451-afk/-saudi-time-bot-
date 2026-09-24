@@ -8,13 +8,90 @@ import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-import discord
-from discord import app_commands
-from dotenv import load_dotenv
+import subprocess
+import sys
+import types
 
-import config
+# لو المكتبة مو مثبتة، يثبتها البوت لحاله
+try:
+    import discord
+    from discord import app_commands
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "discord.py>=2.3"])
+    import discord
+    from discord import app_commands
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# ==========================================
+#   إعدادات بوت نظام VRP - عدّل من هنا
+# ==========================================
+
+# اسم السيرفر (يظهر في الهوية والرسائل)
+SERVER_NAME = "سعودي تايم | Saudi Time"
+
+# العملة
+CURRENCY = "$"
+
+# الفلوس اللي ياخذها اللاعب أول ما يسوي هوية
+START_CASH = 5000
+START_BANK = 20000
+
+# ----------------------------------------------------------------
+# الرتب في الدسكورد (حط ID الرتبة)
+# ----------------------------------------------------------------
+ADMIN_ROLE_ID = 0      # رتبة الإدارة
+POLICE_ROLE_ID = 0     # رتبة الشرطة
+CITIZEN_ROLE_ID = 0    # رتبة "مواطن" تنعطى تلقائي بعد إصدار الهوية (0 = بدون)
+
+# روم اللوق (0 = بدون لوق)
+LOG_CHANNEL_ID = 0
+
+# ----------------------------------------------------------------
+# الوظائف والرواتب
+# ----------------------------------------------------------------
+JOBS = {
+    "عاطل":        {"salary": 500,  "role_id": 0},
+    "شرطي":        {"salary": 4000, "role_id": 0},
+    "مسعف":        {"salary": 3500, "role_id": 0},
+    "ميكانيكي":    {"salary": 3000, "role_id": 0},
+    "سواق تاكسي":  {"salary": 2000, "role_id": 0},
+    "محامي":       {"salary": 3500, "role_id": 0},
+    "تاجر سيارات": {"salary": 2500, "role_id": 0},
+}
+DEFAULT_JOB = "عاطل"
+
+# كل كم ساعة يقدر اللاعب يستلم راتبه
+SALARY_COOLDOWN_HOURS = 24
+
+# ----------------------------------------------------------------
+# المتجر: اسم الغرض: السعر
+# ----------------------------------------------------------------
+SHOP = {
+    "جوال": 1500,
+    "راديو": 800,
+    "رخصة قيادة": 2000,
+    "رخصة سلاح": 10000,
+    "عدة تصليح": 1200,
+    "ماء": 20,
+    "برقر": 45,
+    "لاب توب": 4000,
+}
+
+# نجمع الإعدادات تحت اسم config عشان باقي الكود يستخدمها
+config = types.SimpleNamespace(
+    SERVER_NAME=SERVER_NAME, CURRENCY=CURRENCY,
+    START_CASH=START_CASH, START_BANK=START_BANK,
+    ADMIN_ROLE_ID=ADMIN_ROLE_ID, POLICE_ROLE_ID=POLICE_ROLE_ID,
+    CITIZEN_ROLE_ID=CITIZEN_ROLE_ID, LOG_CHANNEL_ID=LOG_CHANNEL_ID,
+    JOBS=JOBS, DEFAULT_JOB=DEFAULT_JOB,
+    SALARY_COOLDOWN_HOURS=SALARY_COOLDOWN_HOURS, SHOP=SHOP,
+)
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 
@@ -613,58 +690,4 @@ async def help_cmd(inter: discord.Interaction):
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("❌ حط توكن البوت في Environment في Render باسم DISCORD_TOKEN")
-    bot.run(TOKEN)# ==========================================
-#   إعدادات بوت نظام VRP - عدّل من هنا
-# ==========================================
-
-# اسم السيرفر (يظهر في الهوية والرسائل)
-SERVER_NAME = "سعودي تايم | Saudi Time"
-
-# العملة
-CURRENCY = "$"
-
-# الفلوس اللي ياخذها اللاعب أول ما يسوي هوية
-START_CASH = 5000
-START_BANK = 20000
-
-# ----------------------------------------------------------------
-# الرتب في الدسكورد (حط ID الرتبة)
-# ----------------------------------------------------------------
-ADMIN_ROLE_ID = 0      # رتبة الإدارة
-POLICE_ROLE_ID = 0     # رتبة الشرطة
-CITIZEN_ROLE_ID = 0    # رتبة "مواطن" تنعطى تلقائي بعد إصدار الهوية (0 = بدون)
-
-# روم اللوق (0 = بدون لوق)
-LOG_CHANNEL_ID = 0
-
-# ----------------------------------------------------------------
-# الوظائف والرواتب
-# ----------------------------------------------------------------
-JOBS = {
-    "عاطل":        {"salary": 500,  "role_id": 0},
-    "شرطي":        {"salary": 4000, "role_id": 0},
-    "مسعف":        {"salary": 3500, "role_id": 0},
-    "ميكانيكي":    {"salary": 3000, "role_id": 0},
-    "سواق تاكسي":  {"salary": 2000, "role_id": 0},
-    "محامي":       {"salary": 3500, "role_id": 0},
-    "تاجر سيارات": {"salary": 2500, "role_id": 0},
-}
-DEFAULT_JOB = "عاطل"
-
-# كل كم ساعة يقدر اللاعب يستلم راتبه
-SALARY_COOLDOWN_HOURS = 24
-
-# ----------------------------------------------------------------
-# المتجر: اسم الغرض: السعر
-# ----------------------------------------------------------------
-SHOP = {
-    "جوال": 1500,
-    "راديو": 800,
-    "رخصة قيادة": 2000,
-    "رخصة سلاح": 10000,
-    "عدة تصليح": 1200,
-    "ماء": 20,
-    "برقر": 45,
-    "لاب توب": 4000,
-}discord.py>=2.3
-python-dotenv>=1.0
+    bot.run(TOKEN)

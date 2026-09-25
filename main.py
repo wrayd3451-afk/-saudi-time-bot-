@@ -5,6 +5,7 @@
 """
 import asyncio
 import io
+import json
 import os
 import random
 import sqlite3
@@ -221,6 +222,34 @@ CREATE TABLE IF NOT EXISTS assets (
     data     BLOB,
     PRIMARY KEY (guild_id, key)
 );
+CREATE TABLE IF NOT EXISTS app_types (
+    guild_id      INTEGER,
+    slot          INTEGER,
+    name          TEXT,
+    emoji         TEXT,
+    review_ch     INTEGER,
+    role1         INTEGER,
+    role2         INTEGER,
+    reviewer_role INTEGER,
+    questions     TEXT,
+    PRIMARY KEY (guild_id, slot)
+);
+CREATE TABLE IF NOT EXISTS app_submissions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER,
+    slot       INTEGER,
+    user_id    INTEGER,
+    answers    TEXT,
+    status     TEXT,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS job_roles (
+    guild_id INTEGER,
+    name     TEXT,
+    role_id  INTEGER,
+    sector   TEXT,
+    PRIMARY KEY (guild_id, name)
+);
 CREATE TABLE IF NOT EXISTS settings (
     guild_id INTEGER,
     key      TEXT,
@@ -295,12 +324,20 @@ class VRPBot(discord.Client):
     async def setup_hook(self):
         self.add_view(CreateIDPanel())
         self.add_view(ViewIDPanel())
+        # نرسل الأوامر لديسكورد بس إذا تغيّرت، عشان نقلل الطلبات
+        import hashlib, json
+        payload = json.dumps([c.to_dict(self.tree) for c in self.tree.get_commands()], sort_keys=True, ensure_ascii=False)
+        digest = int(hashlib.sha1(payload.encode()).hexdigest()[:12], 16)
+        if get_setting(0, "commands_hash") == digest:
+            print("ℹ️ الأوامر ما تغيّرت، ما يحتاج أرسلها")
+            return
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
         else:
             await self.tree.sync()
+        set_setting(0, "commands_hash", digest)
 
     async def on_ready(self):
         print(f"✅ البوت شغال: {self.user} ")
@@ -329,7 +366,9 @@ def is_admin(inter: discord.Interaction) -> bool:
 
 
 def is_police(inter: discord.Interaction) -> bool:
-    return has_role(inter.user, role_setting(inter.guild, "role_police", config.POLICE_ROLE_ID)) or is_admin(inter)
+    return (has_role(inter.user, role_setting(inter.guild, "role_police", config.POLICE_ROLE_ID))
+            or (role_setting(inter.guild, "role_swat") and has_role(inter.user, role_setting(inter.guild, "role_swat")))
+            or is_admin(inter))
 
 
 def embed(title: str, desc: str = "", color=0x0B6B55) -> discord.Embed:
@@ -836,7 +875,9 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="🎫 التذاكر", value="/تسطيب_تذكرة · /حذف_تذكرة · /ارسال_التذاكر", inline=False)
     e.add_field(name="💬 الردود والإيمبد", value="/اضافة_رد · /حذف_رد · /الردود · /ايمبد · /رسالة_للكل", inline=False)
     e.add_field(name="📊 النقاط و MDT", value="/ارسال_لوحة · /تسطيب_الاطار · /تسطيب_رتب_الادارة · /تسطيب_النقاط · /تعديل_نقاط · /تصفير_النقاط", inline=False)
-    e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · /الاسئلة · /حذف_سؤال · `-تفعيل @العضو ايدي_سوني`", inline=False)
+    e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
+    e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
+    e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · /الاسئلة · /حذف_سؤال · `-تفعيل @العضو`", inline=False)
     e.add_field(name="✈️ الأقيام", value="`-قيم` في روم إنشاء القيم · `-تفتيش @العضو` في روم التفتيش · /تسطيب_التفتيش", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
 
@@ -855,6 +896,7 @@ def admin_only(inter: discord.Interaction) -> bool:
     انشاء_قيم="الروم اللي يكتبون فيه -قيم",
     شراء_تذكرة="الروم اللي ينرسل فيه إعلان الرحلة",
     التفتيش="الروم اللي يكتبون فيه -تفتيش",
+    تحديث_الادوار="الروم اللي ينرسل فيه التوظيف والاستقالات",
     اللوق="روم اللوق",
 )
 async def setup_channels(
@@ -864,6 +906,7 @@ async def setup_channels(
     انشاء_قيم: discord.TextChannel = None,
     شراء_تذكرة: discord.TextChannel = None,
     التفتيش: discord.TextChannel = None,
+    تحديث_الادوار: discord.TextChannel = None,
     اللوق: discord.TextChannel = None,
 ):
     if not admin_only(inter):
@@ -895,6 +938,9 @@ async def setup_channels(
     if التفتيش:
         set_setting(gid, "ch_inspect", التفتيش.id)
         done.append(f"✅ التفتيش: {التفتيش.mention}")
+    if تحديث_الادوار:
+        set_setting(gid, "ch_roles_update", تحديث_الادوار.id)
+        done.append(f"✅ تحديث الأدوار: {تحديث_الادوار.mention}")
     if اللوق:
         set_setting(gid, "ch_log", اللوق.id)
         done.append(f"✅ اللوق: {اللوق.mention}")
@@ -903,7 +949,7 @@ async def setup_channels(
         rows = [
             ("إنشاء الهوية", "ch_create_id"), ("عرض الهوية", "ch_view_id"),
             ("إنشاء القيم", "ch_game"), ("شراء التذكرة", "ch_ticket"),
-            ("التفتيش", "ch_inspect"), ("اللوق", "ch_log"),
+            ("التفتيش", "ch_inspect"), ("تحديث الأدوار", "ch_roles_update"), ("اللوق", "ch_log"),
         ]
         text = "\n".join(f"• {n}: {('<#%d>' % get_setting(gid, k)) if get_setting(gid, k) else 'ما تحدد'}" for n, k in rows)
         return await inter.followup.send(embed=embed("🛠️ الرومات الحالية", text + "\n\nاختر روم من خيارات الأمر عشان تغيّره."), ephemeral=True)
@@ -919,6 +965,9 @@ ROLE_KEYS = [
     ("الاقيام", "role_host", "الأقيام"),
     ("عضو_رسمي", "role_official", "عضو رسمي"),
     ("مقيم", "role_resident", "مقيم"),
+    ("المفعلين", "role_activator", "المفعّلين (يقدرون يستخدمون -تفعيل)"),
+    ("السوات", "role_swat", "السوات"),
+    ("العدل", "role_justice", "العدل"),
 ]
 
 
@@ -932,6 +981,9 @@ ROLE_KEYS = [
     الاقيام="الرتبة اللي تقدر تسوي -قيم",
     عضو_رسمي="الرتبة الأولى اللي تنعطى بأمر -تفعيل",
     مقيم="الرتبة الثانية اللي تنعطى بأمر -تفعيل",
+    المفعلين="الرتبة اللي تقدر تستخدم -تفعيل",
+    السوات="رتبة السوات",
+    العدل="رتبة العدل",
 )
 async def setup_roles(
     inter: discord.Interaction,
@@ -943,13 +995,17 @@ async def setup_roles(
     الاقيام: discord.Role = None,
     عضو_رسمي: discord.Role = None,
     مقيم: discord.Role = None,
+    المفعلين: discord.Role = None,
+    السوات: discord.Role = None,
+    العدل: discord.Role = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     gid = inter.guild.id
     given = {"الادارة": الادارة, "الشرطة": الشرطة, "الاجرام": الاجرام,
              "الاعلام": الاعلام, "المواطن": المواطن, "الاقيام": الاقيام,
-             "عضو_رسمي": عضو_رسمي, "مقيم": مقيم}
+             "عضو_رسمي": عضو_رسمي, "مقيم": مقيم,
+             "المفعلين": المفعلين, "السوات": السوات, "العدل": العدل}
     changed = []
     for arg, key, label in ROLE_KEYS:
         role = given[arg]
@@ -1008,7 +1064,11 @@ async def on_message(message: discord.Message):
         return await activate_command(message)
     if message.content.strip().startswith("-تفتيش"):
         return await inspect_command(message)
+    if message.content.strip().split()[:1] in (["-استقالة"], ["-استقاله"]):
+        return await resign_command(message)
     if message.content.strip() != "-قيم":
+        if message.content.strip().startswith("-") and await hire_command(message):
+            return
         return await auto_reply(message)
     gid = message.guild.id
     game_ch = get_setting(gid, "ch_game")
@@ -1799,12 +1859,16 @@ async def inspect_command(message: discord.Message):
     # رتب الوظائف: الإجرام والشرطة والإعلام والأقيام والإدارة + رتب الوظائف اللي في JOBS
     job_roles = {
         "role_crime": "إجرام 🦹", "role_police": "شرطة 👮", "role_media": "إعلام 📰",
-        "role_host": "أقيام ✈️", "role_admin": "إدارة 🛠️",
+        "role_host": "أقيام ✈️", "role_admin": "إدارة 🛠️", "role_swat": "سوات 🪖", "role_justice": "عدل ⚖️",
     }
     kind = None
     for r in member.roles:
         if db.execute("SELECT 1 FROM inspect_roles WHERE guild_id = ? AND role_id = ?", (gid, r.id)).fetchone():
             kind = r.name
+            break
+        j = db.execute("SELECT name FROM job_roles WHERE guild_id = ? AND role_id = ?", (gid, r.id)).fetchone()
+        if j:
+            kind = j["name"]
             break
     for key, label in job_roles.items():
         if kind:
@@ -1856,6 +1920,9 @@ def can_activate(member: discord.Member) -> bool:
     if member.guild_permissions.administrator:
         return True
     ids = {r.id for r in member.roles}
+    activator = get_setting(member.guild.id, "role_activator")
+    if activator and activator in ids:
+        return True
     admin_role = get_setting(member.guild.id, "role_admin")
     if admin_role and admin_role in ids:
         return True
@@ -1864,10 +1931,10 @@ def can_activate(member: discord.Member) -> bool:
 
 async def activate_command(message: discord.Message):
     if not can_activate(message.author):
-        return await message.reply(embed=err("التفعيل للإدارة بس."))
+        return await message.reply(embed=err("التفعيل لرتبة المفعّلين بس."))
     parts = message.content.split()
-    usage = "الاستخدام: `-تفعيل @العضو ايدي_سوني` أو `-تفعيل ايدي_العضو ايدي_سوني`"
-    if len(parts) < 3:
+    usage = "الاستخدام: `-تفعيل @العضو` (وتقدر تضيف ايدي سوني بعده)"
+    if len(parts) < 2:
         return await message.reply(embed=err(usage))
     member = message.mentions[0] if message.mentions else None
     if member is None:
@@ -1881,7 +1948,7 @@ async def activate_command(message: discord.Message):
                     member = None
     if member is None:
         return await message.reply(embed=err("ما لقيت العضو. " + usage))
-    sony_id = " ".join(parts[2:])[:60]
+    sony_id = " ".join(parts[2:])[:60] or "-"
 
     role_ids = [get_setting(message.guild.id, "role_official"), get_setting(message.guild.id, "role_resident")]
     roles = [message.guild.get_role(r) for r in role_ids if r]
@@ -1905,6 +1972,15 @@ async def activate_command(message: discord.Message):
         f"**الرتب :** {' '.join(r.mention for r in roles)}\n**بواسطة :** {message.author.mention}",
     )
     await message.reply(embed=e)
+    try:
+        await member.send(embed=embed(
+            "✅ - تم تفعيلك",
+            f"**- عزيزي {member.mention} .**\n\n🎉 - تم تفعيلك في **{config.SERVER_NAME}** بنجاح , "
+            f"وصرت الحين عضو رسمي ومقيم في المدينة .\n\n📄 - نرجوا منك الالتزام بالقوانين , ونتمنى لك وقت ممتع معنا 🇸🇦\n\n"
+            f"**المفعّل :** {message.author.mention}",
+        ))
+    except discord.HTTPException:
+        pass
     add_points(message.guild.id, message.author.id, "admin", "activate", pts_value(message.guild.id, "pts_activate"))
     await log(f"{message.author.mention} فعّل {member.mention} (سوني: `{sony_id}`)", message.guild)
 
@@ -1916,11 +1992,14 @@ POINT_DEFAULTS = {
     "pts_publish": 2,     # نشر رحلة (-قيم) أو ايمبد
     "pts_activate": 3,    # -تفعيل
     "pts_ticket": 1,      # استلام تذكرة
+    "pts_hire": 2,        # توظيف
+    "pts_resign": 1,      # استقالة
     "pts_arrest": 3,      # قبض على مجرم
     "pts_fine": 1,        # مخالفة
     "pts_duty_min": 30,   # كل كم دقيقة دوام = نقطة
 }
-ADMIN_CATS = {"publish": "📢 نقاط النشر", "activate": "✅ نقاط التفعيل", "ticket": "🎫 نقاط استلام التكتات", "manual": "✏️ نقاط يدوية"}
+ADMIN_CATS = {"publish": "📢 نقاط النشر", "activate": "✅ نقاط التفعيل", "hire": "💼 نقاط التوظيف",
+              "ticket": "🎫 نقاط استلام التكتات", "resign": "📤 نقاط الاستقالات", "manual": "✏️ نقاط يدوية"}
 POLICE_CATS = {"duty": "🕒 نقاط تسجيل الدخول", "arrest": "🚔 نقاط القبض", "fine": "🧾 نقاط المخالفات", "manual": "✏️ نقاط يدوية"}
 RANK_KEYS = [(f"rank_m{i}", f"Middle {i}") for i in range(7, 0, -1)] + [(f"rank_j{i}", f"Junior {i}") for i in range(7, 0, -1)]
 
@@ -1948,7 +2027,13 @@ def points_breakdown(gid: int, uid: int, kind: str) -> dict:
     return {r["category"]: r["s"] or 0 for r in rows}
 
 
-def points_top(gid: int, kind: str, limit: int = 10):
+def points_top(gid: int, kind: str, limit: int = 10, category: str = None):
+    if category:
+        return db.execute(
+            "SELECT user_id, SUM(amount) AS s FROM points_log WHERE guild_id = ? AND kind = ? AND category = ? "
+            "GROUP BY user_id HAVING s > 0 ORDER BY s DESC LIMIT ?",
+            (gid, kind, category, limit),
+        ).fetchall()
     return db.execute(
         "SELECT user_id, SUM(amount) AS s FROM points_log WHERE guild_id = ? AND kind = ? "
         "GROUP BY user_id HAVING s > 0 ORDER BY s DESC LIMIT ?",
@@ -2030,11 +2115,13 @@ def points_card(guild: discord.Guild, member: discord.Member, kind: str):
     return e, f
 
 
-def top_embed(guild: discord.Guild, kind: str):
-    rows = points_top(guild.id, kind)
+def top_embed(guild: discord.Guild, kind: str, category: str = None):
+    rows = points_top(guild.id, kind, category=category)
     medals = ["🥇", "🥈", "🥉"]
     lines = [f"{medals[i] if i < 3 else f'**{i + 1}.**'} <@{r['user_id']}> : **{r['s']}** نقطة" for i, r in enumerate(rows)]
     title = "🏆 أفضل 10 في الإدارة" if kind == "admin" else "🏆 أفضل 10 في الشرطة"
+    if category:
+        title = f"🏆 أفضل 10 | {(ADMIN_CATS if kind == 'admin' else POLICE_CATS).get(category, category)}"
     e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0xC9A227, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
@@ -2059,6 +2146,11 @@ def admin_menu_view() -> discord.ui.View:
             discord.SelectOption(label="نقاطي", value="me", emoji="📊"),
             discord.SelectOption(label="نقاط شخص معين", value="user", emoji="🔎"),
             discord.SelectOption(label="توب أفضل عشرة", value="top", emoji="🏆"),
+            discord.SelectOption(label="توب النشر", value="top:publish", emoji="📢"),
+            discord.SelectOption(label="توب التفعيل", value="top:activate", emoji="✅"),
+            discord.SelectOption(label="توب التوظيف", value="top:hire", emoji="💼"),
+            discord.SelectOption(label="توب استلام التكتات", value="top:ticket", emoji="🎫"),
+            discord.SelectOption(label="توب الاستقالات", value="top:resign", emoji="📤"),
         ],
     ))
     return v
@@ -2224,7 +2316,8 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
         elif choice == "user":
             await inter.response.send_message(embed=embed("🔎 اختر الشخص"), view=PickUserView("admin"), ephemeral=True)
         else:
-            e, f = top_embed(guild, "admin")
+            cat = choice.split(":")[1] if ":" in choice else None
+            e, f = top_embed(guild, "admin", cat)
             await send_card(inter, e, f, "admin")
         try:  # نرجّع القائمة فاضية عشان يقدر يختار نفس الخيار مرة ثانية
             await inter.message.edit(view=admin_menu_view())
@@ -2371,6 +2464,7 @@ async def setup_admin_ranks(
 @app_commands.describe(
     النشر="نقاط نشر رحلة أو ايمبد (الافتراضي 2)", التفعيل="نقاط أمر -تفعيل (الافتراضي 3)",
     التذكرة="نقاط استلام تذكرة (الافتراضي 1)", القبض="نقاط القبض على مجرم (الافتراضي 3)",
+    التوظيف="نقاط التوظيف (الافتراضي 2)", الاستقالة="نقاط الاستقالة (الافتراضي 1)",
     المخالفة="نقاط المخالفة (الافتراضي 1)", دقائق_الدوام="كل كم دقيقة دوام = نقطة (الافتراضي 30)",
 )
 async def setup_points(
@@ -2378,17 +2472,20 @@ async def setup_points(
     النشر: app_commands.Range[int, 0, 1000] = None, التفعيل: app_commands.Range[int, 0, 1000] = None,
     التذكرة: app_commands.Range[int, 0, 1000] = None, القبض: app_commands.Range[int, 0, 1000] = None,
     المخالفة: app_commands.Range[int, 0, 1000] = None, دقائق_الدوام: app_commands.Range[int, 1, 1440] = None,
+    التوظيف: app_commands.Range[int, 0, 1000] = None, الاستقالة: app_commands.Range[int, 0, 1000] = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     gid = inter.guild.id
     for key, val in (("pts_publish", النشر), ("pts_activate", التفعيل), ("pts_ticket", التذكرة),
-                     ("pts_arrest", القبض), ("pts_fine", المخالفة), ("pts_duty_min", دقائق_الدوام)):
+                     ("pts_arrest", القبض), ("pts_fine", المخالفة), ("pts_duty_min", دقائق_الدوام),
+                     ("pts_hire", التوظيف), ("pts_resign", الاستقالة)):
         if val is not None:
             set_setting(gid, key, val)
     text = (
         f"📢 النشر: **{pts_value(gid, 'pts_publish')}**\n✅ التفعيل: **{pts_value(gid, 'pts_activate')}**\n"
-        f"🎫 استلام تذكرة: **{pts_value(gid, 'pts_ticket')}**\n🚔 القبض: **{pts_value(gid, 'pts_arrest')}**\n"
+        f"🎫 استلام تذكرة: **{pts_value(gid, 'pts_ticket')}**\n💼 التوظيف: **{pts_value(gid, 'pts_hire')}**\n"
+        f"📤 الاستقالة: **{pts_value(gid, 'pts_resign')}**\n🚔 القبض: **{pts_value(gid, 'pts_arrest')}**\n"
         f"🧾 المخالفة: **{pts_value(gid, 'pts_fine')}**\n🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام"
     )
     await inter.response.send_message(embed=embed("⚙️ إعدادات النقاط", text), ephemeral=True)
@@ -2432,6 +2529,471 @@ async def reset_points(inter: discord.Interaction, النوع: app_commands.Choi
     await log(f"{inter.user.mention} صفّر {النوع.name} لـ {العضو.mention if العضو else 'الكل'}", inter.guild)
 
 
+# ============================================================
+# التقديمات (لين 10 أنواع)
+# ============================================================
+def get_app_types(gid: int):
+    return db.execute("SELECT * FROM app_types WHERE guild_id = ? ORDER BY slot", (gid,)).fetchall()
+
+
+def get_app_type(gid: int, slot: int):
+    return db.execute("SELECT * FROM app_types WHERE guild_id = ? AND slot = ?", (gid, slot)).fetchone()
+
+
+@bot.tree.command(name="تسطيب_تقديم", description="إضافة أو تعديل تقديم (لين 10)")
+@app_commands.describe(
+    الرقم="رقم التقديم من 1 إلى 10",
+    الاسم="اسم التقديم، مثل: تقديم شرطة",
+    روم_المراجعة="الروم اللي تنرسل فيه التقديمات للإدارة",
+    رتبة_1="الرتبة الأولى اللي تنعطى إذا انقبل",
+    رتبة_2="الرتبة الثانية اللي تنعطى إذا انقبل (اختياري)",
+    المراجعين="الرتبة اللي تقدر تقبل وترفض (اختياري، الافتراضي الإدارة)",
+    الايموجي="ايموجي جنب الاسم (اختياري)",
+)
+async def setup_application(
+    inter: discord.Interaction,
+    الرقم: app_commands.Range[int, 1, 10],
+    الاسم: app_commands.Range[str, 1, 60],
+    روم_المراجعة: discord.TextChannel,
+    رتبة_1: discord.Role,
+    رتبة_2: discord.Role = None,
+    المراجعين: discord.Role = None,
+    الايموجي: str = None,
+):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    old = get_app_type(inter.guild.id, الرقم)
+    db.execute(
+        "INSERT INTO app_types (guild_id, slot, name, emoji, review_ch, role1, role2, reviewer_role, questions) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, slot) DO UPDATE SET name = excluded.name, "
+        "emoji = excluded.emoji, review_ch = excluded.review_ch, role1 = excluded.role1, role2 = excluded.role2, "
+        "reviewer_role = excluded.reviewer_role",
+        (inter.guild.id, الرقم, الاسم, (الايموجي or "").strip()[:30], روم_المراجعة.id, رتبة_1.id,
+         رتبة_2.id if رتبة_2 else 0, المراجعين.id if المراجعين else 0, old["questions"] if old else ""),
+    )
+    db.commit()
+    await inter.response.send_message(embed=embed(
+        "📝 تم تسطيب التقديم",
+        f"**رقم {الرقم}:** {الاسم}\nروم المراجعة: {روم_المراجعة.mention}\n"
+        f"الرتب إذا انقبل: {رتبة_1.mention} {رتبة_2.mention if رتبة_2 else ''}\n\n"
+        f"الحين حط أسئلته بـ **/اسئلة_تقديم** وبعدها أرسل اللوحة بـ **/ارسال_التقديمات**",
+    ), ephemeral=True)
+
+
+class AppQuestionsModal(discord.ui.Modal, title="📝 أسئلة التقديم (لين 5)"):
+    def __init__(self, slot: int, current: list):
+        super().__init__()
+        self.slot = slot
+        self.inputs = []
+        for i in range(5):
+            ti = discord.ui.TextInput(
+                label=f"السؤال {i + 1}" + ("" if i == 0 else " (اختياري)"),
+                required=(i == 0), max_length=100,
+                default=current[i] if i < len(current) else None,
+            )
+            self.inputs.append(ti)
+            self.add_item(ti)
+
+    async def on_submit(self, inter: discord.Interaction):
+        qs = [t.value.strip() for t in self.inputs if t.value and t.value.strip()]
+        db.execute("UPDATE app_types SET questions = ? WHERE guild_id = ? AND slot = ?",
+                   ("\n".join(qs), inter.guild.id, self.slot))
+        db.commit()
+        await inter.response.send_message(
+            embed=embed("✅ انحفظت الأسئلة", "\n".join(f"{i}. {q}" for i, q in enumerate(qs, 1))), ephemeral=True
+        )
+
+
+@bot.tree.command(name="اسئلة_تقديم", description="كتابة أسئلة التقديم (لين 5 أسئلة)")
+async def application_questions(inter: discord.Interaction, الرقم: app_commands.Range[int, 1, 10]):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    t = get_app_type(inter.guild.id, الرقم)
+    if not t:
+        return await inter.response.send_message(embed=err("سطّب التقديم أول بـ /تسطيب_تقديم"), ephemeral=True)
+    await inter.response.send_modal(AppQuestionsModal(الرقم, [q for q in (t["questions"] or "").splitlines() if q]))
+
+
+@bot.tree.command(name="حذف_تقديم", description="حذف تقديم")
+async def delete_application(inter: discord.Interaction, الرقم: app_commands.Range[int, 1, 10]):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    db.execute("DELETE FROM app_types WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم))
+    db.commit()
+    await inter.response.send_message(embed=embed("🗑️ انحذف التقديم", f"رقم {الرقم}. أرسل اللوحة من جديد."), ephemeral=True)
+
+
+def app_select_view(gid: int) -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    opts = [discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=t["emoji"] or None) for t in get_app_types(gid)]
+    v.add_item(discord.ui.Select(custom_id="app:open", placeholder="- اختر التقديم .", options=opts))
+    return v
+
+
+@bot.tree.command(name="ارسال_التقديمات", description="إرسال لوحة التقديمات في روم")
+async def send_app_panel(inter: discord.Interaction, الروم: discord.TextChannel, الوصف: str = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    types_ = get_app_types(inter.guild.id)
+    if not types_:
+        return await inter.response.send_message(embed=err("ما فيه تقديمات. سطّب بـ /تسطيب_تقديم"), ephemeral=True)
+    lines = "\n".join(f"{t['emoji'] or '📝'} - {t['name']}" for t in types_)
+    e = embed("📝 - التقديمات", (الوصف or f"- مرحبا بك في قسم التقديمات الخاص بـ **{config.SERVER_NAME}** .\n\n"
+                                          "اختر التقديم من القائمة وجاوب على الأسئلة .") + f"\n\n{lines}")
+    try:
+        await الروم.send(embed=e, view=app_select_view(inter.guild.id))
+    except discord.Forbidden:
+        return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
+    except discord.HTTPException:
+        return await inter.response.send_message(embed=err("فيه ايموجي غلط في أحد التقديمات."), ephemeral=True)
+    await inter.response.send_message(embed=embed("✅ انرسلت لوحة التقديمات", الروم.mention), ephemeral=True)
+
+
+class ApplyModal(discord.ui.Modal):
+    def __init__(self, t):
+        super().__init__(title=f"📝 {t['name']}"[:45])
+        self.t = t
+        self.inputs = []
+        for q in [q for q in (t["questions"] or "").splitlines() if q][:5]:
+            ti = discord.ui.TextInput(
+                label=q[:45], placeholder=q[:100] if len(q) > 45 else None,
+                style=discord.TextStyle.paragraph, max_length=1000,
+            )
+            self.inputs.append((q, ti))
+            self.add_item(ti)
+
+    async def on_submit(self, inter: discord.Interaction):
+        t = self.t
+        answers = [(q, ti.value) for q, ti in self.inputs]
+        cur = db.execute(
+            "INSERT INTO app_submissions (guild_id, slot, user_id, answers, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
+            (inter.guild.id, t["slot"], inter.user.id, json.dumps(answers, ensure_ascii=False), now().isoformat()),
+        )
+        db.commit()
+        sid = cur.lastrowid
+        ch = inter.guild.get_channel(t["review_ch"])
+        e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}", color=0xC9A227, timestamp=now())
+        e.set_author(name=str(inter.user), icon_url=inter.user.display_avatar.url)
+        e.set_thumbnail(url=inter.user.display_avatar.url)
+        e.add_field(name="المقدّم", value=f"{inter.user.mention} (`{inter.user.id}`)", inline=False)
+        for q, a in answers:
+            e.add_field(name=q[:256], value=(a or "-")[:1024], inline=False)
+        e.set_footer(text=f"{config.SERVER_NAME} | رقم التقديم #{sid}")
+        v = discord.ui.View(timeout=None)
+        v.add_item(discord.ui.Button(label="قبول", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"app:acc:{sid}"))
+        v.add_item(discord.ui.Button(label="رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"app:rej:{sid}"))
+        if not ch:
+            return await inter.response.send_message(embed=err("روم المراجعة انحذف. كلّم الإدارة."), ephemeral=True)
+        try:
+            await ch.send(embed=e, view=v)
+        except discord.HTTPException:
+            return await inter.response.send_message(embed=err("ما قدرت أرسل تقديمك. كلّم الإدارة."), ephemeral=True)
+        await inter.response.send_message(embed=embed("✅ انرسل تقديمك", "انتظر رد الإدارة، وبيوصلك الرد في الخاص ."), ephemeral=True)
+
+
+class RejectReasonModal(discord.ui.Modal, title="❌ سبب الرفض"):
+    reason = discord.ui.TextInput(label="السبب (اختياري)", required=False, max_length=300, style=discord.TextStyle.paragraph)
+
+    def __init__(self, sid: int, message: discord.Message):
+        super().__init__()
+        self.sid = sid
+        self.message = message
+
+    async def on_submit(self, inter: discord.Interaction):
+        await finish_application(inter, self.sid, False, self.reason.value, self.message)
+
+
+def can_review(member: discord.Member, t) -> bool:
+    if is_staff_member(member):
+        return True
+    return bool(t and t["reviewer_role"] and any(r.id == t["reviewer_role"] for r in member.roles))
+
+
+async def finish_application(inter: discord.Interaction, sid: int, accepted: bool, reason: str, message):
+    s = db.execute("SELECT * FROM app_submissions WHERE id = ?", (sid,)).fetchone()
+    if not s or s["status"] != "pending":
+        return await inter.response.send_message(embed=err("هذا التقديم انرد عليه من قبل."), ephemeral=True)
+    t = get_app_type(s["guild_id"], s["slot"])
+    member = inter.guild.get_member(s["user_id"])
+    given = []
+    if accepted and member and t:
+        roles = [inter.guild.get_role(r) for r in (t["role1"], t["role2"]) if r]
+        roles = [r for r in roles if r]
+        try:
+            if roles:
+                await member.add_roles(*roles, reason=f"قبول تقديم بواسطة {inter.user}")
+            given = roles
+        except discord.Forbidden:
+            return await inter.response.send_message(embed=err("ما أقدر أعطي الرتب. خل رتبة البوت فوقها."), ephemeral=True)
+    db.execute("UPDATE app_submissions SET status = ? WHERE id = ?", ("accepted" if accepted else "rejected", sid))
+    db.commit()
+    name = t["name"] if t else "التقديم"
+    if member:
+        try:
+            if accepted:
+                await member.send(embed=embed(
+                    "✅ - تم قبولك",
+                    f"**- عزيزي {member.mention} .**\n\n🎉 - تم قبولك في **{name}** في **{config.SERVER_NAME}** .\n"
+                    + (f"الرتب : {' '.join(r.name for r in given)}\n" if given else "") + "\n**( نتمنى لك التوفيق )**",
+                ))
+            else:
+                await member.send(embed=embed(
+                    "❌ - تم رفض تقديمك",
+                    f"**- عزيزي {member.mention} .**\n\nنعتذر , تم رفض تقديمك في **{name}** ."
+                    + (f"\n\n**السبب :** {reason}" if reason else "") + "\n\n**( نتمنى لك التوفيق المرة الجاية )**",
+                    0xB3261E,
+                ))
+        except discord.HTTPException:
+            pass
+    result = (f"✅ **مقبول** بواسطة {inter.user.mention}" if accepted else
+              f"❌ **مرفوض** بواسطة {inter.user.mention}" + (f"\nالسبب: {reason}" if reason else ""))
+    try:
+        e = message.embeds[0] if message.embeds else embed("📝 تقديم")
+        e.color = 0x006C35 if accepted else 0xB3261E
+        e.add_field(name="النتيجة", value=result, inline=False)
+        await message.edit(embed=e, view=None)
+    except discord.HTTPException:
+        pass
+    if inter.response.is_done():
+        await inter.followup.send(embed=embed("تم", result), ephemeral=True)
+    else:
+        await inter.response.send_message(embed=embed("تم", result), ephemeral=True)
+    await log(f"{inter.user.mention} {'قبل' if accepted else 'رفض'} تقديم <@{s['user_id']}> ({name})", inter.guild)
+
+
+async def handle_app_interaction(inter: discord.Interaction, cid: str):
+    if cid == "app:open":
+        slot = int((inter.data.get("values") or ["0"])[0])
+        t = get_app_type(inter.guild.id, slot)
+        try:
+            await inter.message.edit(view=app_select_view(inter.guild.id))
+        except discord.HTTPException:
+            pass
+        if not t:
+            return await inter.response.send_message(embed=err("التقديم هذا انحذف."), ephemeral=True)
+        if not (t["questions"] or "").strip():
+            return await inter.response.send_message(embed=err("التقديم هذا ما له أسئلة للحين."), ephemeral=True)
+        pending = db.execute(
+            "SELECT 1 FROM app_submissions WHERE guild_id = ? AND slot = ? AND user_id = ? AND status = 'pending'",
+            (inter.guild.id, slot, inter.user.id),
+        ).fetchone()
+        if pending:
+            return await inter.response.send_message(embed=err("عندك تقديم للحين ينتظر الرد."), ephemeral=True)
+        ids = {r.id for r in inter.user.roles}
+        if t["role1"] in ids and (not t["role2"] or t["role2"] in ids):
+            return await inter.response.send_message(embed=err("أنت مقبول في هذا من قبل."), ephemeral=True)
+        return await inter.response.send_modal(ApplyModal(t))
+
+    _, action, sid = cid.split(":")
+    s = db.execute("SELECT * FROM app_submissions WHERE id = ?", (int(sid),)).fetchone()
+    t = get_app_type(s["guild_id"], s["slot"]) if s else None
+    if not can_review(inter.user, t):
+        return await inter.response.send_message(embed=err("المراجعة للإدارة بس."), ephemeral=True)
+    if action == "acc":
+        await finish_application(inter, int(sid), True, "", inter.message)
+    else:
+        await inter.response.send_modal(RejectReasonModal(int(sid), inter.message))
+
+
+# ============================================================
+# التوظيف والاستقالة
+# ============================================================
+SECTORS = {"military": "عسكري 👮", "crime": "مجرم 🦹", "justice": "عدل ⚖️", "civil": "مدني 👷"}
+SECTOR_ROLE_KEY = {"military": "role_police", "crime": "role_crime", "justice": "role_justice"}
+
+
+def get_jobs(gid: int):
+    return db.execute("SELECT * FROM job_roles WHERE guild_id = ? ORDER BY name", (gid,)).fetchall()
+
+
+@bot.tree.command(name="تسطيب_وظيفة", description="إضافة وظيفة للتوظيف بأمر -اسم_الوظيفة")
+@app_commands.describe(
+    الاسم="اسم الوظيفة، مثل: عصابة الذيب (يكتبها الإداري بعد -)",
+    الرتبة="رتبة الوظيفة",
+    القطاع="القطاع (عشان الاستقالة تشيلها)",
+)
+@app_commands.choices(القطاع=[app_commands.Choice(name=v, value=k) for k, v in SECTORS.items()])
+async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[str, 1, 50], الرتبة: discord.Role,
+                    القطاع: app_commands.Choice[str]):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    name = الاسم.strip().lstrip("-").strip()
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله"):
+        return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
+    if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
+            "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
+        return await inter.response.send_message(embed=err("وصلت الحد: 50 وظيفة."), ephemeral=True)
+    db.execute(
+        "INSERT INTO job_roles (guild_id, name, role_id, sector) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(guild_id, name) DO UPDATE SET role_id = excluded.role_id, sector = excluded.sector",
+        (inter.guild.id, name, الرتبة.id, القطاع.value),
+    )
+    db.commit()
+    await inter.response.send_message(embed=embed(
+        "💼 تم تسطيب الوظيفة",
+        f"**{name}** ← {الرتبة.mention} ({القطاع.name})\n\nالتوظيف: `-{name} @الشخص`",
+    ), ephemeral=True)
+
+
+@bot.tree.command(name="حذف_وظيفة", description="حذف وظيفة من التوظيف")
+async def delete_job(inter: discord.Interaction, الاسم: str):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    cur = db.execute("DELETE FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, الاسم.strip()))
+    db.commit()
+    if not cur.rowcount:
+        return await inter.response.send_message(embed=err("ما لقيت هالوظيفة."), ephemeral=True)
+    await inter.response.send_message(embed=embed("🗑️ انحذفت الوظيفة", الاسم), ephemeral=True)
+
+
+@delete_job.autocomplete("الاسم")
+async def job_name_autocomplete(inter: discord.Interaction, current: str):
+    return [app_commands.Choice(name=j["name"], value=j["name"]) for j in get_jobs(inter.guild.id) if current in j["name"]][:25]
+
+
+@bot.tree.command(name="قائمة_الوظائف", description="عرض الوظائف المسطّبة للتوظيف")
+async def list_jobs(inter: discord.Interaction):
+    jobs = get_jobs(inter.guild.id)
+    if not jobs:
+        return await inter.response.send_message(embed=err("ما فيه وظائف. سطّب بـ /تسطيب_وظيفة"), ephemeral=True)
+    by_sector = {}
+    for j in jobs:
+        by_sector.setdefault(j["sector"], []).append(f"• `-{j['name']}` ← <@&{j['role_id']}>")
+    e = embed("💼 الوظائف")
+    for k, lines in by_sector.items():
+        e.add_field(name=SECTORS.get(k, k), value="\n".join(lines)[:1024], inline=False)
+    await inter.response.send_message(embed=e, ephemeral=True)
+
+
+async def role_update_post(guild: discord.Guild, e: discord.Embed):
+    ch = guild.get_channel(get_setting(guild.id, "ch_roles_update"))
+    if ch:
+        try:
+            await ch.send(embed=e)
+        except discord.HTTPException:
+            pass
+
+
+async def find_member_in_message(message: discord.Message, after: str):
+    if message.mentions:
+        return message.mentions[0]
+    raw = after.strip().split()[0].strip("<@!>") if after.strip() else ""
+    if raw.isdigit():
+        m = message.guild.get_member(int(raw))
+        if m is None:
+            try:
+                m = await message.guild.fetch_member(int(raw))
+            except discord.HTTPException:
+                m = None
+        return m
+    return None
+
+
+async def hire_command(message: discord.Message) -> bool:
+    """يرجع True إذا الرسالة كانت أمر توظيف"""
+    text = message.content.strip()[1:].strip()
+    jobs = sorted(get_jobs(message.guild.id), key=lambda j: len(j["name"]), reverse=True)
+    job = next((j for j in jobs if text == j["name"] or text.startswith(j["name"] + " ")), None)
+    if not job:
+        return False
+    if not is_staff_member(message.author):
+        await message.reply(embed=err("التوظيف للإدارة بس."))
+        return True
+    member = await find_member_in_message(message, text[len(job["name"]):])
+    if member is None or member.bot:
+        await message.reply(embed=err(f"الاستخدام: `-{job['name']} @الشخص`"))
+        return True
+    roles = [message.guild.get_role(job["role_id"])]
+    sector_key = SECTOR_ROLE_KEY.get(job["sector"])
+    if sector_key and get_setting(message.guild.id, sector_key):
+        roles.append(message.guild.get_role(get_setting(message.guild.id, sector_key)))
+    roles = [r for r in roles if r and r not in member.roles]
+    try:
+        if roles:
+            await member.add_roles(*roles, reason=f"توظيف بواسطة {message.author}")
+    except discord.Forbidden:
+        await message.reply(embed=err("ما أقدر أعطي الرتبة. خل رتبة البوت فوقها."))
+        return True
+    add_points(message.guild.id, message.author.id, "admin", "hire", pts_value(message.guild.id, "pts_hire"))
+    e = embed(
+        "💼 - تحديث أدوار | توظيف",
+        f"**العضو :** {member.mention}\n**الوظيفة :** {job['name']} <@&{job['role_id']}>\n"
+        f"**القطاع :** {SECTORS.get(job['sector'], '-')}\n**بواسطة :** {message.author.mention}",
+    )
+    await message.reply(embed=e)
+    await role_update_post(message.guild, e)
+    try:
+        await member.send(embed=embed("💼 - تم توظيفك", f"مبروك ! تم توظيفك في **{job['name']}** في **{config.SERVER_NAME}** 🎉"))
+    except discord.HTTPException:
+        pass
+    await log(f"{message.author.mention} وظّف {member.mention} في {job['name']}", message.guild)
+    return True
+
+
+class ResignView(discord.ui.View):
+    def __init__(self, admin_id: int, member: discord.Member):
+        super().__init__(timeout=120)
+        self.admin_id = admin_id
+        self.member = member
+        sel = discord.ui.Select(placeholder="- اختر القطاع .", options=[
+            discord.SelectOption(label="عسكري", value="military", emoji="👮"),
+            discord.SelectOption(label="مجرم", value="crime", emoji="🦹"),
+            discord.SelectOption(label="عدل", value="justice", emoji="⚖️"),
+            discord.SelectOption(label="مدني", value="civil", emoji="👷"),
+        ])
+        sel.callback = self.picked
+        self.sel = sel
+        self.add_item(sel)
+
+    async def picked(self, inter: discord.Interaction):
+        if inter.user.id != self.admin_id:
+            return await inter.response.send_message(embed=err("مو لك."), ephemeral=True)
+        sector = self.sel.values[0]
+        guild = inter.guild
+        role_ids = {j["role_id"] for j in get_jobs(guild.id) if j["sector"] == sector}
+        key = SECTOR_ROLE_KEY.get(sector)
+        if key and get_setting(guild.id, key):
+            role_ids.add(get_setting(guild.id, key))
+        if sector == "military" and get_setting(guild.id, "role_swat"):
+            role_ids.add(get_setting(guild.id, "role_swat"))
+        remove = [r for r in self.member.roles if r.id in role_ids]
+        if not remove:
+            return await inter.response.edit_message(embed=err(f"{self.member.mention} ما عنده رتب في هالقطاع."), view=None)
+        try:
+            await self.member.remove_roles(*remove, reason=f"استقالة بواسطة {inter.user}")
+        except discord.Forbidden:
+            return await inter.response.edit_message(embed=err("ما أقدر أشيل الرتب. خل رتبة البوت فوقها."), view=None)
+        # لو كانت وظيفته في البوت من هالقطاع، نرجعه عاطل
+        db.execute("UPDATE players SET job = ? WHERE user_id = ?", (config.DEFAULT_JOB, self.member.id))
+        db.commit()
+        add_points(guild.id, inter.user.id, "admin", "resign", pts_value(guild.id, "pts_resign"))
+        e = embed(
+            "📤 - تحديث أدوار | استقالة",
+            f"**العضو :** {self.member.mention}\n**القطاع :** {SECTORS[sector]}\n"
+            f"**الرتب اللي انشالت :** {' '.join(r.mention for r in remove)}\n**بواسطة :** {inter.user.mention}",
+            0xB3261E,
+        )
+        await inter.response.edit_message(embed=e, view=None)
+        await role_update_post(guild, e)
+        try:
+            await self.member.send(embed=embed("📤 - تمت استقالتك", f"تمت استقالتك من القطاع **{SECTORS[sector]}** في **{config.SERVER_NAME}** .", 0xB3261E))
+        except discord.HTTPException:
+            pass
+        await log(f"{inter.user.mention} سوّى استقالة لـ {self.member.mention} ({SECTORS[sector]})", guild)
+        self.stop()
+
+
+async def resign_command(message: discord.Message):
+    if not is_staff_member(message.author):
+        return await message.reply(embed=err("الاستقالة للإدارة بس."))
+    after = message.content.strip().split(maxsplit=1)
+    member = await find_member_in_message(message, after[1] if len(after) > 1 else "")
+    if member is None or member.bot:
+        return await message.reply(embed=err("الاستخدام: `-استقالة @الشخص`"))
+    await message.reply(embed=embed("📤 استقالة", f"العضو: {member.mention}\nاختر القطاع اللي بيستقيل منه :"),
+                        view=ResignView(message.author.id, member))
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type != discord.InteractionType.component or not inter.guild:
@@ -2449,6 +3011,8 @@ async def on_interaction(inter: discord.Interaction):
         await quiz_answer(inter, cid)
     elif cid.startswith("pts:") or cid.startswith("mdt:"):
         await handle_points_interaction(inter, cid)
+    elif cid.startswith("app:"):
+        await handle_app_interaction(inter, cid)
 
 
 # ============================================================
@@ -2473,13 +3037,27 @@ def keep_alive():
             pass
 
     port = int(os.getenv("PORT", "10000"))
-    server = HTTPServer(("0.0.0.0", port), Handler)
+    try:
+        server = HTTPServer(("0.0.0.0", port), Handler)
+    except OSError:
+        # في الاستضافات اللي ما تحتاج port (مثل PebbleHost) نكمّل عادي
+        print("ℹ️ ما فتحت port، ما يحتاج في هالاستضافة")
+        return
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"🌐 السيرفر فاتح على port {port}")
 
 
 if __name__ == "__main__":
+    import time
     keep_alive()
     if not TOKEN:
         raise SystemExit("❌ حط توكن البوت في Environment في Render باسم DISCORD_TOKEN")
-    bot.run(TOKEN)
+    try:
+        bot.run(TOKEN)
+    except discord.HTTPException as e:
+        if e.status == 429:
+            # ديسكورد حاظر الـ IP مؤقتاً. ننتظر بدل ما نطيح ونعيد على طول ونطوّل الحظر
+            print("⏳ ديسكورد حاظر الـ IP مؤقتاً (429). بنستنى 15 دقيقة وبعدها نعيد المحاولة...")
+            time.sleep(15 * 60)
+            sys.exit(1)  # Render يعيد تشغيل البوت
+        raise

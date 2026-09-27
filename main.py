@@ -8,6 +8,7 @@ import io
 import json
 import os
 import random
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -249,6 +250,13 @@ CREATE TABLE IF NOT EXISTS job_roles (
     role_id  INTEGER,
     sector   TEXT,
     PRIMARY KEY (guild_id, name)
+);
+CREATE TABLE IF NOT EXISTS units (
+    guild_id INTEGER,
+    user_id  INTEGER,
+    kind     TEXT,
+    number   INTEGER,
+    PRIMARY KEY (guild_id, user_id, kind)
 );
 CREATE TABLE IF NOT EXISTS settings (
     guild_id INTEGER,
@@ -874,7 +882,7 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="🛠️ الإدارة", value="/تسطيب_رومات · /تسطيب_رتب · /تعيين_وظيفة · /اضافة_فلوس · /خصم_فلوس · /مسح_سجل · /حذف_هوية", inline=False)
     e.add_field(name="🎫 التذاكر", value="/تسطيب_تذكرة · /حذف_تذكرة · /ارسال_التذاكر", inline=False)
     e.add_field(name="💬 الردود والإيمبد", value="/اضافة_رد · /حذف_رد · /الردود · /ايمبد · /رسالة_للكل", inline=False)
-    e.add_field(name="📊 النقاط و MDT", value="/ارسال_لوحة · /تسطيب_الاطار · /تسطيب_رتب_الادارة · /تسطيب_النقاط · /تعديل_نقاط · /تصفير_النقاط", inline=False)
+    e.add_field(name="📊 النقاط و MDT", value="/ارسال_لوحة · /حذف_يونت · /تسطيب_الاطار · /تسطيب_رتب_الادارة · /تسطيب_النقاط · /تعديل_نقاط · /تصفير_النقاط", inline=False)
     e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
     e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
     e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · /الاسئلة · /حذف_سؤال · `-تفعيل @العضو`", inline=False)
@@ -2389,6 +2397,7 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
 @app_commands.choices(النوع=[
     app_commands.Choice(name="نقاط الإدارة", value="admin"),
     app_commands.Choice(name="MDT الشرطة", value="mdt"),
+    app_commands.Choice(name="اليونتات LSPD / SWAT", value="units"),
 ])
 async def send_points_panel(inter: discord.Interaction, النوع: app_commands.Choice[str], الروم: discord.TextChannel):
     if not admin_only(inter):
@@ -2396,6 +2405,11 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
     if النوع.value == "admin":
         e = embed("📊 - نقاط الإدارة", f"**- مرحبا بك عزيزي الإداري في نظام نقاط {config.SERVER_NAME} .**\n\nاختر من القائمة اللي تحت .")
         view = admin_menu_view()
+    elif النوع.value == "units":
+        e = embed("🚓 - اليونتات", f"**- مرحبا بك عزيزي العسكري في {config.SERVER_NAME} .**\n\n"
+                  "اضغط على القطاع حقك وبيطلع لك رقم اليونت ويتغيّر اسمك تلقائي .\n\n"
+                  "🔵 **LSPD** ← يونت يبدأ بـ **D-**\n⚫ **SWAT** ← يونت يبدأ بـ **S-**", 0x2B6CB0)
+        view = units_view()
     else:
         e = embed("💻 - MDT الشرطة", f"**- مرحبا بك عزيزي العسكري في نظام {config.SERVER_NAME} .**\n\n"
                   "🟢 سجّل دخول أول ما تبدأ دوامك، و 🔴 سجّل خروج إذا خلصت .", 0x2B6CB0)
@@ -2994,6 +3008,97 @@ async def resign_command(message: discord.Message):
                         view=ResignView(message.author.id, member))
 
 
+# ============================================================
+# اليونتات: LSPD (D-30 وفوق) و SWAT (S-20 وفوق)
+# ============================================================
+UNITS = {
+    "lspd": {"prefix": "D", "start": 30, "role": "role_police", "label": "LSPD"},
+    "swat": {"prefix": "S", "start": 20, "role": "role_swat", "label": "SWAT"},
+}
+UNIT_TAG = re.compile(r"^\s*[DS]-\d+\s*\|\s*")
+
+
+def units_view() -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="LSPD", emoji="🔵", style=discord.ButtonStyle.primary, custom_id="unit:lspd"))
+    v.add_item(discord.ui.Button(label="SWAT", emoji="⚫", style=discord.ButtonStyle.secondary, custom_id="unit:swat"))
+    return v
+
+
+def unit_nick(member: discord.Member, code: str) -> str:
+    base = UNIT_TAG.sub("", member.display_name).strip() or member.name
+    return f"{code} | {base}"[:32]
+
+
+async def handle_unit(inter: discord.Interaction, kind: str):
+    u = UNITS.get(kind)
+    if not u:
+        return
+    gid = inter.guild.id
+    role_id = get_setting(gid, u["role"])
+    if not role_id:
+        return await inter.response.send_message(
+            embed=err(f"رتبة {'الشرطة' if kind == 'lspd' else 'السوات'} ما تحددت. خل الإدارة تستخدم /تسطيب_رتب"), ephemeral=True
+        )
+    if not (inter.user.guild_permissions.administrator or any(r.id == role_id for r in inter.user.roles)):
+        return await inter.response.send_message(embed=err(f"هذا الزر لرتبة <@&{role_id}> بس."), ephemeral=True)
+
+    row = db.execute("SELECT kind, number FROM units WHERE guild_id = ? AND user_id = ?",
+                      (gid, inter.user.id)).fetchone()
+    if row:
+        have = UNITS[row["kind"]]
+        return await inter.response.send_message(embed=err(
+            f"عندك يونت من قبل : **`{have['prefix']}-{row['number']}`** ( {have['label']} )\n\n"
+            "ما تقدر تاخذ يونت ثاني. إذا تبي تغيّره، كلّم الإدارة ."
+        ), ephemeral=True)
+    new = True
+    if new:
+        last = db.execute("SELECT MAX(number) AS m FROM units WHERE guild_id = ? AND kind = ?", (gid, kind)).fetchone()["m"]
+        number = max(u["start"], (last or 0) + 1)
+        db.execute("INSERT INTO units (guild_id, user_id, kind, number) VALUES (?, ?, ?, ?)", (gid, inter.user.id, kind, number))
+        db.commit()
+    else:
+        number = row["number"]
+    code = f"{u['prefix']}-{number}"
+    nick = unit_nick(inter.user, code)
+    changed = True
+    try:
+        if inter.user.display_name != nick:
+            await inter.user.edit(nick=nick, reason=f"يونت {u['label']}")
+    except discord.HTTPException:
+        changed = False
+    text = (f"{'✅ تم إعطاؤك يونت' if new else 'ℹ️ يونتك من قبل'} **{u['label']}** : **`{code}`**\n\n"
+            + (f"اسمك صار: **{nick}**" if changed else
+               "⚠️ ما قدرت أغيّر اسمك. خل رتبة البوت فوق رتبتك، وعطه صلاحية Manage Nicknames .\n"
+               "(ولو أنت صاحب السيرفر، ديسكورد ما يسمح للبوت يغيّر اسمك)"))
+    await inter.response.send_message(embed=embed(f"🚓 يونت {u['label']}", text, 0x2B6CB0), ephemeral=True)
+    if new:
+        await log(f"{inter.user.mention} أخذ يونت {u['label']} `{code}`", inter.guild)
+
+
+@bot.tree.command(name="حذف_يونت", description="حذف يونت عسكري (لصاحب صلاحية الأدمن)")
+@app_commands.choices(النوع=[
+    app_commands.Choice(name="LSPD", value="lspd"),
+    app_commands.Choice(name="SWAT", value="swat"),
+    app_commands.Choice(name="الاثنين", value="all"),
+])
+async def delete_unit(inter: discord.Interaction, العضو: discord.Member, النوع: app_commands.Choice[str]):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    if النوع.value == "all":
+        db.execute("DELETE FROM units WHERE guild_id = ? AND user_id = ?", (inter.guild.id, العضو.id))
+    else:
+        db.execute("DELETE FROM units WHERE guild_id = ? AND user_id = ? AND kind = ?", (inter.guild.id, العضو.id, النوع.value))
+    db.commit()
+    try:
+        base = UNIT_TAG.sub("", العضو.display_name).strip()
+        if base != العضو.display_name:
+            await العضو.edit(nick=base or None)
+    except discord.HTTPException:
+        pass
+    await inter.response.send_message(embed=embed("🗑️ انحذف اليونت", f"{العضو.mention} ({النوع.name})"), ephemeral=True)
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type != discord.InteractionType.component or not inter.guild:
@@ -3011,6 +3116,8 @@ async def on_interaction(inter: discord.Interaction):
         await quiz_answer(inter, cid)
     elif cid.startswith("pts:") or cid.startswith("mdt:"):
         await handle_points_interaction(inter, cid)
+    elif cid.startswith("unit:"):
+        await handle_unit(inter, cid.split(":", 1)[1])
     elif cid.startswith("app:"):
         await handle_app_interaction(inter, cid)
 

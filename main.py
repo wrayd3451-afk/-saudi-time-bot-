@@ -16,6 +16,14 @@ import subprocess
 import sys
 import types
 
+# نخلي كل الرسائل تطلع في اللوق على طول
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+print("🚀 بدأ تشغيل البوت...")
+
 # لو المكتبة مو مثبتة، يثبتها البوت لحاله
 try:
     import discord
@@ -3159,8 +3167,17 @@ if __name__ == "__main__":
     keep_alive()
     if not TOKEN:
         raise SystemExit("❌ حط توكن البوت في Environment في Render باسم DISCORD_TOKEN")
+    print(f"🔑 التوكن موجود ({len(TOKEN)} حرف). جاري تسجيل الدخول لديسكورد...")
     try:
         bot.run(TOKEN)
+    except discord.LoginFailure:
+        print("❌ التوكن غلط! خذ توكن جديد من موقع المطورين وحطه في DISCORD_TOKEN")
+        time.sleep(60)
+        sys.exit(1)
+    except discord.PrivilegedIntentsRequired:
+        print("❌ لازم تفعّل Message Content Intent و Server Members Intent في موقع مطورين ديسكورد (قسم Bot)")
+        time.sleep(60)
+        sys.exit(1)
     except discord.HTTPException as e:
         if e.status == 429:
             # ديسكورد حاظر الـ IP مؤقتاً. ننتظر بدل ما نطيح ونعيد على طول ونطوّل الحظر

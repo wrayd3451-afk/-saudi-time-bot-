@@ -33,6 +33,15 @@ except ImportError:
     import discord
     from discord import app_commands
 
+# مكتبات الصوت (عشان البوت يقعد في الروم الصوتي)
+try:
+    import nacl  # noqa: F401
+except ImportError:
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "discord.py[voice]"])
+    except Exception as _e:
+        print(f"⚠️ ما قدرت أثبت مكتبات الصوت: {_e}")
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -362,16 +371,23 @@ class VRPBot(discord.Client):
         if get_setting(0, "commands_hash") == digest:
             print("ℹ️ الأوامر ما تغيّرت، ما يحتاج أرسلها")
             return
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
-        set_setting(0, "commands_hash", digest)
+        try:
+            if GUILD_ID:
+                guild = discord.Object(id=GUILD_ID)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            else:
+                await self.tree.sync()
+            set_setting(0, "commands_hash", digest)
+            print(f"✅ انرسلت {len(self.tree.get_commands())} أمر لديسكورد")
+        except discord.HTTPException as e:
+            # ما نطيّح البوت، يكمل شغال بالأوامر اللي عند ديسكورد
+            print(f"⚠️ ديسكورد رفض تحديث الأوامر: {e}")
 
     async def on_ready(self):
         print(f"✅ البوت شغال: {self.user} ")
+        if not getattr(self, "_voice_task", None):
+            self._voice_task = asyncio.create_task(voice_keeper())
 
 
 bot = VRPBot()
@@ -916,6 +932,39 @@ async def help_cmd(inter: discord.Interaction):
 
 
 # ============================================================
+# البوت يقعد في روم صوتي 24 ساعة
+# ============================================================
+async def join_voice(guild: discord.Guild) -> bool:
+    ch = guild.get_channel(get_setting(guild.id, "ch_voice"))
+    if not isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
+        return False
+    vc = guild.voice_client
+    try:
+        if vc and vc.is_connected():
+            if vc.channel.id != ch.id:
+                await vc.move_to(ch)
+            return True
+        if vc:
+            await vc.disconnect(force=True)
+        await ch.connect(self_deaf=True, reconnect=True, timeout=30)
+        print(f"🔊 دخلت الروم الصوتي: {ch.name}")
+        return True
+    except Exception as e:
+        print(f"⚠️ ما قدرت أدخل الروم الصوتي: {e}")
+        return False
+
+
+async def voice_keeper():
+    """يتأكد كل دقيقة إن البوت قاعد في الروم الصوتي، ولو طلع يرجعه"""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        for guild in bot.guilds:
+            if get_setting(guild.id, "ch_voice"):
+                await join_voice(guild)
+        await asyncio.sleep(60)
+
+
+# ============================================================
 # التسطيب: الرومات والرتب
 # ============================================================
 def admin_only(inter: discord.Interaction) -> bool:
@@ -931,6 +980,7 @@ def admin_only(inter: discord.Interaction) -> bool:
     التفتيش="الروم اللي يكتبون فيه -تفتيش",
     تحديث_الادوار="الروم اللي ينرسل فيه التوظيف والاستقالات",
     القروض="الروم اللي توصل فيه طلبات القروض",
+    الصوتي="الروم الصوتي اللي يقعد فيه البوت 24 ساعة",
     اللوق="روم اللوق",
 )
 async def setup_channels(
@@ -942,6 +992,7 @@ async def setup_channels(
     التفتيش: discord.TextChannel = None,
     تحديث_الادوار: discord.TextChannel = None,
     القروض: discord.TextChannel = None,
+    الصوتي: discord.VoiceChannel = None,
     اللوق: discord.TextChannel = None,
 ):
     if not admin_only(inter):
@@ -979,6 +1030,10 @@ async def setup_channels(
     if القروض:
         set_setting(gid, "ch_loans", القروض.id)
         done.append(f"✅ القروض: {القروض.mention}")
+    if الصوتي:
+        set_setting(gid, "ch_voice", الصوتي.id)
+        ok = await join_voice(inter.guild)
+        done.append(f"✅ الصوتي: {الصوتي.mention}" + ("" if ok else " (⚠️ ما قدرت أدخل، شف صلاحية Connect)"))
     if اللوق:
         set_setting(gid, "ch_log", اللوق.id)
         done.append(f"✅ اللوق: {اللوق.mention}")
@@ -988,7 +1043,7 @@ async def setup_channels(
             ("إنشاء الهوية", "ch_create_id"), ("عرض الهوية", "ch_view_id"),
             ("إنشاء القيم", "ch_game"), ("شراء التذكرة", "ch_ticket"),
             ("التفتيش", "ch_inspect"), ("تحديث الأدوار", "ch_roles_update"),
-            ("القروض", "ch_loans"), ("اللوق", "ch_log"),
+            ("القروض", "ch_loans"), ("الصوتي", "ch_voice"), ("اللوق", "ch_log"),
         ]
         text = "\n".join(f"• {n}: {('<#%d>' % get_setting(gid, k)) if get_setting(gid, k) else 'ما تحدد'}" for n, k in rows)
         return await inter.followup.send(embed=embed("🛠️ الرومات الحالية", text + "\n\nاختر روم من خيارات الأمر عشان تغيّره."), ephemeral=True)
@@ -1764,9 +1819,13 @@ async def quiz_shortcut(message: discord.Message, n: int):
     t = db.execute("SELECT * FROM tickets WHERE channel_id = ?", (message.channel.id,)).fetchone()
     if not t or message.author.id != t["owner_id"]:
         return
-    qs = get_questions(message.guild.id, n)
+    # T1 داخل أي تذكرة = أسئلة نفس التذكرة (مثلاً تذكرة 11 تجيب أسئلة 11)
+    qs = get_questions(message.guild.id, t["slot"]) or get_questions(message.guild.id, n)
     if not qs:
-        return await message.reply(embed=err(f"ما فيه أسئلة في T{n}."))
+        row = db.execute("SELECT slot FROM quiz_questions WHERE guild_id = ? ORDER BY slot LIMIT 1", (message.guild.id,)).fetchone()
+        qs = get_questions(message.guild.id, row["slot"]) if row else []
+    if not qs:
+        return await message.reply(embed=err("ما فيه أسئلة. خل الإدارة تحطها بـ /تحميل_الاسئلة"))
     state = {"qs": qs, "i": 0, "right": 0, "wrong": []}
     quiz_state[(message.channel.id, message.author.id)] = state
     e, v = quiz_question_view(state)

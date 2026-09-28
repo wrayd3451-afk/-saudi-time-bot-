@@ -909,7 +909,8 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="🏦 البنك والرواتب", value="/ارسال_لوحة (البنك) · /تسطيب_رتب_الشرطة · /تسطيب_الرواتب · /صرف_الرواتب", inline=False)
     e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
     e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
-    e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · /الاسئلة · /حذف_سؤال · `-تفعيل @العضو`", inline=False)
+    e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` · /تسطيب_الادارة_العليا", inline=False)
+    e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · العضو يكتب `T1` في تذكرته · `-تفعيل @العضو`", inline=False)
     e.add_field(name="✈️ الأقيام", value="`-قيم` في روم إنشاء القيم · `-تفتيش @العضو` في روم التفتيش · /تسطيب_التفتيش", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
 
@@ -1006,6 +1007,7 @@ ROLE_KEYS = [
     ("المفعلين", "role_activator", "المفعّلين (يقدرون يستخدمون -تفعيل)"),
     ("السوات", "role_swat", "السوات"),
     ("العدل", "role_justice", "العدل"),
+    ("الاونر", "role_owner", "الأونر (يقدرون يستخدمون -حظر)"),
 ]
 
 
@@ -1022,6 +1024,7 @@ ROLE_KEYS = [
     المفعلين="الرتبة اللي تقدر تستخدم -تفعيل",
     السوات="رتبة السوات",
     العدل="رتبة العدل",
+    الاونر="الرتبة الأونرية اللي تقدر تستخدم -حظر",
 )
 async def setup_roles(
     inter: discord.Interaction,
@@ -1036,6 +1039,7 @@ async def setup_roles(
     المفعلين: discord.Role = None,
     السوات: discord.Role = None,
     العدل: discord.Role = None,
+    الاونر: discord.Role = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
@@ -1043,7 +1047,7 @@ async def setup_roles(
     given = {"الادارة": الادارة, "الشرطة": الشرطة, "الاجرام": الاجرام,
              "الاعلام": الاعلام, "المواطن": المواطن, "الاقيام": الاقيام,
              "عضو_رسمي": عضو_رسمي, "مقيم": مقيم,
-             "المفعلين": المفعلين, "السوات": السوات, "العدل": العدل}
+             "المفعلين": المفعلين, "السوات": السوات, "العدل": العدل, "الاونر": الاونر}
     changed = []
     for arg, key, label in ROLE_KEYS:
         role = given[arg]
@@ -1102,6 +1106,18 @@ async def on_message(message: discord.Message):
         return await activate_command(message)
     if message.content.strip().startswith("-تفتيش"):
         return await inspect_command(message)
+    first = message.content.strip().split()[:1]
+    m_t = re.fullmatch(r"[Tt](\d{1,2})", message.content.strip())
+    if m_t and 1 <= int(m_t.group(1)) <= 20:
+        return await quiz_shortcut(message, int(m_t.group(1)))
+    if first in (["-اسكات"], ["-إسكات"]):
+        return await mute_command(message)
+    if first in (["-فك_اسكات"], ["-فك"]):
+        return await unmute_command(message)
+    if first == ["-حظر"]:
+        return await ban_command(message, True)
+    if first == ["-فك_حظر"]:
+        return await ban_command(message, False)
     if message.content.strip().split()[:1] in (["-استقالة"], ["-استقاله"]):
         return await resign_command(message)
     if message.content.strip() != "-قيم":
@@ -1434,9 +1450,9 @@ def get_ticket_types(guild_id: int):
     return db.execute("SELECT * FROM ticket_types WHERE guild_id = ? ORDER BY slot", (guild_id,)).fetchall()
 
 
-@bot.tree.command(name="تسطيب_تذكرة", description="إضافة أو تعديل نوع تذكرة (لين 10 أنواع)")
+@bot.tree.command(name="تسطيب_تذكرة", description="إضافة أو تعديل نوع تذكرة (1-10 منيو، 11-20 أزرار)")
 @app_commands.describe(
-    الرقم="رقم التذكرة من 1 إلى 10",
+    الرقم="1 إلى 10 تطلع في المنيو، و 11 إلى 20 تطلع أزرار",
     الاسم="اسم التذكرة، مثل: جمارك، دعم فني، شكوى",
     الكاتقوري="الكاتقوري اللي تنفتح فيه التذاكر",
     رتبة_المسؤول="الرتبة اللي تستلم التذكرة وتشوفها",
@@ -1445,7 +1461,7 @@ def get_ticket_types(guild_id: int):
 )
 async def setup_ticket(
     inter: discord.Interaction,
-    الرقم: app_commands.Range[int, 1, 10],
+    الرقم: app_commands.Range[int, 1, 20],
     الاسم: app_commands.Range[str, 1, 40],
     الكاتقوري: discord.CategoryChannel,
     رتبة_المسؤول: discord.Role,
@@ -1473,7 +1489,7 @@ async def setup_ticket(
 
 
 @bot.tree.command(name="حذف_تذكرة", description="حذف نوع تذكرة")
-async def delete_ticket_type(inter: discord.Interaction, الرقم: app_commands.Range[int, 1, 10]):
+async def delete_ticket_type(inter: discord.Interaction, الرقم: app_commands.Range[int, 1, 20]):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     db.execute("DELETE FROM ticket_types WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم))
@@ -1488,28 +1504,49 @@ def ticket_select(guild_id: int) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     options = [
         discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=t["emoji"] or None)
-        for t in get_ticket_types(guild_id)
+        for t in get_ticket_types(guild_id) if t["slot"] <= 10
     ]
     view.add_item(discord.ui.Select(custom_id="ticket:open", placeholder="- اختر نوع التذكرة .", options=options))
     return view
 
 
+def ticket_buttons_panel(guild_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    styles = [discord.ButtonStyle.primary, discord.ButtonStyle.success, discord.ButtonStyle.secondary, discord.ButtonStyle.danger]
+    for i, t in enumerate([t for t in get_ticket_types(guild_id) if t["slot"] > 10]):
+        view.add_item(discord.ui.Button(label=t["name"], emoji=t["emoji"] or None, style=styles[i % 4],
+                                        custom_id=f"ticket:btn:{t['slot']}", row=i // 5))
+    return view
+
+
 @bot.tree.command(name="ارسال_التذاكر", description="إرسال لوحة التذاكر في روم")
-@app_commands.describe(الروم="الروم اللي تنرسل فيه لوحة التذاكر", الوصف="الكلام اللي فوق القائمة (اختياري)")
-async def send_ticket_panel(inter: discord.Interaction, الروم: discord.TextChannel, الوصف: str = None):
+@app_commands.describe(
+    الروم="الروم اللي تنرسل فيه لوحة التذاكر",
+    الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
+    الوصف="الكلام اللي فوق (اختياري)",
+)
+@app_commands.choices(الشكل=[
+    app_commands.Choice(name="منيو (التذاكر 1 - 10)", value="menu"),
+    app_commands.Choice(name="أزرار (التذاكر 11 - 20)", value="buttons"),
+])
+async def send_ticket_panel(inter: discord.Interaction, الروم: discord.TextChannel,
+                            الشكل: app_commands.Choice[str] = None, الوصف: str = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
-    types = get_ticket_types(inter.guild.id)
+    buttons = bool(الشكل and الشكل.value == "buttons")
+    types = [t for t in get_ticket_types(inter.guild.id) if (t["slot"] > 10) == buttons]
     if not types:
-        return await inter.response.send_message(embed=err("ما سطّبت ولا تذكرة. استخدم /تسطيب_تذكرة أول."), ephemeral=True)
+        return await inter.response.send_message(embed=err(
+            "ما سطّبت ولا تذكرة " + ("من 11 إلى 20 (الأزرار)." if buttons else "من 1 إلى 10 (المنيو).") + " استخدم /تسطيب_تذكرة"
+        ), ephemeral=True)
     lines = "\n".join(f"{t['emoji'] or '🎫'} - {t['name']}" for t in types)
     e = embed(
         "🎫 - التذاكر",
         (الوصف or f"- مرحبا بك عزيزي العضو في قسم التذاكر الخاص بـ **{config.SERVER_NAME}** .\n\n"
-                  "اختر نوع التذكرة من القائمة اللي تحت .") + f"\n\n{lines}",
+                  + ("اضغط على الزر حق التذكرة اللي تبيها ." if buttons else "اختر نوع التذكرة من القائمة اللي تحت .")) + f"\n\n{lines}",
     )
     try:
-        await الروم.send(embed=e, view=ticket_select(inter.guild.id))
+        await الروم.send(embed=e, view=ticket_buttons_panel(inter.guild.id) if buttons else ticket_select(inter.guild.id))
     except discord.Forbidden:
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
     except discord.HTTPException:
@@ -1578,15 +1615,6 @@ async def open_ticket(inter: discord.Interaction, slot: int):
         f"مُقدم الطلب : ( {inter.user.mention} )",
     )
     await ch.send(content=f"{inter.user.mention} {staff.mention if staff else ''}", embed=e, view=ticket_buttons())
-    if get_questions(guild.id, slot):
-        qe = embed(
-            "📝 - الاختبار",
-            "**- مرحبا بك عزيزي العضو .**\n\n📄 - عزيزي العضو باستطاعتك الان إستكمال الإجراءات "
-            "عبر الزر المُتواجد بالأسفل وإستكمال الأسئلة التي تظهر لك .",
-        )
-        qv = discord.ui.View(timeout=None)
-        qv.add_item(discord.ui.Button(label="- بدء الإختبار .", emoji="📝", style=discord.ButtonStyle.primary, custom_id="quiz:start"))
-        await ch.send(embed=qe, view=qv)
     await inter.followup.send(embed=embed("✅ انفتحت تذكرتك", ch.mention), ephemeral=True)
     await log(f"{inter.user.mention} فتح تذكرة **{ttype['name']}** {ch.mention}", guild)
 
@@ -1649,7 +1677,7 @@ def get_questions(guild_id: int, slot: int):
 )
 async def add_question(
     inter: discord.Interaction,
-    رقم_التذكرة: app_commands.Range[int, 1, 10],
+    رقم_التذكرة: app_commands.Range[int, 1, 20],
     السؤال: app_commands.Range[str, 1, 300],
     الجواب_الصح: app_commands.Range[str, 1, 80],
     الجواب_الغلط: app_commands.Range[str, 1, 80],
@@ -1673,7 +1701,7 @@ async def add_question(
 
 
 @bot.tree.command(name="الاسئلة", description="عرض أسئلة اختبار تذكرة")
-async def list_questions(inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 10]):
+async def list_questions(inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 20]):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     qs = get_questions(inter.guild.id, رقم_التذكرة)
@@ -1688,7 +1716,7 @@ async def list_questions(inter: discord.Interaction, رقم_التذكرة: app_
 @bot.tree.command(name="حذف_سؤال", description="حذف سؤال من اختبار تذكرة")
 @app_commands.describe(رقم_السؤال="رقم السؤال من أمر /الاسئلة")
 async def delete_question(
-    inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 10], رقم_السؤال: app_commands.Range[int, 1, 25]
+    inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 20], رقم_السؤال: app_commands.Range[int, 1, 25]
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
@@ -1716,7 +1744,7 @@ DEFAULT_QUESTIONS = [
 
 
 @bot.tree.command(name="تحميل_الاسئلة", description="يحط أسئلة قوانين الرول بلاي الجاهزة (10 أسئلة) في تذكرة")
-async def load_default_questions(inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 10]):
+async def load_default_questions(inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 20]):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     db.execute("DELETE FROM quiz_questions WHERE guild_id = ? AND slot = ?", (inter.guild.id, رقم_التذكرة))
@@ -1729,6 +1757,24 @@ async def load_default_questions(inter: discord.Interaction, رقم_التذكر
         embed=embed("✅ انحطت الأسئلة", f"انحط {len(DEFAULT_QUESTIONS)} سؤال في التذكرة {رقم_التذكرة}. شوفها بـ /الاسئلة"),
         ephemeral=True,
     )
+
+
+async def quiz_shortcut(message: discord.Message, n: int):
+    """العضو يكتب T1 داخل تذكرته وتطلع له الأسئلة على طول"""
+    t = db.execute("SELECT * FROM tickets WHERE channel_id = ?", (message.channel.id,)).fetchone()
+    if not t or message.author.id != t["owner_id"]:
+        return
+    qs = get_questions(message.guild.id, n)
+    if not qs:
+        return await message.reply(embed=err(f"ما فيه أسئلة في T{n}."))
+    state = {"qs": qs, "i": 0, "right": 0, "wrong": []}
+    quiz_state[(message.channel.id, message.author.id)] = state
+    e, v = quiz_question_view(state)
+    await message.channel.send(content=message.author.mention, embed=e, view=v)
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
 
 
 quiz_state = {}  # (channel_id, user_id) -> {"qs": [...], "i": int, "right": int, "wrong": [..]}
@@ -1753,13 +1799,15 @@ def quiz_question_view(state: dict):
     return e, v
 
 
-async def quiz_start(inter: discord.Interaction):
+async def quiz_start(inter: discord.Interaction, cid: str = "quiz:start"):
     t = db.execute("SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)).fetchone()
     if not t:
         return await inter.response.send_message(embed=err("هذي مو تذكرة مسجلة."), ephemeral=True)
     if inter.user.id != t["owner_id"]:
         return await inter.response.send_message(embed=err("الاختبار لصاحب التذكرة بس."), ephemeral=True)
-    qs = get_questions(inter.guild.id, t["slot"])
+    parts = cid.split(":")
+    slot = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else t["slot"]
+    qs = get_questions(inter.guild.id, slot)
     if not qs:
         return await inter.response.send_message(embed=err("ما فيه أسئلة لهذي التذكرة."), ephemeral=True)
     state = {"qs": qs, "i": 0, "right": 0, "wrong": []}
@@ -1772,6 +1820,9 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
     key = (inter.channel.id, inter.user.id)
     state = quiz_state.get(key)
     _, _, idx, choice = cid.split(":")
+    if not state and db.execute("SELECT 1 FROM tickets WHERE channel_id = ? AND owner_id != ?",
+                                (inter.channel.id, inter.user.id)).fetchone():
+        return await inter.response.send_message(embed=err("الاختبار لصاحب التذكرة بس."), ephemeral=True)
     if not state or int(idx) != state["i"]:
         return await inter.response.send_message(embed=err("الاختبار انتهى أو انعاد. اضغط بدء الإختبار من جديد."), ephemeral=True)
     q = state["qs"][state["i"]]
@@ -1952,6 +2003,117 @@ async def inspect_command(message: discord.Message):
 
 
 # ============================================================
+# الإسكات بالتسلسل + الحظر للأونر
+# ============================================================
+def parse_duration(text: str):
+    """10 = 10 دقايق، 10m / 10د ، 2h / 2س ، 1d / 1ي"""
+    m = re.fullmatch(r"(\d{1,4})\s*(m|min|د|دقيقة|دقايق|h|س|ساعة|ساعات|d|ي|يوم|ايام)?", text.strip().lower())
+    if not m:
+        return None
+    n, unit = int(m.group(1)), (m.group(2) or "m")
+    if unit in ("h", "س", "ساعة", "ساعات"):
+        mins = n * 60
+    elif unit in ("d", "ي", "يوم", "ايام"):
+        mins = n * 1440
+    else:
+        mins = n
+    return max(1, min(mins, 28 * 1440))
+
+
+def fmt_minutes(mins: int) -> str:
+    if mins % 1440 == 0:
+        return f"{mins // 1440} يوم"
+    if mins % 60 == 0:
+        return f"{mins // 60} ساعة"
+    return f"{mins} دقيقة"
+
+
+async def mute_command(message: discord.Message):
+    lvl = staff_level(message.author)
+    if lvl <= 0:
+        return await message.reply(embed=err("الإسكات للإدارة بس."))
+    parts = message.content.split()
+    member = await find_member_in_message(message, " ".join(parts[1:]))
+    if member is None or member.bot:
+        return await message.reply(embed=err("الاستخدام: `-اسكات @العضو المدة السبب`\nمثال: `-اسكات @فهد 30 سب` (30 دقيقة) أو `2h` أو `1d`"))
+    if member.id == message.author.id:
+        return await message.reply(embed=err("ما تقدر تسكت نفسك."))
+    if staff_level(member) >= lvl:
+        return await message.reply(embed=err(f"ما تقدر تسكت {member.mention}، رتبته مثلك أو أعلى منك."))
+    rest = [x for x in parts[2:] if not x.startswith("<@")]
+    mins = parse_duration(rest[0]) if rest else None
+    reason = " ".join(rest[1:] if mins else rest) or "بدون سبب"
+    mins = mins or 10
+    try:
+        await member.timeout(timedelta(minutes=mins), reason=f"{message.author}: {reason}")
+    except discord.Forbidden:
+        return await message.reply(embed=err("ما أقدر أسكته. عطني صلاحية Timeout Members وخل رتبتي فوق رتبته."))
+    e = embed("🔇 - تم الإسكات",
+              f"**العضو :** {member.mention}\n**المدة :** {fmt_minutes(mins)}\n**السبب :** {reason}\n**بواسطة :** {message.author.mention}",
+              0xB98118)
+    await message.reply(embed=e)
+    try:
+        await member.send(embed=embed("🔇 - تم إسكاتك", f"تم إسكاتك في **{config.SERVER_NAME}** لمدة **{fmt_minutes(mins)}**\n**السبب :** {reason}", 0xB98118))
+    except discord.HTTPException:
+        pass
+    await log(f"{message.author.mention} سكّت {member.mention} {fmt_minutes(mins)}: {reason}", message.guild)
+
+
+async def unmute_command(message: discord.Message):
+    lvl = staff_level(message.author)
+    if lvl <= 0:
+        return await message.reply(embed=err("فك الإسكات للإدارة بس."))
+    parts = message.content.split()
+    member = await find_member_in_message(message, " ".join(parts[1:]))
+    if member is None:
+        return await message.reply(embed=err("الاستخدام: `-فك_اسكات @العضو`"))
+    if staff_level(member) >= lvl:
+        return await message.reply(embed=err("رتبته مثلك أو أعلى منك."))
+    try:
+        await member.timeout(None, reason=f"فك إسكات بواسطة {message.author}")
+    except discord.Forbidden:
+        return await message.reply(embed=err("ما أقدر أفك إسكاته."))
+    await message.reply(embed=embed("🔊 - تم فك الإسكات", f"{member.mention} بواسطة {message.author.mention}"))
+    await log(f"{message.author.mention} فك إسكات {member.mention}", message.guild)
+
+
+async def ban_command(message: discord.Message, ban: bool):
+    owner_role = get_setting(message.guild.id, "role_owner")
+    allowed = message.author.id == message.guild.owner_id or (owner_role and any(r.id == owner_role for r in message.author.roles))
+    if not allowed:
+        return await message.reply(embed=err("الحظر للرتبة الأونرية بس."))
+    parts = message.content.split()
+    raw = parts[1].strip("<@!>") if len(parts) > 1 else ""
+    if not raw.isdigit():
+        return await message.reply(embed=err("الاستخدام: `-حظر ايدي_العضو السبب`" if ban else "الاستخدام: `-فك_حظر ايدي_العضو`"))
+    uid = int(raw)
+    reason = " ".join(parts[2:]) or "بدون سبب"
+    if uid in (message.author.id, message.guild.owner_id, bot.user.id if bot.user else 0):
+        return await message.reply(embed=err("ما تقدر تحظر هذا الشخص."))
+    member = message.guild.get_member(uid)
+    if ban and member and staff_level(member) >= staff_level(message.author):
+        return await message.reply(embed=err("رتبته مثلك أو أعلى منك."))
+    try:
+        if ban:
+            if member:
+                try:
+                    await member.send(embed=embed("⛔ - تم حظرك", f"تم حظرك من **{config.SERVER_NAME}**\n**السبب :** {reason}", 0xB3261E))
+                except discord.HTTPException:
+                    pass
+            await message.guild.ban(discord.Object(id=uid), reason=f"{message.author}: {reason}", delete_message_seconds=0)
+        else:
+            await message.guild.unban(discord.Object(id=uid), reason=f"فك حظر بواسطة {message.author}")
+    except discord.NotFound:
+        return await message.reply(embed=err("ما لقيت العضو." if ban else "هالشخص مو محظور."))
+    except discord.Forbidden:
+        return await message.reply(embed=err("ما عندي صلاحية Ban Members، أو رتبتي تحت رتبته."))
+    title = "⛔ - تم الحظر" if ban else "✅ - تم فك الحظر"
+    await message.reply(embed=embed(title, f"**الايدي :** `{uid}`\n" + (f"**السبب :** {reason}\n" if ban else "")
+                                    + f"**بواسطة :** {message.author.mention}", 0xB3261E if ban else 0x006C35))
+    await log(f"{message.author.mention} {'حظر' if ban else 'فك حظر'} `{uid}` {reason if ban else ''}", message.guild)
+
+
+# ============================================================
 # التفعيل: -تفعيل @العضو ايدي_سوني
 # ============================================================
 def can_activate(member: discord.Member) -> bool:
@@ -2039,7 +2201,32 @@ POINT_DEFAULTS = {
 ADMIN_CATS = {"publish": "📢 نقاط النشر", "activate": "✅ نقاط التفعيل", "hire": "💼 نقاط التوظيف",
               "ticket": "🎫 نقاط استلام التكتات", "resign": "📤 نقاط الاستقالات", "manual": "✏️ نقاط يدوية"}
 POLICE_CATS = {"duty": "🕒 نقاط تسجيل الدخول", "arrest": "🚔 نقاط القبض", "fine": "🧾 نقاط المخالفات", "manual": "✏️ نقاط يدوية"}
-RANK_KEYS = [(f"rank_m{i}", f"Middle {i}") for i in range(7, 0, -1)] + [(f"rank_j{i}", f"Junior {i}") for i in range(7, 0, -1)]
+UPPER_RANKS = ["SIR", "LeadeR", "Damon", "BoSS", "AssistanT", "CommaNDeR", "Co Founder", "Founder"]  # من الأقل للأعلى
+UPPER_ARGS = ["sir", "leader", "damon", "boss", "assistant", "commander", "co_founder", "founder"]
+# من الأعلى للأقل
+RANK_KEYS = ([(f"rank_u{i}", UPPER_RANKS[i - 1]) for i in range(8, 0, -1)]
+             + [(f"rank_m{i}", f"Middle {i}") for i in range(7, 0, -1)]
+             + [(f"rank_j{i}", f"Junior {i}") for i in range(7, 0, -1)])
+# المستوى: Junior 1 = 1 ... Junior 7 = 7، Middle 1 = 8 ... Middle 7 = 14، SIR = 15 ... Founder = 22
+RANK_LEVEL = {**{f"rank_j{i}": i for i in range(1, 8)}, **{f"rank_m{i}": 7 + i for i in range(1, 8)},
+              **{f"rank_u{i}": 14 + i for i in range(1, 9)}}
+
+
+def staff_level(member: discord.Member) -> int:
+    if member.id == member.guild.owner_id:
+        return 1000
+    ids = {r.id for r in member.roles}
+    owner_role = get_setting(member.guild.id, "role_owner")
+    if owner_role and owner_role in ids:
+        return 500  # الرتبة الأونرية فوق كل الإدارة
+    level = 0
+    for key, lvl in RANK_LEVEL.items():
+        rid = get_setting(member.guild.id, key)
+        if rid and rid in ids:
+            level = max(level, lvl)
+    if level == 0 and member.guild_permissions.administrator:
+        level = 100
+    return level
 
 
 def pts_value(gid: int, key: str) -> int:
@@ -2508,6 +2695,41 @@ async def setup_admin_ranks(
     text = "\n".join(f"• {name}: {('<@&%d>' % get_setting(gid, k)) if get_setting(gid, k) else 'ما تحددت'}" for k, name in order)
     text += f"\n\n👑 **الإدارة العليا:** {('<@&%d>' % top) if top else 'حددها من /تسطيب_رتب (الادارة)'}"
     await inter.response.send_message(embed=embed("🎖️ رتب الإدارة", text), ephemeral=True)
+
+
+@bot.tree.command(name="تسطيب_الادارة_العليا", description="تحديد رتب الإدارة العليا من SIR إلى Founder")
+@app_commands.describe(
+    sir="رتبة SIR",
+    leader="رتبة LeadeR",
+    damon="رتبة Damon",
+    boss="رتبة BoSS",
+    assistant="رتبة AssistanT",
+    commander="رتبة CommaNDeR",
+    co_founder="رتبة Co Founder",
+    founder="رتبة Founder",
+)
+async def setup_upper_ranks(
+    inter: discord.Interaction,
+    sir: discord.Role = None,
+    leader: discord.Role = None,
+    damon: discord.Role = None,
+    boss: discord.Role = None,
+    assistant: discord.Role = None,
+    commander: discord.Role = None,
+    co_founder: discord.Role = None,
+    founder: discord.Role = None,
+):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    gid = inter.guild.id
+    for i, role in enumerate((sir, leader, damon, boss, assistant, commander, co_founder, founder), 1):
+        if role:
+            set_setting(gid, f"rank_u{i}", role.id)
+    text = "\n".join(
+        f"• {UPPER_RANKS[i - 1]}: {('<@&%d>' % get_setting(gid, f'rank_u{i}')) if get_setting(gid, f'rank_u{i}') else 'ما تحددت'}"
+        for i in range(8, 0, -1)
+    )
+    await inter.response.send_message(embed=embed("👑 الإدارة العليا", text + "\n\nالترتيب من الأعلى للأقل، وتحتهم Middle 7 لين Junior 1 ."), ephemeral=True)
 
 
 @bot.tree.command(name="تسطيب_النقاط", description="كم نقطة لكل شي")
@@ -3540,10 +3762,16 @@ async def on_interaction(inter: discord.Interaction):
         values = inter.data.get("values") or []
         if values:
             await open_ticket(inter, int(values[0]))
+        try:  # نرجّع المنيو فاضي عشان يقدر يختار مرة ثانية
+            await inter.message.edit(view=ticket_select(inter.guild.id))
+        except discord.HTTPException:
+            pass
+    elif cid.startswith("ticket:btn:"):
+        await open_ticket(inter, int(cid.split(":")[2]))
     elif cid.startswith("ticket:"):
         await handle_ticket_button(inter, cid.split(":", 1)[1])
-    elif cid == "quiz:start":
-        await quiz_start(inter)
+    elif cid.startswith("quiz:start"):
+        await quiz_start(inter, cid)
     elif cid.startswith("quiz:ans:"):
         await quiz_answer(inter, cid)
     elif cid.startswith("pts:") or cid.startswith("mdt:"):

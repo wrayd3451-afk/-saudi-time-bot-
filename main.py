@@ -1610,20 +1610,20 @@ async def delete_ticket_type(inter: discord.Interaction, الرقم: app_command
     )
 
 
-def ticket_select(guild_id: int) -> discord.ui.View:
+def ticket_select(guild_id: int, slots=None) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     options = [
         discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=t["emoji"] or None)
-        for t in get_ticket_types(guild_id) if t["slot"] <= 10
+        for t in get_ticket_types(guild_id) if (t["slot"] in slots if slots else t["slot"] <= 10)
     ]
     view.add_item(discord.ui.Select(custom_id="ticket:open", placeholder="- اختر نوع التذكرة .", options=options))
     return view
 
 
-def ticket_buttons_panel(guild_id: int) -> discord.ui.View:
+def ticket_buttons_panel(guild_id: int, slots=None) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     styles = [discord.ButtonStyle.primary, discord.ButtonStyle.success, discord.ButtonStyle.secondary, discord.ButtonStyle.danger]
-    for i, t in enumerate([t for t in get_ticket_types(guild_id) if t["slot"] > 10]):
+    for i, t in enumerate([t for t in get_ticket_types(guild_id) if (t["slot"] in slots if slots else t["slot"] > 10)]):
         view.add_item(discord.ui.Button(label=t["name"], emoji=t["emoji"] or None, style=styles[i % 4],
                                         custom_id=f"ticket:btn:{t['slot']}", row=i // 5))
     return view
@@ -1633,6 +1633,7 @@ def ticket_buttons_panel(guild_id: int) -> discord.ui.View:
 @app_commands.describe(
     الروم="الروم اللي تنرسل فيه لوحة التذاكر",
     الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
+    الأرقام="أرقام التذاكر اللي تطلع في هاللوحة بس، مثل: 12 أو 11,13 (فاضي = كلها)",
     الوصف="الكلام اللي فوق (اختياري)",
 )
 @app_commands.choices(الشكل=[
@@ -1640,15 +1641,24 @@ def ticket_buttons_panel(guild_id: int) -> discord.ui.View:
     app_commands.Choice(name="أزرار (التذاكر 11 - 20)", value="buttons"),
 ])
 async def send_ticket_panel(inter: discord.Interaction, الروم: discord.TextChannel,
-                            الشكل: app_commands.Choice[str] = None, الوصف: str = None):
+                            الشكل: app_commands.Choice[str] = None, الأرقام: str = None, الوصف: str = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     buttons = bool(الشكل and الشكل.value == "buttons")
-    types = [t for t in get_ticket_types(inter.guild.id) if (t["slot"] > 10) == buttons]
+    slots = None
+    if الأرقام:
+        slots = [int(x) for x in re.findall(r"\d+", الأرقام.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))]
+        types = [t for t in get_ticket_types(inter.guild.id) if t["slot"] in slots]
+        if not الشكل:  # لو ما اختار الشكل، ناخذه من رقم أول تذكرة
+            buttons = bool(types) and types[0]["slot"] > 10
+    else:
+        types = [t for t in get_ticket_types(inter.guild.id) if (t["slot"] > 10) == buttons]
     if not types:
         return await inter.response.send_message(embed=err(
-            "ما سطّبت ولا تذكرة " + ("من 11 إلى 20 (الأزرار)." if buttons else "من 1 إلى 10 (المنيو).") + " استخدم /تسطيب_تذكرة"
-        ), ephemeral=True)
+            ("ما لقيت تذاكر بهالأرقام." if الأرقام else
+             "ما سطّبت ولا تذكرة " + ("من 11 إلى 20 (الأزرار)." if buttons else "من 1 إلى 10 (المنيو)."))
+            + " شف /تسطيب_تذكرة"), ephemeral=True)
+    slots = [t["slot"] for t in types]
     lines = "\n".join(f"{t['emoji'] or '🎫'} - {t['name']}" for t in types)
     e = embed(
         "🎫 - التذاكر",
@@ -1656,7 +1666,7 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
                   + ("اضغط على الزر حق التذكرة اللي تبيها ." if buttons else "اختر نوع التذكرة من القائمة اللي تحت .")) + f"\n\n{lines}",
     )
     try:
-        await الروم.send(embed=e, view=ticket_buttons_panel(inter.guild.id) if buttons else ticket_select(inter.guild.id))
+        await الروم.send(embed=e, view=ticket_buttons_panel(inter.guild.id, slots) if buttons else ticket_select(inter.guild.id, slots))
     except discord.Forbidden:
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
     except discord.HTTPException:
@@ -4146,8 +4156,10 @@ async def on_interaction(inter: discord.Interaction):
         values = inter.data.get("values") or []
         if values:
             await open_ticket(inter, int(values[0]))
-        try:  # نرجّع المنيو فاضي عشان يقدر يختار مرة ثانية
-            await inter.message.edit(view=ticket_select(inter.guild.id))
+        try:  # نرجّع المنيو فاضي بنفس التذاكر اللي كانت فيه
+            keep = [int(o.value) for row in inter.message.components for c in getattr(row, "children", [])
+                    for o in getattr(c, "options", [])]
+            await inter.message.edit(view=ticket_select(inter.guild.id, keep or None))
         except discord.HTTPException:
             pass
     elif cid.startswith("ticket:btn:"):

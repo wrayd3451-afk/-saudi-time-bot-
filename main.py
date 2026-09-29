@@ -126,7 +126,50 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 # ============================================================
 # قاعدة البيانات
 # ============================================================
-db = sqlite3.connect("vrp.db")
+# ============================================================
+# النسخ الاحتياطي في ديسكورد (عشان البيانات ما تنمسح في Render)
+# ============================================================
+BACKUP_CH_NAME = "نسخ-احتياطي-البوت"
+DB_FILE = "vrp.db"
+
+
+def _discord_get(path: str, token: str):
+    import urllib.request
+    req = urllib.request.Request(
+        f"https://discord.com/api/v10{path}",
+        headers={"Authorization": f"Bot {token}", "User-Agent": "DiscordBot (saudi-time, 1.0)"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode())
+
+
+def restore_backup():
+    """إذا ملف البيانات مو موجود (Render مسحه)، نرجّع آخر نسخة من روم النسخ الاحتياطي"""
+    token = os.getenv("DISCORD_TOKEN")
+    if not token or (os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0):
+        return
+    try:
+        import urllib.request
+        for g in _discord_get("/users/@me/guilds", token):
+            chans = _discord_get(f"/guilds/{g['id']}/channels", token)
+            ch = next((c for c in chans if c.get("type") == 0 and c.get("name") == BACKUP_CH_NAME), None)
+            if not ch:
+                continue
+            for m in _discord_get(f"/channels/{ch['id']}/messages?limit=20", token):
+                att = next((a for a in m.get("attachments", []) if a.get("filename") == DB_FILE), None)
+                if att:
+                    req = urllib.request.Request(att["url"], headers={"User-Agent": "DiscordBot (saudi-time, 1.0)"})
+                    with urllib.request.urlopen(req, timeout=60) as r, open(DB_FILE, "wb") as f:
+                        f.write(r.read())
+                    print(f"♻️ رجّعت البيانات من النسخة الاحتياطية ({m.get('timestamp', '')[:19]})")
+                    return
+        print("ℹ️ ما فيه نسخة احتياطية، نبدأ من جديد")
+    except Exception as e:
+        print(f"⚠️ ما قدرت أرجّع النسخة الاحتياطية: {e}")
+
+
+restore_backup()
+db = sqlite3.connect(DB_FILE)
 db.row_factory = sqlite3.Row
 db.executescript("""
 CREATE TABLE IF NOT EXISTS players (
@@ -290,6 +333,20 @@ CREATE TABLE IF NOT EXISTS loans (
     status     TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS rule_sections (
+    guild_id INTEGER,
+    idx      INTEGER,
+    name     TEXT,
+    emoji    TEXT,
+    content  TEXT,
+    PRIMARY KEY (guild_id, idx)
+);
+CREATE TABLE IF NOT EXISTS point_labels (
+    guild_id INTEGER,
+    category TEXT,
+    label    TEXT,
+    PRIMARY KEY (guild_id, category)
+);
 CREATE TABLE IF NOT EXISTS settings (
     guild_id INTEGER,
     key      TEXT,
@@ -388,6 +445,14 @@ class VRPBot(discord.Client):
         print(f"✅ البوت شغال: {self.user} ")
         if not getattr(self, "_voice_task", None):
             self._voice_task = asyncio.create_task(voice_keeper())
+        if not getattr(self, "_backup_task", None):
+            self._backup_task = asyncio.create_task(backup_loop())
+            try:
+                import signal
+                asyncio.get_running_loop().add_signal_handler(
+                    signal.SIGTERM, lambda: asyncio.create_task(backup_and_exit()))
+            except (NotImplementedError, RuntimeError):
+                pass
 
 
 bot = VRPBot()
@@ -921,14 +986,104 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="🛠️ الإدارة", value="/تسطيب_رومات · /تسطيب_رتب · /تعيين_وظيفة · /اضافة_فلوس · /خصم_فلوس · /مسح_سجل · /حذف_هوية", inline=False)
     e.add_field(name="🎫 التذاكر", value="/تسطيب_تذكرة · /حذف_تذكرة · /ارسال_التذاكر", inline=False)
     e.add_field(name="💬 الردود والإيمبد", value="/اضافة_رد · /حذف_رد · /الردود · /ايمبد · /رسالة_للكل", inline=False)
-    e.add_field(name="📊 النقاط و MDT", value="/ارسال_لوحة · /حذف_يونت · /تسطيب_الاطار · /تسطيب_رتب_الادارة · /تسطيب_النقاط · /تعديل_نقاط · /تصفير_النقاط", inline=False)
+    e.add_field(name="📊 نقاط الإدارة", value="/تسطيب_نقاط_الادارة · /تعديل_نقاط_الادارة · /تصفير_نقاط_الادارة · /تسطيب_الاطار · /تسطيب_رتب_الادارة", inline=False)
+    e.add_field(name="🚓 نقاط الشرطة و MDT", value="/تسطيب_نقاط_الشرطة · /تعديل_نقاط_الشرطة · /تصفير_نقاط_الشرطة · /ارسال_لوحة · /حذف_يونت", inline=False)
     e.add_field(name="🏦 البنك والرواتب", value="/ارسال_لوحة (البنك) · /تسطيب_رتب_الشرطة · /تسطيب_الرواتب · /صرف_الرواتب", inline=False)
+    e.add_field(name="📜 القوانين", value="/تحميل_القوانين · /اضافة_قوانين · /حذف_قوانين · /ارسال_القوانين", inline=False)
     e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
     e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
     e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` · /تسطيب_الادارة_العليا", inline=False)
     e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · العضو يكتب `T1` في تذكرته · `-تفعيل @العضو`", inline=False)
     e.add_field(name="✈️ الأقيام", value="`-قيم` في روم إنشاء القيم · `-تفتيش @العضو` في روم التفتيش · /تسطيب_التفتيش", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
+
+
+# ============================================================
+# النسخ الاحتياطي: كل دقيقتين إذا تغيّر شي
+# ============================================================
+_last_backup_changes = -1
+
+
+async def get_backup_channel():
+    guilds = [bot.get_guild(GUILD_ID)] if GUILD_ID and bot.get_guild(GUILD_ID) else list(bot.guilds)
+    for g in guilds:
+        ch = discord.utils.get(g.text_channels, name=BACKUP_CH_NAME)
+        if ch:
+            return ch
+    for g in guilds:  # ما لقيناه، نسويه (خاص، محد يشوفه غير الأدمن)
+        try:
+            return await g.create_text_channel(
+                BACKUP_CH_NAME,
+                overwrites={g.default_role: discord.PermissionOverwrite(view_channel=False),
+                            g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                             attach_files=True, read_message_history=True)},
+                topic="لا تحذف هذا الروم. البوت يحفظ فيه بياناته عشان ما تنمسح.",
+            )
+        except discord.HTTPException:
+            continue
+    return None
+
+
+async def do_backup(force: bool = False):
+    global _last_backup_changes
+    if not force and db.total_changes == _last_backup_changes:
+        return
+    ch = await get_backup_channel()
+    if not ch:
+        return
+    db.commit()
+    tmp = "vrp_backup_tmp.db"
+    bk = sqlite3.connect(tmp)
+    db.backup(bk)
+    bk.close()
+    try:
+        await ch.send(content=f"💾 نسخة احتياطية <t:{int(now().timestamp())}:R>", file=discord.File(tmp, filename=DB_FILE))
+        _last_backup_changes = db.total_changes
+        # نخلي آخر 3 نسخ بس
+        old = [m async for m in ch.history(limit=30) if m.author.id == bot.user.id][3:]
+        for m in old:
+            try:
+                await m.delete()
+            except discord.HTTPException:
+                pass
+    except discord.HTTPException as e:
+        print(f"⚠️ فشل النسخ الاحتياطي: {e}")
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+async def backup_loop():
+    await bot.wait_until_ready()
+    global _last_backup_changes
+    _last_backup_changes = db.total_changes  # لا نرفع نسخة أول ما نشتغل
+    while not bot.is_closed():
+        await asyncio.sleep(120)
+        try:
+            await do_backup()
+        except Exception as e:
+            print(f"⚠️ خطأ في النسخ الاحتياطي: {e}")
+
+
+async def backup_and_exit():
+    print("💾 Render يطفي البوت، نحفظ نسخة أخيرة...")
+    try:
+        await asyncio.wait_for(do_backup(), timeout=20)
+    except Exception:
+        pass
+    await bot.close()
+
+
+@bot.tree.command(name="نسخة_احتياطية", description="حفظ نسخة احتياطية من بيانات البوت الحين")
+async def manual_backup(inter: discord.Interaction):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    await do_backup(force=True)
+    ch = await get_backup_channel()
+    await inter.followup.send(embed=embed("💾 تم الحفظ", f"النسخة في {ch.mention}" if ch else "ما قدرت ألقى روم النسخ."), ephemeral=True)
 
 
 # ============================================================
@@ -2260,6 +2415,21 @@ POINT_DEFAULTS = {
 ADMIN_CATS = {"publish": "📢 نقاط النشر", "activate": "✅ نقاط التفعيل", "hire": "💼 نقاط التوظيف",
               "ticket": "🎫 نقاط استلام التكتات", "resign": "📤 نقاط الاستقالات", "manual": "✏️ نقاط يدوية"}
 POLICE_CATS = {"duty": "🕒 نقاط تسجيل الدخول", "arrest": "🚔 نقاط القبض", "fine": "🧾 نقاط المخالفات", "manual": "✏️ نقاط يدوية"}
+ADMIN_CAT_ORDER = ["publish", "activate", "hire", "ticket", "resign"]
+ADMIN_CAT_EMOJI = {"publish": "📢", "activate": "✅", "hire": "💼", "ticket": "🎫", "resign": "📤", "manual": "✏️"}
+ADMIN_CAT_DEFAULT = {"publish": "نقاط النشر", "activate": "نقاط التفعيل", "hire": "نقاط التوظيف",
+                     "ticket": "نقاط استلام التكتات", "resign": "نقاط الاستقالات", "manual": "نقاط يدوية"}
+ADMIN_PTS_KEY = {"publish": "pts_publish", "activate": "pts_activate", "hire": "pts_hire", "ticket": "pts_ticket", "resign": "pts_resign"}
+
+
+def admin_label(gid: int, cat: str, with_emoji: bool = True) -> str:
+    row = db.execute("SELECT label FROM point_labels WHERE guild_id = ? AND category = ?", (gid, cat)).fetchone()
+    name = row["label"] if row else ADMIN_CAT_DEFAULT.get(cat, cat)
+    return f"{ADMIN_CAT_EMOJI.get(cat, '')} {name}".strip() if with_emoji else name
+
+
+def cat_label(gid: int, kind: str, cat: str) -> str:
+    return admin_label(gid, cat) if kind == "admin" else POLICE_CATS.get(cat, cat)
 UPPER_RANKS = ["SIR", "LeadeR", "Damon", "BoSS", "AssistanT", "CommaNDeR", "Co Founder", "Founder"]  # من الأقل للأعلى
 UPPER_ARGS = ["sir", "leader", "damon", "boss", "assistant", "commander", "co_founder", "founder"]
 # من الأعلى للأقل
@@ -2359,16 +2529,16 @@ def is_staff_member(member: discord.Member) -> bool:
 
 
 def frame_file(gid: int, kind: str):
-    row = db.execute("SELECT filename, data FROM assets WHERE guild_id = ? AND key = ?", (gid, f"frame_{kind}"),).fetchone()
-    if not row:
-        row = db.execute("SELECT filename, data FROM assets WHERE guild_id = ? AND key = 'frame_admin'", (gid,)).fetchone()
+    if kind != "admin":  # الإطار للإدارة بس
+        return None
+    row = db.execute("SELECT filename, data FROM assets WHERE guild_id = ? AND key = 'frame_admin'", (gid,)).fetchone()
     if not row:
         return None
     return discord.File(io.BytesIO(row["data"]), filename=row["filename"])
 
 
 def points_card(guild: discord.Guild, member: discord.Member, kind: str):
-    cats = ADMIN_CATS if kind == "admin" else POLICE_CATS
+    cats = ({c: admin_label(guild.id, c) for c in ADMIN_CAT_ORDER + ["manual"]} if kind == "admin" else POLICE_CATS)
     b = points_breakdown(guild.id, member.id, kind)
     total = sum(b.values())
     rank = points_rank(guild.id, member.id, kind)
@@ -2405,7 +2575,7 @@ def top_embed(guild: discord.Guild, kind: str, category: str = None):
     lines = [f"{medals[i] if i < 3 else f'**{i + 1}.**'} <@{r['user_id']}> : **{r['s']}** نقطة" for i, r in enumerate(rows)]
     title = "🏆 أفضل 10 في الإدارة" if kind == "admin" else "🏆 أفضل 10 في الشرطة"
     if category:
-        title = f"🏆 أفضل 10 | {(ADMIN_CATS if kind == 'admin' else POLICE_CATS).get(category, category)}"
+        title = f"🏆 أفضل 10 | {cat_label(guild.id, kind, category)}"
     e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0xC9A227, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
@@ -2422,21 +2592,16 @@ def again_view(kind: str) -> discord.ui.View:
     return v
 
 
-def admin_menu_view() -> discord.ui.View:
+def admin_menu_view(gid: int = 0) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
-    v.add_item(discord.ui.Select(
-        custom_id="pts:admin", placeholder="- اختر من القائمة .",
-        options=[
-            discord.SelectOption(label="نقاطي", value="me", emoji="📊"),
-            discord.SelectOption(label="نقاط شخص معين", value="user", emoji="🔎"),
-            discord.SelectOption(label="توب أفضل عشرة", value="top", emoji="🏆"),
-            discord.SelectOption(label="توب النشر", value="top:publish", emoji="📢"),
-            discord.SelectOption(label="توب التفعيل", value="top:activate", emoji="✅"),
-            discord.SelectOption(label="توب التوظيف", value="top:hire", emoji="💼"),
-            discord.SelectOption(label="توب استلام التكتات", value="top:ticket", emoji="🎫"),
-            discord.SelectOption(label="توب الاستقالات", value="top:resign", emoji="📤"),
-        ],
-    ))
+    options = [
+        discord.SelectOption(label="نقاطي", value="me", emoji="📊"),
+        discord.SelectOption(label="نقاط شخص معين", value="user", emoji="🔎"),
+        discord.SelectOption(label="توب أفضل عشرة", value="top", emoji="🏆"),
+    ]
+    for c in ADMIN_CAT_ORDER:
+        options.append(discord.SelectOption(label=f"توب {admin_label(gid, c, False)}"[:100], value=f"top:{c}", emoji=ADMIN_CAT_EMOJI[c]))
+    v.add_item(discord.ui.Select(custom_id="pts:admin", placeholder="- اختر من القائمة .", options=options))
     return v
 
 
@@ -2604,7 +2769,7 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
             e, f = top_embed(guild, "admin", cat)
             await send_card(inter, e, f, "admin")
         try:  # نرجّع القائمة فاضية عشان يقدر يختار نفس الخيار مرة ثانية
-            await inter.message.edit(view=admin_menu_view())
+            await inter.message.edit(view=admin_menu_view(guild.id))
         except discord.HTTPException:
             pass
         return
@@ -2612,7 +2777,7 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
     if cid.startswith("pts:again:"):
         kind = cid.split(":")[2]
         if kind == "admin":
-            return await inter.response.send_message(embed=embed("📊 نقاط الإدارة", "اختر من القائمة ."), view=admin_menu_view(), ephemeral=True)
+            return await inter.response.send_message(embed=embed("📊 نقاط الإدارة", "اختر من القائمة ."), view=admin_menu_view(inter.guild.id), ephemeral=True)
         return await inter.response.send_message(embed=embed("💻 MDT الشرطة", "اختر من الأزرار ."), view=mdt_view(), ephemeral=True)
 
     # ---- MDT ----
@@ -2681,7 +2846,7 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     if النوع.value == "admin":
         e = embed("📊 - نقاط الإدارة", f"**- مرحبا بك عزيزي الإداري في نظام نقاط {config.SERVER_NAME} .**\n\nاختر من القائمة اللي تحت .")
-        view = admin_menu_view()
+        view = admin_menu_view(inter.guild.id)
     elif النوع.value == "bank":
         e = embed("🏦 - بنك سعودي تايم", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
                   "🏦 افتح حسابك وخذ رقم الآيبان حقك\n💳 شوف رصيدك\n📥 📤 إيداع وسحب\n"
@@ -2703,19 +2868,15 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
     await inter.response.send_message(embed=embed("✅ انرسلت اللوحة", الروم.mention), ephemeral=True)
 
 
-@bot.tree.command(name="تسطيب_الاطار", description="رفع صورة الإطار اللي تطلع تحت النقاط")
-@app_commands.choices(النوع=[
-    app_commands.Choice(name="الإدارة", value="admin"),
-    app_commands.Choice(name="الشرطة", value="police"),
-])
-async def setup_frame(inter: discord.Interaction, الصورة: discord.Attachment, النوع: app_commands.Choice[str] = None):
+@bot.tree.command(name="تسطيب_الاطار", description="رفع صورة الإطار اللي تطلع تحت نقاط الإدارة")
+async def setup_frame(inter: discord.Interaction, الصورة: discord.Attachment):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     if not (الصورة.content_type or "").startswith("image/"):
         return await inter.response.send_message(embed=err("لازم تكون صورة."), ephemeral=True)
     if الصورة.size > 7_000_000:
         return await inter.response.send_message(embed=err("الصورة كبيرة، خلها أقل من 7 ميقا."), ephemeral=True)
-    kind = النوع.value if النوع else "admin"
+    kind = "admin"
     data = await الصورة.read()
     ext = (الصورة.filename.rsplit(".", 1)[-1] or "png").lower()
     db.execute(
@@ -2725,7 +2886,7 @@ async def setup_frame(inter: discord.Interaction, الصورة: discord.Attachme
     )
     db.commit()
     await inter.response.send_message(
-        embed=embed("✅ انحفظ الإطار", f"إطار {'الإدارة' if kind == 'admin' else 'الشرطة'}. (إذا ما حطيت إطار للشرطة، يطلع إطار الإدارة)"),
+        embed=embed("✅ انحفظ الإطار", "إطار نقاط الإدارة ."),
         ephemeral=True,
     )
 
@@ -2791,73 +2952,96 @@ async def setup_upper_ranks(
     await inter.response.send_message(embed=embed("👑 الإدارة العليا", text + "\n\nالترتيب من الأعلى للأقل، وتحتهم Middle 7 لين Junior 1 ."), ephemeral=True)
 
 
-@bot.tree.command(name="تسطيب_النقاط", description="كم نقطة لكل شي")
-@app_commands.describe(
-    النشر="نقاط نشر رحلة أو ايمبد (الافتراضي 2)", التفعيل="نقاط أمر -تفعيل (الافتراضي 3)",
-    التذكرة="نقاط استلام تذكرة (الافتراضي 1)", القبض="نقاط القبض على مجرم (الافتراضي 3)",
-    التوظيف="نقاط التوظيف (الافتراضي 2)", الاستقالة="نقاط الاستقالة (الافتراضي 1)",
-    المخالفة="نقاط المخالفة (الافتراضي 1)", دقائق_الدوام="كل كم دقيقة دوام = نقطة (الافتراضي 30)",
-)
-async def setup_points(
-    inter: discord.Interaction,
-    النشر: app_commands.Range[int, 0, 1000] = None, التفعيل: app_commands.Range[int, 0, 1000] = None,
-    التذكرة: app_commands.Range[int, 0, 1000] = None, القبض: app_commands.Range[int, 0, 1000] = None,
-    المخالفة: app_commands.Range[int, 0, 1000] = None, دقائق_الدوام: app_commands.Range[int, 1, 1440] = None,
-    التوظيف: app_commands.Range[int, 0, 1000] = None, الاستقالة: app_commands.Range[int, 0, 1000] = None,
-):
+def admin_points_text(gid: int) -> str:
+    return "\n".join(f"• {admin_label(gid, c)} : **{pts_value(gid, ADMIN_PTS_KEY[c])}** نقطة" for c in ADMIN_CAT_ORDER)
+
+
+@bot.tree.command(name="تسطيب_نقاط_الادارة", description="تغيير اسم نوع من نقاط الإدارة وكم نقطة ياخذ")
+@app_commands.describe(النوع="نوع النقاط", الاسم_الجديد="الاسم اللي يطلع في البطاقة والتوب (اختياري)",
+                       العدد="كم نقطة ياخذ عليها (اختياري)")
+@app_commands.choices(النوع=[
+    app_commands.Choice(name="النشر", value="publish"), app_commands.Choice(name="التفعيل", value="activate"),
+    app_commands.Choice(name="التوظيف", value="hire"), app_commands.Choice(name="استلام التكتات", value="ticket"),
+    app_commands.Choice(name="الاستقالات", value="resign"),
+])
+async def setup_admin_points(inter: discord.Interaction, النوع: app_commands.Choice[str] = None,
+                             الاسم_الجديد: app_commands.Range[str, 1, 40] = None,
+                             العدد: app_commands.Range[int, 0, 1000] = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     gid = inter.guild.id
-    for key, val in (("pts_publish", النشر), ("pts_activate", التفعيل), ("pts_ticket", التذكرة),
-                     ("pts_arrest", القبض), ("pts_fine", المخالفة), ("pts_duty_min", دقائق_الدوام),
-                     ("pts_hire", التوظيف), ("pts_resign", الاستقالة)):
+    if النوع and الاسم_الجديد:
+        db.execute("INSERT INTO point_labels (guild_id, category, label) VALUES (?, ?, ?) "
+                   "ON CONFLICT(guild_id, category) DO UPDATE SET label = excluded.label", (gid, النوع.value, الاسم_الجديد.strip()))
+        db.commit()
+    if النوع and العدد is not None:
+        set_setting(gid, ADMIN_PTS_KEY[النوع.value], العدد)
+    await inter.response.send_message(embed=embed(
+        "📊 نقاط الإدارة", admin_points_text(gid) + "\n\nبعد ما تغيّر الأسماء، أرسل لوحة النقاط من جديد بـ /ارسال_لوحة ."), ephemeral=True)
+
+
+@bot.tree.command(name="تسطيب_نقاط_الشرطة", description="كم نقطة ياخذ العسكري على كل شي")
+@app_commands.describe(القبض="نقاط القبض على مجرم (الافتراضي 3)", المخالفة="نقاط المخالفة (الافتراضي 1)",
+                       دقائق_الدوام="كل كم دقيقة دوام = نقطة (الافتراضي 30)")
+async def setup_police_points(inter: discord.Interaction, القبض: app_commands.Range[int, 0, 1000] = None,
+                              المخالفة: app_commands.Range[int, 0, 1000] = None,
+                              دقائق_الدوام: app_commands.Range[int, 1, 1440] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    gid = inter.guild.id
+    for key, val in (("pts_arrest", القبض), ("pts_fine", المخالفة), ("pts_duty_min", دقائق_الدوام)):
         if val is not None:
             set_setting(gid, key, val)
-    text = (
-        f"📢 النشر: **{pts_value(gid, 'pts_publish')}**\n✅ التفعيل: **{pts_value(gid, 'pts_activate')}**\n"
-        f"🎫 استلام تذكرة: **{pts_value(gid, 'pts_ticket')}**\n💼 التوظيف: **{pts_value(gid, 'pts_hire')}**\n"
-        f"📤 الاستقالة: **{pts_value(gid, 'pts_resign')}**\n🚔 القبض: **{pts_value(gid, 'pts_arrest')}**\n"
-        f"🧾 المخالفة: **{pts_value(gid, 'pts_fine')}**\n🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام"
-    )
-    await inter.response.send_message(embed=embed("⚙️ إعدادات النقاط", text), ephemeral=True)
+    await inter.response.send_message(embed=embed("🚓 نقاط الشرطة", (
+        f"🚔 القبض : **{pts_value(gid, 'pts_arrest')}** نقطة\n🧾 المخالفة : **{pts_value(gid, 'pts_fine')}** نقطة\n"
+        f"🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام"), 0x2B6CB0), ephemeral=True)
 
 
-@bot.tree.command(name="تعديل_نقاط", description="إضافة أو خصم نقاط (لصاحب صلاحية الأدمن)")
+async def _edit_points(inter: discord.Interaction, kind: str, member: discord.Member, amount: int):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    add_points(inter.guild.id, member.id, kind, "manual", amount)
+    total = sum(points_breakdown(inter.guild.id, member.id, kind).values())
+    name = "نقاط الإدارة" if kind == "admin" else "نقاط الشرطة"
+    await inter.response.send_message(
+        embed=embed(f"✏️ تم تعديل {name}", f"{member.mention}: {'+' if amount > 0 else ''}{amount}\nالمجموع الحين: **{total}**"),
+        ephemeral=True)
+    await log(f"{inter.user.mention} عدّل {name} لـ {member.mention}: {amount}", inter.guild)
+
+
+@bot.tree.command(name="تعديل_نقاط_الادارة", description="إضافة أو خصم نقاط إدارة")
 @app_commands.describe(العدد="موجب للإضافة، سالب للخصم (مثال: -5)")
-@app_commands.choices(النوع=[
-    app_commands.Choice(name="نقاط الإدارة", value="admin"),
-    app_commands.Choice(name="نقاط الشرطة", value="police"),
-])
-async def edit_points(inter: discord.Interaction, النوع: app_commands.Choice[str], العضو: discord.Member,
-                      العدد: app_commands.Range[int, -100000, 100000]):
-    if not admin_only(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
-    add_points(inter.guild.id, العضو.id, النوع.value, "manual", العدد)
-    total = sum(points_breakdown(inter.guild.id, العضو.id, النوع.value).values())
-    await inter.response.send_message(
-        embed=embed("✏️ تم تعديل النقاط", f"{العضو.mention}: {'+' if العدد > 0 else ''}{العدد}\nالمجموع الحين: **{total}**"),
-        ephemeral=True,
-    )
-    await log(f"{inter.user.mention} عدّل {النوع.name} لـ {العضو.mention}: {العدد}", inter.guild)
+async def edit_admin_points(inter: discord.Interaction, العضو: discord.Member, العدد: app_commands.Range[int, -100000, 100000]):
+    await _edit_points(inter, "admin", العضو, العدد)
 
 
-@bot.tree.command(name="تصفير_النقاط", description="تصفير نقاط الكل أو عضو معين (لصاحب صلاحية الأدمن)")
-@app_commands.choices(النوع=[
-    app_commands.Choice(name="نقاط الإدارة", value="admin"),
-    app_commands.Choice(name="نقاط الشرطة", value="police"),
-])
-async def reset_points(inter: discord.Interaction, النوع: app_commands.Choice[str], العضو: discord.Member = None):
+@bot.tree.command(name="تعديل_نقاط_الشرطة", description="إضافة أو خصم نقاط شرطة")
+@app_commands.describe(العدد="موجب للإضافة، سالب للخصم (مثال: -5)")
+async def edit_police_points(inter: discord.Interaction, العضو: discord.Member, العدد: app_commands.Range[int, -100000, 100000]):
+    await _edit_points(inter, "police", العضو, العدد)
+
+
+async def _reset_points(inter: discord.Interaction, kind: str, member):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
-    if العضو:
-        db.execute("DELETE FROM points_log WHERE guild_id = ? AND kind = ? AND user_id = ?", (inter.guild.id, النوع.value, العضو.id))
+    if member:
+        db.execute("DELETE FROM points_log WHERE guild_id = ? AND kind = ? AND user_id = ?", (inter.guild.id, kind, member.id))
     else:
-        db.execute("DELETE FROM points_log WHERE guild_id = ? AND kind = ?", (inter.guild.id, النوع.value))
+        db.execute("DELETE FROM points_log WHERE guild_id = ? AND kind = ?", (inter.guild.id, kind))
     db.commit()
-    await inter.response.send_message(
-        embed=embed("🗑️ تم التصفير", f"{النوع.name} لـ {العضو.mention if العضو else 'الكل'}"), ephemeral=True
-    )
-    await log(f"{inter.user.mention} صفّر {النوع.name} لـ {العضو.mention if العضو else 'الكل'}", inter.guild)
+    name = "نقاط الإدارة" if kind == "admin" else "نقاط الشرطة"
+    await inter.response.send_message(embed=embed("🗑️ تم التصفير", f"{name} لـ {member.mention if member else 'الكل'}"), ephemeral=True)
+    await log(f"{inter.user.mention} صفّر {name} لـ {member.mention if member else 'الكل'}", inter.guild)
+
+
+@bot.tree.command(name="تصفير_نقاط_الادارة", description="تصفير نقاط الإدارة للكل أو لعضو")
+async def reset_admin_points(inter: discord.Interaction, العضو: discord.Member = None):
+    await _reset_points(inter, "admin", العضو)
+
+
+@bot.tree.command(name="تصفير_نقاط_الشرطة", description="تصفير نقاط الشرطة للكل أو لعضو")
+async def reset_police_points(inter: discord.Interaction, العضو: discord.Member = None):
+    await _reset_points(inter, "police", العضو)
 
 
 # ============================================================
@@ -3812,6 +3996,204 @@ async def pay_salaries(inter: discord.Interaction):
     await log(f"{inter.user.mention} صرف الرواتب لـ {len(paid)} عضو ({money(total)})", guild)
 
 
+# ============================================================
+# القوانين: لوحة فيها بنر + منيو أقسام
+# ============================================================
+DEFAULT_RULES = [
+    ("📜", "القوانين العامة", [
+        "القانون الذهبي : عدم رد الخطأ بالخطأ , إذا أحد غلط عليك افتح تذكرة ولا ترد عليه .",
+        "الرول بلاي : هو تقمص الشخصية بالأقوال والأفعال , ويمنع الخروج من الشخصية أثناء الرول .",
+        "يُمنع القتل العشوائي ( RDM ) بدون سبب رول واضح .",
+        "يُمنع الصدم العشوائي ( VDM ) بالسيارات بدون سبب رول .",
+        "تقدير الحياة ( LAR ) : يجب الخوف على حياتك وحياة غيرك , وعدم المخاطرة الغير واقعية .",
+        "الحاجز السمعي : الشخص لا يسمع إذا كان بينه وبين الآخر جدار أو حاجز أو مسافة .",
+        "يُمنع الميتا قيمنق : استخدام معلومات من خارج الرول ( ديسكورد , بث ) داخل الرول .",
+        "يُمنع الباور قيمنق : إجبار شخص على رول بدون ما تعطيه فرصة يرد .",
+        "يُمنع الإزعاج أو تشغيل الأغاني داخل الرول .",
+        "احترام الجميع واجب , ويُمنع السب والشتم والعنصرية بشكل نهائي .",
+    ]),
+    ("🔫", "قوانين الإجرام", [
+        "يُمنع الخطف أو القتل في المناطق الآمنة ( المستشفى , مركز الشرطة , الملكية ) .",
+        "يُمنع مداهمة مركز الشرطة , إلا في حال تحرير خويك من داخل المركز .",
+        "يُسمح بأخذ أسلحة من مركز الشرطة فقط في حال المداهمة ومعك عدد .",
+        "يُسمح بسرقة سيارات الشرطة فقط إذا معك عدد وحاوطت العسكري وهو في سيارته .",
+        "يُسمح بالسرقة حتى لو ما كنت عصابة , بشرط يكون فيه رول واضح .",
+        "يُمنع الخطف أثناء مداهمة التحرير .",
+        "الرهينة ما تقدر تهرب في نص التفاوض .",
+        "يُمنع مقاومة شخصين أو أكثر إذا كانوا مصوبين عليك .",
+        "يُمنع التوجه لأي مقر أول 10 دقائق من بداية الرستارت .",
+        "يُمنع قتل المواطن أو المخرب نفسه في وقت الإعصار .",
+    ]),
+    ("🚓", "قوانين القيادة والمطاردات", [
+        "إجبارية التوقف بعد انفجار 3 كفرات .",
+        "يُمنع التفحيط في الأماكن التالية : الملكية , المستشفى , مركز الشرطة .",
+        "يُمنع طلوع الجبال بالسيارات الصغيرة .",
+        "أول ما يبدأ القيم توقف أول 10 ثواني وبعدها تتحرك .",
+        "إذا سقطت تنسى آخر 5 دقايق من الرول .",
+        "إذا سقطت وتحللت تنسى آخر 15 دقيقة .",
+        "يُمنع الهروب من المطاردة عن طريق الخروج من اللعبة .",
+        "يُمنع استخدام الثغرات أو القلتشات في المطاردة .",
+        "يجب التوقف عند إشارة الشرطة إذا ما كان عندك رول هروب واضح .",
+        "يُمنع صدم سيارات الشرطة عمداً بدون سبب رول .",
+    ]),
+]
+
+
+def get_rule_sections(gid: int):
+    return db.execute("SELECT * FROM rule_sections WHERE guild_id = ? ORDER BY idx", (gid,)).fetchall()
+
+
+def rules_menu(gid: int) -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    opts = [discord.SelectOption(label=r["name"][:100], value=str(r["idx"]), emoji=r["emoji"] or None)
+            for r in get_rule_sections(gid)][:25]
+    v.add_item(discord.ui.Select(custom_id="rules:open", placeholder="اختر من القائمة", options=opts))
+    return v
+
+
+class RuleSectionModal(discord.ui.Modal, title="📜 قسم قوانين"):
+    content = discord.ui.TextInput(
+        label="القوانين", style=discord.TextStyle.paragraph, max_length=4000,
+        placeholder="اكتب كل قانون في سطر، والبوت يرقّمها لحاله",
+    )
+
+    def __init__(self, name: str, emoji: str, idx: int = None, current: str = None):
+        super().__init__()
+        self.name, self.emoji, self.idx = name, emoji, idx
+        if current:
+            self.content.default = current
+
+    async def on_submit(self, inter: discord.Interaction):
+        gid = inter.guild.id
+        if self.idx is None:
+            row = db.execute("SELECT COALESCE(MAX(idx), 0) AS m FROM rule_sections WHERE guild_id = ?", (gid,)).fetchone()
+            self.idx = row["m"] + 1
+        db.execute(
+            "INSERT INTO rule_sections (guild_id, idx, name, emoji, content) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, idx) DO UPDATE SET name = excluded.name, emoji = excluded.emoji, content = excluded.content",
+            (gid, self.idx, self.name, self.emoji, self.content.value),
+        )
+        db.commit()
+        n = len([l for l in self.content.value.splitlines() if l.strip()])
+        await inter.response.send_message(embed=embed(
+            "✅ انحفظ القسم", f"**{self.name}** ({n} قانون)\n\nأرسل اللوحة من جديد بـ /ارسال_القوانين عشان يطلع في المنيو ."), ephemeral=True)
+
+
+@bot.tree.command(name="اضافة_قوانين", description="إضافة أو تعديل قسم قوانين (يطلع في منيو القوانين)")
+@app_commands.describe(اسم_القسم="مثل: القوانين العامة، قوانين الإجرام", الايموجي="ايموجي جنب اسم القسم (اختياري)")
+async def add_rules(inter: discord.Interaction, اسم_القسم: app_commands.Range[str, 1, 80], الايموجي: str = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    old = db.execute("SELECT * FROM rule_sections WHERE guild_id = ? AND name = ?", (inter.guild.id, اسم_القسم.strip())).fetchone()
+    if not old and len(get_rule_sections(inter.guild.id)) >= 25:
+        return await inter.response.send_message(embed=err("وصلت الحد: 25 قسم."), ephemeral=True)
+    await inter.response.send_modal(RuleSectionModal(
+        اسم_القسم.strip(), (الايموجي or (old["emoji"] if old else "") or "").strip()[:30],
+        old["idx"] if old else None, old["content"] if old else None,
+    ))
+
+
+@bot.tree.command(name="حذف_قوانين", description="حذف قسم قوانين")
+async def delete_rules(inter: discord.Interaction, اسم_القسم: str):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    cur = db.execute("DELETE FROM rule_sections WHERE guild_id = ? AND name = ?", (inter.guild.id, اسم_القسم))
+    db.commit()
+    if not cur.rowcount:
+        return await inter.response.send_message(embed=err("ما لقيت هالقسم."), ephemeral=True)
+    await inter.response.send_message(embed=embed("🗑️ انحذف القسم", اسم_القسم), ephemeral=True)
+
+
+@delete_rules.autocomplete("اسم_القسم")
+@add_rules.autocomplete("اسم_القسم")
+async def rules_autocomplete(inter: discord.Interaction, current: str):
+    return [app_commands.Choice(name=r["name"][:100], value=r["name"]) for r in get_rule_sections(inter.guild.id)
+            if current in r["name"]][:25]
+
+
+@bot.tree.command(name="تحميل_القوانين", description="يحط 30 قانون أرض جاهزة في 3 أقسام (تقدر تعدّلها بعدين)")
+async def load_default_rules(inter: discord.Interaction):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    gid = inter.guild.id
+    for emoji, name, rules in DEFAULT_RULES:
+        old = db.execute("SELECT idx FROM rule_sections WHERE guild_id = ? AND name = ?", (gid, name)).fetchone()
+        idx = old["idx"] if old else (db.execute("SELECT COALESCE(MAX(idx), 0) AS m FROM rule_sections WHERE guild_id = ?",
+                                                 (gid,)).fetchone()["m"] + 1)
+        db.execute(
+            "INSERT INTO rule_sections (guild_id, idx, name, emoji, content) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, idx) DO UPDATE SET name = excluded.name, emoji = excluded.emoji, content = excluded.content",
+            (gid, idx, name, emoji, "\n".join(rules)),
+        )
+    db.commit()
+    total = sum(len(r) for _, _, r in DEFAULT_RULES)
+    await inter.response.send_message(embed=embed(
+        "✅ انحطت القوانين", f"انحط **{total} قانون** في {len(DEFAULT_RULES)} أقسام .\n\n"
+        "تقدر تعدّل أي قسم بـ **/اضافة_قوانين** (اختر اسمه)، وبعدها أرسل اللوحة بـ **/ارسال_القوانين** ."), ephemeral=True)
+
+
+class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
+    title_in = discord.ui.TextInput(label="العنوان", default="قوانين سعودي تايم", max_length=256)
+    body_in = discord.ui.TextInput(
+        label="الكلام اللي فوق المنيو", style=discord.TextStyle.paragraph, max_length=4000,
+        default=("- تعرف علينا .\n\n📜 - نُرحب بكم في سيرفر سعودي تايم , هذه اللوحة فيها كل قوانين الأرض "
+                 "اللي لازم يعرفها كل مواطن قبل ما يدخل الرول .\n\n"
+                 "⚖️ - الالتزام بالقوانين واجب على الجميع , ومخالفتها تعرّضك للعقوبة .\n\n"
+                 "👇 - اختر القسم من القائمة اللي تحت ويطلع لك قوانينه ."),
+    )
+
+    def __init__(self, channel: discord.TextChannel, banner: discord.Attachment):
+        super().__init__()
+        self.channel, self.banner = channel, banner
+
+    async def on_submit(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        e = discord.Embed(title=self.title_in.value, description=self.body_in.value, color=0x006C35)
+        e.set_footer(text=config.SERVER_NAME)
+        kwargs = {"embed": e, "view": rules_menu(inter.guild.id)}
+        if self.banner:
+            try:
+                f = await self.banner.to_file()
+                e.set_image(url=f"attachment://{f.filename}")
+                kwargs["file"] = f
+            except discord.HTTPException:
+                pass
+        try:
+            await self.channel.send(**kwargs)
+        except discord.HTTPException:
+            return await inter.followup.send(embed=err(f"ما قدرت أرسل في {self.channel.mention}. (أو فيه ايموجي غلط في قسم)"), ephemeral=True)
+        await inter.followup.send(embed=embed("✅ انرسلت لوحة القوانين", self.channel.mention), ephemeral=True)
+
+
+@bot.tree.command(name="ارسال_القوانين", description="إرسال لوحة القوانين في روم")
+@app_commands.describe(الروم="الروم اللي تنرسل فيه اللوحة", البنر="صورة البنر اللي فوق (اختياري)")
+async def send_rules_panel(inter: discord.Interaction, الروم: discord.TextChannel, البنر: discord.Attachment = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    if not get_rule_sections(inter.guild.id):
+        return await inter.response.send_message(embed=err("ما فيه قوانين. استخدم /تحميل_القوانين أو /اضافة_قوانين أول."), ephemeral=True)
+    if البنر and not (البنر.content_type or "").startswith("image/"):
+        return await inter.response.send_message(embed=err("البنر لازم يكون صورة."), ephemeral=True)
+    await inter.response.send_modal(RulesPanelModal(الروم, البنر))
+
+
+async def handle_rules(inter: discord.Interaction):
+    idx = int((inter.data.get("values") or ["0"])[0])
+    r = db.execute("SELECT * FROM rule_sections WHERE guild_id = ? AND idx = ?", (inter.guild.id, idx)).fetchone()
+    if not r:
+        await inter.response.send_message(embed=err("هالقسم انحذف."), ephemeral=True)
+    else:
+        lines = [l.strip() for l in r["content"].splitlines() if l.strip()]
+        body = "\n\n".join(f"**{i} -** {l}" for i, l in enumerate(lines, 1))
+        e = discord.Embed(title=f"{r['emoji'] or '📜'} - {r['name']}", description=body[:4096], color=0x006C35)
+        e.set_footer(text=config.SERVER_NAME)
+        await inter.response.send_message(embed=e, ephemeral=True)
+    try:  # نرجّع المنيو فاضي
+        await inter.message.edit(view=rules_menu(inter.guild.id))
+    except discord.HTTPException:
+        pass
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type != discord.InteractionType.component or not inter.guild:
@@ -3835,6 +4217,8 @@ async def on_interaction(inter: discord.Interaction):
         await quiz_answer(inter, cid)
     elif cid.startswith("pts:") or cid.startswith("mdt:"):
         await handle_points_interaction(inter, cid)
+    elif cid == "rules:open":
+        await handle_rules(inter)
     elif cid.startswith("bank:"):
         await handle_bank(inter, cid.split(":", 1)[1])
     elif cid.startswith("loan:"):

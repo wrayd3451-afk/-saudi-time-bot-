@@ -1089,9 +1089,44 @@ async def manual_backup(inter: discord.Interaction):
 # ============================================================
 # البوت يقعد في روم صوتي 24 ساعة
 # ============================================================
+LAST_VOICE_ERROR = {}
+
+
+def _voice_error_ar(e: Exception) -> str:
+    t = f"{type(e).__name__}: {e}"
+    if "PyNaCl" in t or "nacl" in t.lower():
+        return "مكتبة الصوت (PyNaCl) مو مثبتة على الاستضافة"
+    if "davey" in t.lower() or "4017" in t or "DAVE" in t:
+        return "ديسكورد يطلب نسخة أحدث من مكتبة البوت (DAVE)"
+    if isinstance(e, discord.Forbidden) or "Missing Permissions" in t:
+        return "ما عندي صلاحية Connect أو View Channel في الروم"
+    if isinstance(e, asyncio.TimeoutError) or "Timeout" in t:
+        return "انتهى الوقت وأنا أحاول أتصل (الاستضافة ممكن تمنع اتصال الصوت)"
+    return t[:180]
+
+
+def _ensure_voice_libs():
+    try:
+        import nacl  # noqa: F401
+        return
+    except ImportError:
+        pass
+    for pkg in (["discord.py[voice]"], ["PyNaCl"]):
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", *pkg])
+            return
+        except Exception:
+            continue
+
+
 async def join_voice(guild: discord.Guild) -> bool:
     ch = guild.get_channel(get_setting(guild.id, "ch_voice"))
     if not isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
+        LAST_VOICE_ERROR[guild.id] = "ما لقيت الروم الصوتي"
+        return False
+    perms = ch.permissions_for(guild.me)
+    if not (perms.view_channel and perms.connect):
+        LAST_VOICE_ERROR[guild.id] = "ما عندي صلاحية View Channel أو Connect في الروم"
         return False
     vc = guild.voice_client
     try:
@@ -1101,11 +1136,19 @@ async def join_voice(guild: discord.Guild) -> bool:
             return True
         if vc:
             await vc.disconnect(force=True)
-        await ch.connect(self_deaf=True, reconnect=True, timeout=30)
+        try:
+            await ch.connect(self_deaf=True, reconnect=True, timeout=30)
+        except RuntimeError as e:
+            if "PyNaCl" not in str(e):
+                raise
+            await asyncio.to_thread(_ensure_voice_libs)
+            await ch.connect(self_deaf=True, reconnect=True, timeout=30)
+        LAST_VOICE_ERROR.pop(guild.id, None)
         print(f"🔊 دخلت الروم الصوتي: {ch.name}")
         return True
     except Exception as e:
-        print(f"⚠️ ما قدرت أدخل الروم الصوتي: {e}")
+        LAST_VOICE_ERROR[guild.id] = _voice_error_ar(e)
+        print(f"⚠️ ما قدرت أدخل الروم الصوتي: {type(e).__name__}: {e}")
         return False
 
 
@@ -1188,7 +1231,7 @@ async def setup_channels(
     if الصوتي:
         set_setting(gid, "ch_voice", الصوتي.id)
         ok = await join_voice(inter.guild)
-        done.append(f"✅ الصوتي: {الصوتي.mention}" + ("" if ok else " (⚠️ ما قدرت أدخل، شف صلاحية Connect)"))
+        done.append(f"✅ الصوتي: {الصوتي.mention}" + ("" if ok else f"\n⚠️ ما قدرت أدخل: **{LAST_VOICE_ERROR.get(gid, 'سبب غير معروف')}**"))
     if اللوق:
         set_setting(gid, "ch_log", اللوق.id)
         done.append(f"✅ اللوق: {اللوق.mention}")

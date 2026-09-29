@@ -24,6 +24,21 @@ except Exception:
     pass
 print("🚀 بدأ تشغيل البوت...")
 
+# مكتبات الصوت لازم تنثبت قبل ما نفتح مكتبة ديسكورد (عشان البوت يقعد في الروم الصوتي)
+try:
+    import nacl  # noqa: F401
+except ImportError:
+    for _pkg in ("PyNaCl", "discord.py[voice]"):
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", _pkg])
+            import importlib
+            importlib.invalidate_caches()
+            import nacl  # noqa: F401,F811
+            print("✅ انثبتت مكتبة الصوت")
+            break
+        except Exception as _e:
+            print(f"⚠️ ما قدرت أثبت {_pkg}: {_e}")
+
 # لو المكتبة مو مثبتة، يثبتها البوت لحاله
 try:
     import discord
@@ -32,15 +47,6 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "discord.py>=2.3"])
     import discord
     from discord import app_commands
-
-# مكتبات الصوت (عشان البوت يقعد في الروم الصوتي)
-try:
-    import nacl  # noqa: F401
-except ImportError:
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "discord.py[voice]"])
-    except Exception as _e:
-        print(f"⚠️ ما قدرت أثبت مكتبات الصوت: {_e}")
 
 try:
     from dotenv import load_dotenv

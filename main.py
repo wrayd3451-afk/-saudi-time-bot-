@@ -495,14 +495,14 @@ def is_police(inter: discord.Interaction) -> bool:
             or is_admin(inter))
 
 
-def embed(title: str, desc: str = "", color=0x0B6B55) -> discord.Embed:
+def embed(title: str, desc: str = "", color=0x006C35) -> discord.Embed:
     e = discord.Embed(title=title, description=desc, color=color, timestamp=now())
     e.set_footer(text=config.SERVER_NAME)
     return e
 
 
 def err(msg: str) -> discord.Embed:
-    return embed("❌ خطأ", msg, 0xB3261E)
+    return embed("❌ خطأ", msg, 0x006C35)
 
 
 async def log(text: str, guild=None):
@@ -512,7 +512,7 @@ async def log(text: str, guild=None):
     ch = bot.get_channel(ch_id)
     if ch:
         try:
-            await ch.send(embed=embed("📋 لوق", text, 0x4A5A54))
+            await ch.send(embed=embed("📋 لوق", text, 0x006C35))
         except discord.HTTPException:
             pass
 
@@ -684,7 +684,7 @@ async def fine(inter: discord.Interaction, اللاعب: discord.Member, الم�
         (اللاعب.id, المبلغ, السبب, inter.user.id, now().isoformat()),
     )
     db.commit()
-    e = embed("🚨 مخالفة جديدة", color=0xB98118)
+    e = embed("🚨 مخالفة جديدة", color=0x006C35)
     e.add_field(name="المخالف", value=اللاعب.mention)
     e.add_field(name="المبلغ", value=money(المبلغ))
     e.add_field(name="رقم المخالفة", value=f"#{cur.lastrowid}")
@@ -705,7 +705,7 @@ async def my_fines(inter: discord.Interaction):
     total = sum(r["amount"] for r in rows)
     lines = [f"**#{r['id']}** : {money(r['amount'])} ({r['reason']})" for r in rows]
     await inter.response.send_message(
-        embed=embed("🚨 مخالفاتك", "\n".join(lines) + f"\n\n**المجموع:** {money(total)}\nسدد بأمر /سداد_مخالفة", 0xB98118),
+        embed=embed("🚨 مخالفاتك", "\n".join(lines) + f"\n\n**المجموع:** {money(total)}\nسدد بأمر /سداد_مخالفة", 0x006C35),
         ephemeral=True,
     )
 
@@ -741,7 +741,7 @@ async def add_record(inter: discord.Interaction, اللاعب: discord.Member, �
     db.execute("INSERT INTO records (user_id, charge, officer, created_at) VALUES (?, ?, ?, ?)",
                (اللاعب.id, التهمة, inter.user.id, now().isoformat()))
     db.commit()
-    await inter.response.send_message(embed=embed("📁 تمت الإضافة للسجل", f"{اللاعب.mention}: {التهمة}", 0xB3261E))
+    await inter.response.send_message(embed=embed("📁 تمت الإضافة للسجل", f"{اللاعب.mention}: {التهمة}", 0x006C35))
     await log(f"{inter.user.mention} أضاف للسجل الجنائي لـ {اللاعب.mention}: {التهمة}", inter.guild)
 
 
@@ -754,7 +754,7 @@ async def view_record(inter: discord.Interaction, اللاعب: discord.Member):
         return
     recs = db.execute("SELECT * FROM records WHERE user_id = ? ORDER BY id DESC LIMIT 15", (اللاعب.id,)).fetchall()
     fines_ = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0", (اللاعب.id,)).fetchall()
-    e = embed(f"📁 ملف {اللاعب.display_name}", f"**الايدي :** `{اللاعب.id}`", 0x4A5A54)
+    e = embed(f"📁 ملف {اللاعب.display_name}", f"**الايدي :** `{اللاعب.id}`", 0x006C35)
     e.add_field(
         name=f"السجل الجنائي ({len(recs)})",
         value="\n".join(f"• {r['charge']} ({r['created_at'][:10]})" for r in recs) or "نظيف ✅",
@@ -1772,7 +1772,7 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
     elif action == "close":
         if not staff and inter.user.id != t["owner_id"]:
             return await inter.response.send_message(embed=err("ما تقدر تقفل هذي التذكرة."), ephemeral=True)
-        await inter.response.send_message(embed=embed("🔒 التذكرة بتنقفل بعد 5 ثواني", f"قفلها: {inter.user.mention}", 0xB3261E))
+        await inter.response.send_message(embed=embed("🔒 التذكرة بتنقفل بعد 5 ثواني", f"قفلها: {inter.user.mention}", 0x006C35))
         db.execute("DELETE FROM tickets WHERE channel_id = ?", (inter.channel.id,))
         db.commit()
         await log(f"{inter.user.mention} قفل التذكرة **{inter.channel.name}** (صاحبها <@{t['owner_id']}>)", inter.guild)
@@ -1975,7 +1975,7 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
         )
     else:
         await inter.response.edit_message(
-            embed=embed("❌ لم تنجح في الاختبار", f"جاوبت {state['right']} من {total} صح، والمطلوب {need}.", 0xB3261E),
+            embed=embed("❌ لم تنجح في الاختبار", f"جاوبت {state['right']} من {total} صح، والمطلوب {need}.", 0x006C35),
             view=None,
         )
         try:
@@ -1985,7 +1985,7 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
                 f"❗ - نُفيدك بأنك لم تتمكن من تجاوز الأختبار الخاص بـ **{config.SERVER_NAME}** , "
                 "يجب عليك مُراجعة القوانين لتتمكن من إجتياز الأختبار للمرة القادمة .\n\n"
                 f"الدرجة : **{state['right']} / {total}** ( المطلوب {need} )\n\n**( نتمنى لك التوفيق )**",
-                0xB3261E,
+                0x006C35,
             ))
         except discord.HTTPException:
             pass
@@ -1994,7 +1994,7 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
         f"العضو: {inter.user.mention}\nالدرجة: **{state['right']} / {total}** (المطلوب {need})\n"
         + ("**✅ ناجح**، الإدارة تقدر تفعّله بـ `-تفعيل`" if passed else "**❌ مرفوض**، انرسل له في الخاص إنه لم ينجح")
         + ("\n\n**الأسئلة اللي غلط فيها:**\n" + "\n".join(f"• {w}" for w in state["wrong"]) if state["wrong"] else ""),
-        0x0B6B55 if passed else 0xB3261E,
+        0x006C35 if passed else 0x006C35,
     )
     await inter.channel.send(embed=result)
 
@@ -2111,7 +2111,7 @@ async def inspect_command(message: discord.Message):
         "🛃 - نتيجة التفتيش",
         f"**العضو :** {member.mention}\n**ايدي العضو :** `{member.id}`\n**الصفة :** {kind}\n"
         f"**النتيجة :** {status}\n**المفتش :** {message.author.mention}",
-        0x006C35 if clean else 0xB3261E,
+        0x006C35 if clean else 0x006C35,
     )
     dm = embed(
         "🛃 - تم تفتيشك",
@@ -2120,7 +2120,7 @@ async def inspect_command(message: discord.Message):
         f"**النتيجة :** {status}\n"
         + (f"💵 - تم سحب **{get_setting(gid, 'inspect_fee') or config.INSPECT_FEE}** {config.CURRENCY} رسوم التفتيش .\n\n**( نتمنى لك رحلة سعيدة )**"
            if clean else "\n🚫 - لا يمكنك دخول الرحلة , يجب عليك التوظف أولاً .\n\n**( نتمنى لك التوفيق )**"),
-        0x006C35 if clean else 0xB3261E,
+        0x006C35 if clean else 0x006C35,
     )
     try:
         await member.send(embed=dm)
@@ -2179,10 +2179,10 @@ async def mute_command(message: discord.Message):
         return await message.reply(embed=err("ما أقدر أسكته. عطني صلاحية Timeout Members وخل رتبتي فوق رتبته."))
     e = embed("🔇 - تم الإسكات",
               f"**العضو :** {member.mention}\n**المدة :** {fmt_minutes(mins)}\n**السبب :** {reason}\n**بواسطة :** {message.author.mention}",
-              0xB98118)
+              0x006C35)
     await message.reply(embed=e)
     try:
-        await member.send(embed=embed("🔇 - تم إسكاتك", f"تم إسكاتك في **{config.SERVER_NAME}** لمدة **{fmt_minutes(mins)}**\n**السبب :** {reason}", 0xB98118))
+        await member.send(embed=embed("🔇 - تم إسكاتك", f"تم إسكاتك في **{config.SERVER_NAME}** لمدة **{fmt_minutes(mins)}**\n**السبب :** {reason}", 0x006C35))
     except discord.HTTPException:
         pass
     await log(f"{message.author.mention} سكّت {member.mention} {fmt_minutes(mins)}: {reason}", message.guild)
@@ -2226,7 +2226,7 @@ async def ban_command(message: discord.Message, ban: bool):
         if ban:
             if member:
                 try:
-                    await member.send(embed=embed("⛔ - تم حظرك", f"تم حظرك من **{config.SERVER_NAME}**\n**السبب :** {reason}", 0xB3261E))
+                    await member.send(embed=embed("⛔ - تم حظرك", f"تم حظرك من **{config.SERVER_NAME}**\n**السبب :** {reason}", 0x006C35))
                 except discord.HTTPException:
                     pass
             await message.guild.ban(discord.Object(id=uid), reason=f"{message.author}: {reason}", delete_message_seconds=0)
@@ -2238,7 +2238,7 @@ async def ban_command(message: discord.Message, ban: bool):
         return await message.reply(embed=err("ما عندي صلاحية Ban Members، أو رتبتي تحت رتبته."))
     title = "⛔ - تم الحظر" if ban else "✅ - تم فك الحظر"
     await message.reply(embed=embed(title, f"**الايدي :** `{uid}`\n" + (f"**السبب :** {reason}\n" if ban else "")
-                                    + f"**بواسطة :** {message.author.mention}", 0xB3261E if ban else 0x006C35))
+                                    + f"**بواسطة :** {message.author.mention}", 0x006C35 if ban else 0x006C35))
     await log(f"{message.author.mention} {'حظر' if ban else 'فك حظر'} `{uid}` {reason if ban else ''}", message.guild)
 
 
@@ -2458,7 +2458,7 @@ def points_card(guild: discord.Guild, member: discord.Member, kind: str):
     total = sum(b.values())
     rank = points_rank(guild.id, member.id, kind)
     title = "📊 نقاط الإدارة" if kind == "admin" else "🚓 نقاط الشرطة"
-    e = discord.Embed(title=title, color=0x006C35 if kind == "admin" else 0x2B6CB0, timestamp=now())
+    e = discord.Embed(title=title, color=0x006C35 if kind == "admin" else 0x006C35, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
     e.set_thumbnail(url=member.display_avatar.url)
@@ -2491,7 +2491,7 @@ def top_embed(guild: discord.Guild, kind: str, category: str = None):
     title = "🏆 أفضل 10 في الإدارة" if kind == "admin" else "🏆 أفضل 10 في الشرطة"
     if category:
         title = f"🏆 أفضل 10 | {cat_label(guild.id, kind, category)}"
-    e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0xC9A227, timestamp=now())
+    e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0x006C35, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
     e.set_footer(text=config.SERVER_NAME)
@@ -2518,17 +2518,24 @@ def admin_menu_view(gid: int = 0) -> discord.ui.View:
     return v
 
 
+MDT_MENU = [
+    ("تسجيل دخول", "in", "🟢"),
+    ("تسجيل خروج", "out", "🔴"),
+    ("المتواجدين بالدوام", "onduty", "👮"),
+    ("بحث عن مواطن", "search", "🔎"),
+    ("قبض على مجرم", "arrest", "🚔"),
+    ("مخالفة", "fine", "🧾"),
+    ("نقاطي", "me", "📊"),
+    ("نقاط شخص معين", "user", "👤"),
+    ("توب أفضل عشرة", "top", "🏆"),
+    ("إعادة الاختيار", "reset", "🔄"),
+]
+
+
 def mdt_view() -> discord.ui.View:
     v = discord.ui.View(timeout=None)
-    v.add_item(discord.ui.Button(label="تسجيل دخول", emoji="🟢", style=discord.ButtonStyle.success, custom_id="mdt:in", row=0))
-    v.add_item(discord.ui.Button(label="تسجيل خروج", emoji="🔴", style=discord.ButtonStyle.danger, custom_id="mdt:out", row=0))
-    v.add_item(discord.ui.Button(label="بحث عن مواطن", emoji="🔎", style=discord.ButtonStyle.primary, custom_id="mdt:search", row=1))
-    v.add_item(discord.ui.Button(label="قبض على مجرم", emoji="🚔", style=discord.ButtonStyle.primary, custom_id="mdt:arrest", row=1))
-    v.add_item(discord.ui.Button(label="مخالفة", emoji="🧾", style=discord.ButtonStyle.primary, custom_id="mdt:fine", row=1))
-    v.add_item(discord.ui.Button(label="نقاطي", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="mdt:me", row=2))
-    v.add_item(discord.ui.Button(label="نقاط شخص معين", emoji="👤", style=discord.ButtonStyle.secondary, custom_id="mdt:user", row=2))
-    v.add_item(discord.ui.Button(label="توب أفضل عشرة", emoji="🏆", style=discord.ButtonStyle.secondary, custom_id="mdt:top", row=2))
-    v.add_item(discord.ui.Button(label="المتواجدين بالدوام", emoji="👮", style=discord.ButtonStyle.secondary, custom_id="mdt:onduty", row=2))
+    v.add_item(discord.ui.Select(custom_id="mdt:menu", placeholder="إفتح لاختيار امر", options=[
+        discord.SelectOption(label=label, value=val, emoji=emoji) for label, val, emoji in MDT_MENU]))
     return v
 
 
@@ -2615,7 +2622,7 @@ class MDTArrestModal(discord.ui.Modal, title="🚔 قبض على مجرم"):
         db.commit()
         pts = pts_value(inter.guild.id, "pts_arrest")
         add_points(inter.guild.id, inter.user.id, "police", "arrest", pts)
-        e = embed("🚔 - تم القبض", color=0xB3261E)
+        e = embed("🚔 - تم القبض", color=0x006C35)
         e.add_field(name="المجرم", value=member.mention)
         e.add_field(name="التهمة", value=self.charge.value)
         e.add_field(name="مدة السجن", value=self.jail.value)
@@ -2629,7 +2636,7 @@ class MDTArrestModal(discord.ui.Modal, title="🚔 قبض على مجرم"):
                 "🚔 - تم القبض عليك",
                 f"**التهمة :** {self.charge.value}\n**مدة السجن :** {self.jail.value}"
                 + (f"\n**الغرامة :** {money(amount)}" if amount else "") + f"\n**الشرطي :** {inter.user.mention}",
-                0xB3261E,
+                0x006C35,
             ))
         except discord.HTTPException:
             pass
@@ -2653,7 +2660,7 @@ class MDTFineModal(discord.ui.Modal, title="🧾 مخالفة"):
         db.commit()
         pts = pts_value(inter.guild.id, "pts_fine")
         add_points(inter.guild.id, inter.user.id, "police", "fine", pts)
-        e = embed("🚨 مخالفة جديدة", color=0xB98118)
+        e = embed("🚨 مخالفة جديدة", color=0x006C35)
         e.add_field(name="المخالف", value=member.mention)
         e.add_field(name="المبلغ", value=money(amount))
         e.add_field(name="رقم المخالفة", value=f"#{cur.lastrowid}")
@@ -2760,17 +2767,16 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
         view = admin_menu_view(inter.guild.id)
     elif النوع.value == "bank":
         e = embed("🏦 - بنك سعودي تايم", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
-                  "🏦 افتح حسابك وخذ رقم الآيبان حقك\n💳 شوف رصيدك\n📥 📤 إيداع وسحب\n"
-                  "🔁 حوّل لأي أحد بالآيبان أو الايدي\n📝 💸 اطلب قرض وسدده", 0x006C35)
+                  "اختر من القائمة اللي تحت .", 0x006C35)
         view = bank_view()
     elif النوع.value == "units":
         e = embed("🚓 - اليونتات", f"**- مرحبا بك عزيزي العسكري في {config.SERVER_NAME} .**\n\n"
                   "اضغط على القطاع حقك وبيطلع لك رقم اليونت ويتغيّر اسمك تلقائي .\n\n"
-                  "🔵 **LSPD** ← يونت يبدأ بـ **D-**\n⚫ **SWAT** ← يونت يبدأ بـ **S-**", 0x2B6CB0)
+                  "🔵 **LSPD** ← يونت يبدأ بـ **D-**\n⚫ **SWAT** ← يونت يبدأ بـ **S-**", 0x006C35)
         view = units_view()
     else:
         e = embed("💻 - MDT الشرطة", f"**- مرحبا بك عزيزي العسكري في نظام {config.SERVER_NAME} .**\n\n"
-                  "🟢 سجّل دخول أول ما تبدأ دوامك، و 🔴 سجّل خروج إذا خلصت .", 0x2B6CB0)
+                  "🟢 سجّل دخول أول ما تبدأ دوامك، و 🔴 سجّل خروج إذا خلصت .", 0x006C35)
         view = mdt_view()
     try:
         await الروم.send(embed=e, view=view)
@@ -2905,7 +2911,7 @@ async def setup_police_points(inter: discord.Interaction, القبض: app_comman
             set_setting(gid, key, val)
     await inter.response.send_message(embed=embed("🚓 نقاط الشرطة", (
         f"🚔 القبض : **{pts_value(gid, 'pts_arrest')}** نقطة\n🧾 المخالفة : **{pts_value(gid, 'pts_fine')}** نقطة\n"
-        f"🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام"), 0x2B6CB0), ephemeral=True)
+        f"🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام"), 0x006C35), ephemeral=True)
 
 
 async def _edit_points(inter: discord.Interaction, kind: str, member: discord.Member, amount: int):
@@ -3098,7 +3104,7 @@ class ApplyModal(discord.ui.Modal):
         db.commit()
         sid = cur.lastrowid
         ch = inter.guild.get_channel(t["review_ch"])
-        e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}", color=0xC9A227, timestamp=now())
+        e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}", color=0x006C35, timestamp=now())
         e.set_author(name=str(inter.user), icon_url=inter.user.display_avatar.url)
         e.set_thumbnail(url=inter.user.display_avatar.url)
         e.add_field(name="المقدّم", value=f"{inter.user.mention} (`{inter.user.id}`)", inline=False)
@@ -3167,7 +3173,7 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
                     "❌ - تم رفض تقديمك",
                     f"**- عزيزي {member.mention} .**\n\nنعتذر , تم رفض تقديمك في **{name}** ."
                     + (f"\n\n**السبب :** {reason}" if reason else "") + "\n\n**( نتمنى لك التوفيق المرة الجاية )**",
-                    0xB3261E,
+                    0x006C35,
                 ))
         except discord.HTTPException:
             pass
@@ -3175,7 +3181,7 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
               f"❌ **مرفوض** بواسطة {inter.user.mention}" + (f"\nالسبب: {reason}" if reason else ""))
     try:
         e = message.embeds[0] if message.embeds else embed("📝 تقديم")
-        e.color = 0x006C35 if accepted else 0xB3261E
+        e.color = 0x006C35 if accepted else 0x006C35
         e.add_field(name="النتيجة", value=result, inline=False)
         await message.edit(embed=e, view=None)
     except discord.HTTPException:
@@ -3397,12 +3403,12 @@ class ResignView(discord.ui.View):
             "📤 - تحديث أدوار | استقالة",
             f"**العضو :** {self.member.mention}\n**القطاع :** {SECTORS[sector]}\n"
             f"**الرتب اللي انشالت :** {' '.join(r.mention for r in remove)}\n**بواسطة :** {inter.user.mention}",
-            0xB3261E,
+            0x006C35,
         )
         await inter.response.edit_message(embed=e, view=None)
         await role_update_post(guild, e)
         try:
-            await self.member.send(embed=embed("📤 - تمت استقالتك", f"تمت استقالتك من القطاع **{SECTORS[sector]}** في **{config.SERVER_NAME}** .", 0xB3261E))
+            await self.member.send(embed=embed("📤 - تمت استقالتك", f"تمت استقالتك من القطاع **{SECTORS[sector]}** في **{config.SERVER_NAME}** .", 0x006C35))
         except discord.HTTPException:
             pass
         await log(f"{inter.user.mention} سوّى استقالة لـ {self.member.mention} ({SECTORS[sector]})", guild)
@@ -3483,7 +3489,7 @@ async def handle_unit(inter: discord.Interaction, kind: str):
             + (f"اسمك صار: **{nick}**" if changed else
                "⚠️ ما قدرت أغيّر اسمك. خل رتبة البوت فوق رتبتك، وعطه صلاحية Manage Nicknames .\n"
                "(ولو أنت صاحب السيرفر، ديسكورد ما يسمح للبوت يغيّر اسمك)"))
-    await inter.response.send_message(embed=embed(f"🚓 يونت {u['label']}", text, 0x2B6CB0), ephemeral=True)
+    await inter.response.send_message(embed=embed(f"🚓 يونت {u['label']}", text, 0x006C35), ephemeral=True)
     if new:
         await log(f"{inter.user.mention} أخذ يونت {u['label']} `{code}`", inter.guild)
 
@@ -3529,14 +3535,34 @@ def get_account(uid: int):
 
 
 def new_iban() -> str:
-    while True:
-        iban = "SA" + "".join(random.choices("0123456789", k=22))
-        if not db.execute("SELECT 1 FROM bank_accounts WHERE iban = ?", (iban,)).fetchone():
-            return iban
+    """آيبان قصير: 4 أرقام (ولو امتلت كلها نصير 5)"""
+    for digits in (4, 5, 6):
+        for _ in range(200):
+            iban = str(random.randint(10 ** (digits - 1), 10 ** digits - 1))
+            if not db.execute("SELECT 1 FROM bank_accounts WHERE iban = ?", (iban,)).fetchone():
+                return iban
+    raise RuntimeError("ما لقيت آيبان فاضي")
 
 
 def fmt_iban(iban: str) -> str:
-    return " ".join(iban[i:i + 4] for i in range(0, len(iban), 4))
+    return iban
+
+
+def ensure_account(uid: int):
+    """يفتح حساب بنكي تلقائي لو ما عنده"""
+    acc = get_account(uid)
+    if acc:
+        return acc
+    db.execute("INSERT OR IGNORE INTO bank_accounts (user_id, iban, created_at) VALUES (?, ?, ?)", (uid, new_iban(), now().isoformat()))
+    db.commit()
+    return get_account(uid)
+
+
+# الحسابات القديمة اللي آيبانها طويل نحولها لـ 4 أرقام
+for _row in db.execute("SELECT user_id, iban FROM bank_accounts").fetchall():
+    if len(_row["iban"]) > 6:
+        db.execute("UPDATE bank_accounts SET iban = ? WHERE user_id = ?", (new_iban(), _row["user_id"]))
+db.commit()
 
 
 def active_loan(uid: int):
@@ -3544,20 +3570,22 @@ def active_loan(uid: int):
                       (uid,)).fetchone()
 
 
+BANK_MENU = [
+    ("الكاش", "cash", "💵"),
+    ("حسابي البنكي", "me", "💳"),
+    ("تحويل مبلغ", "transfer", "🔁"),
+    ("سحب الأموال", "withdraw", "📤"),
+    ("إيداع الأموال", "deposit", "📥"),
+    ("طلب قرض", "loan", "📝"),
+    ("دفع القروض", "payloan", "💸"),
+    ("إعادة الاختيار", "reset", "🔄"),
+]
+
+
 def bank_view() -> discord.ui.View:
     v = discord.ui.View(timeout=None)
-    items = [
-        ("إنشاء حساب", "🏦", discord.ButtonStyle.success, "bank:create", 0),
-        ("حسابي البنكي", "💳", discord.ButtonStyle.primary, "bank:me", 0),
-        ("الكاش", "💵", discord.ButtonStyle.primary, "bank:cash", 0),
-        ("إيداع", "📥", discord.ButtonStyle.secondary, "bank:deposit", 1),
-        ("سحب", "📤", discord.ButtonStyle.secondary, "bank:withdraw", 1),
-        ("تحويل", "🔁", discord.ButtonStyle.secondary, "bank:transfer", 1),
-        ("طلب قرض", "📝", discord.ButtonStyle.secondary, "bank:loan", 2),
-        ("دفع قرض", "💸", discord.ButtonStyle.secondary, "bank:payloan", 2),
-    ]
-    for label, emoji, style, cid, row in items:
-        v.add_item(discord.ui.Button(label=label, emoji=emoji, style=style, custom_id=cid, row=row))
+    v.add_item(discord.ui.Select(custom_id="bank:menu", placeholder="إفتح لاختيار امر", options=[
+        discord.SelectOption(label=label, value=val, emoji=emoji) for label, val, emoji in BANK_MENU]))
     return v
 
 
@@ -3600,7 +3628,7 @@ class WithdrawModal(discord.ui.Modal, title="📤 سحب"):
 
 
 class TransferModal(discord.ui.Modal, title="🔁 تحويل"):
-    target = discord.ui.TextInput(label="رقم الآيبان أو ايدي العضو", placeholder="SA... أو 123456789012345678", max_length=40)
+    target = discord.ui.TextInput(label="رقم الآيبان أو ايدي العضو", placeholder="مثال: 4821 أو ايدي العضو", max_length=40)
     amount = discord.ui.TextInput(label="المبلغ", placeholder="مثال: 5000", max_length=12)
 
     async def on_submit(self, inter: discord.Interaction):
@@ -3608,11 +3636,13 @@ class TransferModal(discord.ui.Modal, title="🔁 تحويل"):
         if not amt:
             return await inter.response.send_message(embed=err("اكتب المبلغ رقم صحيح."), ephemeral=True)
         raw = self.target.value.strip().replace(" ", "").upper().strip("<@!>")
+        raw = raw[2:] if raw.startswith("SA") else raw
+        raw = raw.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
         acc = None
-        if raw.startswith("SA"):
+        if raw.isdigit() and len(raw) <= 6:
             acc = db.execute("SELECT * FROM bank_accounts WHERE iban = ?", (raw,)).fetchone()
         elif raw.isdigit():
-            acc = get_account(int(raw))
+            acc = get_account(int(raw)) or (ensure_account(int(raw)) if inter.guild.get_member(int(raw)) else None)
         if not acc:
             return await inter.response.send_message(embed=err("ما لقيت حساب بهالآيبان أو الايدي."), ephemeral=True)
         if acc["user_id"] == inter.user.id:
@@ -3654,7 +3684,7 @@ class LoanModal(discord.ui.Modal, title="📝 طلب قرض"):
         db.commit()
         lid = cur.lastrowid
         acc = get_account(inter.user.id)
-        e = embed("📝 طلب قرض جديد", color=0xC9A227)
+        e = embed("📝 طلب قرض جديد", color=0x006C35)
         e.set_thumbnail(url=inter.user.display_avatar.url)
         e.add_field(name="العضو", value=f"{inter.user.mention} (`{inter.user.id}`)", inline=False)
         e.add_field(name="الآيبان", value=f"`{fmt_iban(acc['iban'])}`", inline=False)
@@ -3701,21 +3731,9 @@ async def handle_bank(inter: discord.Interaction, action: str):
     p = get_player(uid)
     if not p:
         return await inter.response.send_message(embed=err("صار خطأ، جرّب مرة ثانية."), ephemeral=True)
-    acc = get_account(uid)
-    if action == "create":
-        if acc:
-            return await inter.response.send_message(embed=err(f"عندك حساب من قبل.\nالآيبان: `{fmt_iban(acc['iban'])}`"), ephemeral=True)
-        iban = new_iban()
-        db.execute("INSERT INTO bank_accounts (user_id, iban, created_at) VALUES (?, ?, ?)", (uid, iban, now().isoformat()))
-        db.commit()
-        await log(f"{inter.user.mention} فتح حساب بنكي `{iban}`", inter.guild)
-        return await inter.response.send_message(embed=embed(
-            "🏦 تم فتح حسابك البنكي",
-            f"**الاسم :** {inter.user.display_name}\n**رقم الآيبان :** `{fmt_iban(iban)}`\n**الرصيد :** {money(p['bank'])}\n\n"
-            "احفظ الآيبان، الناس يحولون لك فيه .",
-        ), ephemeral=True)
-    if not acc:
-        return await inter.response.send_message(embed=err("ما عندك حساب بنكي. اضغط **إنشاء حساب** أول."), ephemeral=True)
+    acc = ensure_account(uid)
+    if action == "create":  # الحساب ينفتح تلقائي، فزر إنشاء حساب القديم يعرض الحساب
+        action = "me"
     if action == "me":
         loan = active_loan(uid)
         e = embed("💳 حسابي البنكي")
@@ -3762,7 +3780,7 @@ async def handle_loan_decision(inter: discord.Interaction, cid: str):
     db.commit()
     try:
         e = inter.message.embeds[0]
-        e.color = 0x006C35 if accepted else 0xB3261E
+        e.color = 0x006C35 if accepted else 0x006C35
         e.add_field(name="النتيجة", value=("✅ **مقبول**" if accepted else "❌ **مرفوض**") + f" بواسطة {inter.user.mention}", inline=False)
         await inter.response.edit_message(embed=e, view=None)
     except (discord.HTTPException, IndexError):
@@ -3774,7 +3792,7 @@ async def handle_loan_decision(inter: discord.Interaction, cid: str):
                 "✅ تم قبول قرضك" if accepted else "❌ تم رفض قرضك",
                 (f"انضاف لحسابك **{money(loan['amount'])}**\nسدده من البنك بزر **دفع قرض** ." if accepted
                  else f"تم رفض طلب القرض ({money(loan['amount'])})."),
-                0x006C35 if accepted else 0xB3261E,
+                0x006C35 if accepted else 0x006C35,
             ))
         except discord.HTTPException:
             pass
@@ -4140,10 +4158,28 @@ async def on_interaction(inter: discord.Interaction):
         await quiz_start(inter, cid)
     elif cid.startswith("quiz:ans:"):
         await quiz_answer(inter, cid)
+    elif cid == "mdt:menu":
+        choice = (inter.data.get("values") or ["reset"])[0]
+        if choice == "reset":
+            return await inter.response.edit_message(view=mdt_view())
+        await handle_points_interaction(inter, f"mdt:{choice}")
+        try:
+            await inter.message.edit(view=mdt_view())
+        except discord.HTTPException:
+            pass
     elif cid.startswith("pts:") or cid.startswith("mdt:"):
         await handle_points_interaction(inter, cid)
     elif cid == "rules:open":
         await handle_rules(inter)
+    elif cid == "bank:menu":
+        choice = (inter.data.get("values") or ["reset"])[0]
+        if choice == "reset":
+            return await inter.response.edit_message(view=bank_view())
+        await handle_bank(inter, choice)
+        try:
+            await inter.message.edit(view=bank_view())
+        except discord.HTTPException:
+            pass
     elif cid.startswith("bank:"):
         await handle_bank(inter, cid.split(":", 1)[1])
     elif cid.startswith("loan:"):

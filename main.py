@@ -369,6 +369,14 @@ CREATE TABLE IF NOT EXISTS settings (
 """)
 db.commit()
 
+# أعمدة جديدة لتفاصيل التذاكر (تنضاف حتى لو البيانات قديمة)
+for _col, _def in (("btn_color", "TEXT DEFAULT 'primary'"), ("claim_on", "INTEGER DEFAULT 1"), ("ping_staff", "INTEGER DEFAULT 1")):
+    try:
+        db.execute(f"ALTER TABLE ticket_types ADD COLUMN {_col} {_def}")
+    except sqlite3.OperationalError:
+        pass  # موجود
+db.commit()
+
 
 def now():
     return datetime.now(timezone.utc)
@@ -1568,6 +1576,15 @@ def get_ticket_types(guild_id: int):
     رتبة_المسؤول="الرتبة اللي تستلم التذكرة وتشوفها",
     الايموجي="ايموجي يطلع جنب الاسم (اختياري)",
     رسالة_الترحيب="الكلام اللي يطلع أول ما تنفتح التذكرة (اختياري)",
+    لون_الزر="لون الزر في لوحة الأزرار (التذاكر 11-20)",
+    الاستلام="فيها زر استلام وترك التذكرة ولا لا",
+    منشن_المسؤول="يمنشن رتبة المسؤول أول ما تنفتح التذكرة",
+)
+@app_commands.choices(
+    لون_الزر=[app_commands.Choice(name=n, value=v) for n, v in
+             (("أزرق", "primary"), ("أخضر", "success"), ("رمادي", "secondary"), ("أحمر", "danger"))],
+    الاستلام=[app_commands.Choice(name="إيه، فيها استلام", value=1), app_commands.Choice(name="لا، بدون استلام", value=0)],
+    منشن_المسؤول=[app_commands.Choice(name="إيه، منشن", value=1), app_commands.Choice(name="لا، بدون منشن", value=0)],
 )
 async def setup_ticket(
     inter: discord.Interaction,
@@ -1577,22 +1594,34 @@ async def setup_ticket(
     رتبة_المسؤول: discord.Role,
     الايموجي: str = None,
     رسالة_الترحيب: str = None,
+    لون_الزر: app_commands.Choice[str] = None,
+    الاستلام: app_commands.Choice[int] = None,
+    منشن_المسؤول: app_commands.Choice[int] = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    old = db.execute("SELECT * FROM ticket_types WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم)).fetchone()
+    color = لون_الزر.value if لون_الزر else (old["btn_color"] if old and old["btn_color"] else "primary")
+    claim = الاستلام.value if الاستلام else (old["claim_on"] if old and old["claim_on"] is not None else 1)
+    ping = منشن_المسؤول.value if منشن_المسؤول else (old["ping_staff"] if old and old["ping_staff"] is not None else 1)
+    emoji = (الايموجي or "").strip()[:30] if الايموجي is not None else (old["emoji"] if old else "")
+    welcome = رسالة_الترحيب or (old["welcome"] if old else DEFAULT_TICKET_WELCOME)
     db.execute(
-        "INSERT INTO ticket_types (guild_id, slot, name, emoji, category_id, staff_role, welcome) VALUES (?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(guild_id, slot) DO UPDATE SET name = excluded.name, emoji = excluded.emoji, "
-        "category_id = excluded.category_id, staff_role = excluded.staff_role, welcome = excluded.welcome",
-        (inter.guild.id, الرقم, الاسم, (الايموجي or "").strip()[:30], الكاتقوري.id, رتبة_المسؤول.id,
-         رسالة_الترحيب or DEFAULT_TICKET_WELCOME),
+        "INSERT INTO ticket_types (guild_id, slot, name, emoji, category_id, staff_role, welcome, btn_color, claim_on, ping_staff) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, slot) DO UPDATE SET name = excluded.name, "
+        "emoji = excluded.emoji, category_id = excluded.category_id, staff_role = excluded.staff_role, "
+        "welcome = excluded.welcome, btn_color = excluded.btn_color, claim_on = excluded.claim_on, ping_staff = excluded.ping_staff",
+        (inter.guild.id, الرقم, الاسم, emoji, الكاتقوري.id, رتبة_المسؤول.id, welcome, color, claim, ping),
     )
     db.commit()
+    colors = {"primary": "🔵 أزرق", "success": "🟢 أخضر", "secondary": "⚪ رمادي", "danger": "🔴 أحمر"}
     await inter.response.send_message(
         embed=embed(
             "🎫 تم تسطيب التذكرة",
-            f"**رقم {الرقم}:** {الاسم}\nالكاتقوري: {الكاتقوري.mention}\nالمسؤول: {رتبة_المسؤول.mention}\n\n"
-            "لما تخلص تسطيب التذاكر، استخدم **/ارسال_التذاكر** عشان ترسل اللوحة.",
+            f"**رقم {الرقم}:** {الاسم}\nالكاتقوري: {الكاتقوري.mention}\nالمسؤول: {رتبة_المسؤول.mention}\n"
+            f"**الشكل:** {'أزرار' if الرقم > 10 else 'منيو'}" + (f" | **لون الزر:** {colors[color]}" if الرقم > 10 else "") + "\n"
+            f"**الاستلام:** {'✅ فيها' if claim else '❌ بدون (قفل بس)'}\n**منشن المسؤول:** {'✅' if ping else '❌'}\n\n"
+            "لما تخلص، أرسل اللوحة بـ **/ارسال_التذاكر** .",
         ),
         ephemeral=True,
     )
@@ -1622,9 +1651,11 @@ def ticket_select(guild_id: int, slots=None) -> discord.ui.View:
 
 def ticket_buttons_panel(guild_id: int, slots=None) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    styles = [discord.ButtonStyle.primary, discord.ButtonStyle.success, discord.ButtonStyle.secondary, discord.ButtonStyle.danger]
+    styles = {"primary": discord.ButtonStyle.primary, "success": discord.ButtonStyle.success,
+              "secondary": discord.ButtonStyle.secondary, "danger": discord.ButtonStyle.danger}
     for i, t in enumerate([t for t in get_ticket_types(guild_id) if (t["slot"] in slots if slots else t["slot"] > 10)]):
-        view.add_item(discord.ui.Button(label=t["name"], emoji=t["emoji"] or None, style=styles[i % 4],
+        view.add_item(discord.ui.Button(label=t["name"], emoji=t["emoji"] or None,
+                                        style=styles.get(t["btn_color"] or "primary", discord.ButtonStyle.primary),
                                         custom_id=f"ticket:btn:{t['slot']}", row=i // 5))
     return view
 
@@ -1676,10 +1707,11 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التذاكر", الروم.mention), ephemeral=True)
 
 
-def ticket_buttons() -> discord.ui.View:
+def ticket_buttons(claim_on: bool = True) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="إستلام التذكرة", style=discord.ButtonStyle.success, custom_id="ticket:claim"))
-    view.add_item(discord.ui.Button(label="ترك التذكرة", style=discord.ButtonStyle.secondary, custom_id="ticket:unclaim"))
+    if claim_on:
+        view.add_item(discord.ui.Button(label="إستلام التذكرة", style=discord.ButtonStyle.success, custom_id="ticket:claim"))
+        view.add_item(discord.ui.Button(label="ترك التذكرة", style=discord.ButtonStyle.secondary, custom_id="ticket:unclaim"))
     view.add_item(discord.ui.Button(label="قفل التذكرة", style=discord.ButtonStyle.danger, custom_id="ticket:close"))
     return view
 
@@ -1750,7 +1782,9 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
         f"**- مرحبا بك عزيزي العضو في قسم ( {ttype['name']} ) .**\n\n📄 - {ttype['welcome']}\n\n"
         f"مُقدم الطلب : ( {inter.user.mention} )",
     )
-    await ch.send(content=f"{inter.user.mention} {staff.mention if staff else ''}", embed=e, view=ticket_buttons())
+    ping = staff.mention if staff and (ttype["ping_staff"] if ttype["ping_staff"] is not None else 1) else ""
+    claim_on = bool(ttype["claim_on"] if ttype["claim_on"] is not None else 1)
+    await ch.send(content=f"{inter.user.mention} {ping}", embed=e, view=ticket_buttons(claim_on))
     await inter.followup.send(embed=embed("✅ انفتحت تذكرتك", ch.mention), ephemeral=True)
     await log(f"{inter.user.mention} فتح تذكرة **{ttype['name']}** {ch.mention}", guild)
 
@@ -1762,6 +1796,8 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
     ttype = db.execute("SELECT * FROM ticket_types WHERE guild_id = ? AND slot = ?", (t["guild_id"], t["slot"])).fetchone()
     staff = is_ticket_staff(inter.user, ttype)
 
+    if action in ("claim", "unclaim") and ttype is not None and ttype["claim_on"] == 0:
+        return await inter.response.send_message(embed=err("هذي التذكرة ما فيها استلام."), ephemeral=True)
     if action == "claim":
         if not staff:
             return await inter.response.send_message(embed=err("الاستلام للإدارة المسؤولة بس."), ephemeral=True)

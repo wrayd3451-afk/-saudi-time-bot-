@@ -956,6 +956,40 @@ async def manual_backup(inter: discord.Interaction):
     await inter.followup.send(embed=embed("💾 تم الحفظ", f"النسخة في {ch.mention}" if ch else "ما قدرت ألقى روم النسخ."), ephemeral=True)
 
 
+@bot.tree.command(name="اصلاح_الصلاحيات", description="يفك قفل (قراءة الرسائل السابقة) في كل الرومات دفعة وحدة - لصاحب السيرفر")
+async def fix_history_perms(inter: discord.Interaction):
+    if not is_owner(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    guild = inter.guild
+    fixed, failed = 0, []
+    # 1) صلاحية @everyone في السيرفر: عرض الرومات + قراءة الرسائل السابقة
+    try:
+        p = guild.default_role.permissions
+        if not (p.read_message_history and p.view_channel):
+            p.update(read_message_history=True, view_channel=True)
+            await guild.default_role.edit(permissions=p, reason="اصلاح الصلاحيات")
+            fixed += 1
+    except (discord.Forbidden, discord.HTTPException):
+        failed.append("@everyone (السيرفر)")
+    # 2) كل الرومات والكاتيجوريات: أي ❌ على (Read Message History) تصير ⧸ محايدة
+    #    (ما نلمس View Channel عشان الرومات الخاصة تبقى خاصة)
+    for ch in guild.channels:
+        for target, ow in list(ch.overwrites.items()):
+            if ow.read_message_history is False:
+                ow.read_message_history = None
+                try:
+                    await ch.set_permissions(target, overwrite=None if ow.is_empty() else ow, reason="اصلاح الصلاحيات")
+                    fixed += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    failed.append(ch.name)
+                await asyncio.sleep(0.4)
+    msg = f"✅ تم إصلاح **{fixed}** صلاحية.\nالحين الأعضاء يشوفون الرسايل في الرومات اللي يقدرون يدخلونها.\nالرومات الخاصة ما تغيّرت وبقت خاصة."
+    if failed:
+        msg += "\n\n⚠️ ما قدرت أعدّل: " + "، ".join(sorted(set(failed))[:20]) + "\nارفع رتبة البوت فوق الرتب وعطه صلاحية **Manage Roles** و **Manage Channels**."
+    await inter.followup.send(embed=embed("🔧 إصلاح الصلاحيات", msg), ephemeral=True)
+
+
 # ============================================================
 # البوت يقعد في روم صوتي 24 ساعة
 # ============================================================

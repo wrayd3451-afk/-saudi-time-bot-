@@ -371,6 +371,10 @@ CREATE TABLE IF NOT EXISTS settings (
 db.commit()
 
 # أعمدة جديدة لتفاصيل التذاكر (تنضاف حتى لو البيانات قديمة)
+try:  # T1 مرة وحدة بس في كل تذكرة
+    db.execute("ALTER TABLE tickets ADD COLUMN quiz_used INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+    pass
 for _col, _def in (("btn_color", "TEXT DEFAULT 'primary'"), ("claim_on", "INTEGER DEFAULT 1"), ("ping_staff", "INTEGER DEFAULT 1")):
     try:
         db.execute(f"ALTER TABLE ticket_types ADD COLUMN {_col} {_def}")
@@ -864,7 +868,7 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
     e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
     e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` · `-خط` · /تسطيب_الخط · /تسطيب_الادارة_العليا", inline=False)
-    e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · العضو يكتب `T1` في تذكرته · `-تفعيل @العضو`", inline=False)
+    e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · العضو يكتب `T1` في تذكرته (بس T1) · `-تفعيل @العضو`", inline=False)
     e.add_field(name="✈️ الأقيام", value="`-قيم` في روم إنشاء القيم · `-تفتيش @العضو` في روم التفتيش · /تسطيب_التفتيش", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
 
@@ -1314,6 +1318,8 @@ async def setup_line(inter: discord.Interaction, صورة: discord.Attachment = 
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
+    if await suggestion_check(message):
+        return
     if message.content.strip().startswith("-تفعيل"):
         return await activate_command(message)
     if message.content.strip().startswith("-تفتيش"):
@@ -1321,9 +1327,11 @@ async def on_message(message: discord.Message):
     first = message.content.strip().split()[:1]
     if message.content.strip() == "-خط":
         return await line_command(message)
-    m_t = re.fullmatch(r"[Tt](\d{1,2})", message.content.strip())
-    if m_t and 1 <= int(m_t.group(1)) <= 20:
-        return await quiz_shortcut(message, int(m_t.group(1)))
+    # T1 بس = أسئلة التذكرة (داخل التذكرة ولصاحبها)، وغيرها يروح للردود التلقائية
+    if message.content.strip().strip("•·").strip().upper() == "T1":
+        if await quiz_shortcut(message, 1):
+            return
+        return await auto_reply(message)
     if first in (["-اسكات"], ["-إسكات"]):
         return await mute_command(message)
     if first in (["-فك_اسكات"], ["-فك"]):
@@ -1397,11 +1405,12 @@ async def on_message(message: discord.Message):
 # الرد التلقائي
 # ============================================================
 async def auto_reply(message: discord.Message):
-    text = message.content.strip()
+    text = message.content.strip().strip("•·").strip()
     if not text:
         return
     row = db.execute(
-        "SELECT * FROM auto_replies WHERE guild_id = ? AND trigger = ?", (message.guild.id, text)
+        "SELECT * FROM auto_replies WHERE guild_id = ? AND trim(trigger, '•· ') = ? COLLATE NOCASE",
+        (message.guild.id, text),
     ).fetchone()
     if not row:
         return
@@ -1762,13 +1771,15 @@ def ticket_buttons_panel(guild_id: int, slots=None) -> discord.ui.View:
     الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
     الأرقام="أرقام التذاكر اللي تطلع في هاللوحة بس، مثل: 12 أو 11,13 (فاضي = كلها)",
     الوصف="الكلام اللي فوق (اختياري)",
+    الصورة="صورة تطلع في اللوحة (فاضي = صورة سعودي تايم الخضراء)",
 )
 @app_commands.choices(الشكل=[
     app_commands.Choice(name="منيو (التذاكر 1 - 10)", value="menu"),
     app_commands.Choice(name="أزرار (التذاكر 11 - 20)", value="buttons"),
 ])
 async def send_ticket_panel(inter: discord.Interaction, الروم: discord.TextChannel,
-                            الشكل: app_commands.Choice[str] = None, الأرقام: str = None, الوصف: str = None):
+                            الشكل: app_commands.Choice[str] = None, الأرقام: str = None, الوصف: str = None,
+                            الصورة: discord.Attachment = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     buttons = bool(الشكل and الشكل.value == "buttons")
@@ -1792,8 +1803,16 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
         (الوصف or f"- مرحبا بك عزيزي العضو في قسم التذاكر الخاص بـ **{config.SERVER_NAME}** .\n\n"
                   + ("اضغط على الزر حق التذكرة اللي تبيها ." if buttons else "اختر نوع التذكرة من القائمة اللي تحت .")) + f"\n\n{lines}",
     )
+    if الصورة is not None and (الصورة.content_type or "").startswith("image/"):
+        ext = os.path.splitext(الصورة.filename)[1].lower() or ".png"
+        pfile = discord.File(io.BytesIO(await الصورة.read()), filename=f"panel{ext}")
+    else:
+        pfile, _ = ticket_image_file(inter.guild.id, 0)
+        pfile.filename = "panel" + os.path.splitext(pfile.filename)[1]
+    e.set_image(url=f"attachment://{pfile.filename}")
     try:
-        await الروم.send(embed=e, view=ticket_buttons_panel(inter.guild.id, slots) if buttons else ticket_select(inter.guild.id, slots))
+        await الروم.send(embed=e, file=pfile,
+                         view=ticket_buttons_panel(inter.guild.id, slots) if buttons else ticket_select(inter.guild.id, slots))
     except discord.Forbidden:
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
     except discord.HTTPException:
@@ -1801,6 +1820,51 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
             embed=err("فيه ايموجي غلط في وحدة من التذاكر. عدّلها بـ /تسطيب_تذكرة وحط ايموجي عادي مثل 🛃"), ephemeral=True
         )
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التذاكر", الروم.mention), ephemeral=True)
+
+
+# ---------- صور التذاكر ----------
+db.execute("CREATE TABLE IF NOT EXISTS ticket_images (guild_id INTEGER, slot INTEGER, data BLOB, filename TEXT, PRIMARY KEY (guild_id, slot))")
+db.commit()
+
+
+def ticket_image_file(guild_id: int, slot: int):
+    """صورة التذكرة: صورتها الخاصة ← وإلا صورة كل التذاكر (0) ← وإلا صورة الخط الخضراء"""
+    row = (db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = ?", (guild_id, slot)).fetchone()
+           or db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = 0", (guild_id,)).fetchone()
+           or db.execute("SELECT data, filename FROM line_images WHERE guild_id = ?", (guild_id,)).fetchone())
+    if row:
+        data, fname = bytes(row[0]), (row[1] or "image.png")
+    else:
+        data, fname = base64.b64decode(DEFAULT_LINE_PNG), "image.png"
+    ext = os.path.splitext(fname)[1].lower() if os.path.splitext(fname)[1].lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp") else ".png"
+    name = f"ticket{ext}"
+    return discord.File(io.BytesIO(data), filename=name), f"attachment://{name}"
+
+
+@bot.tree.command(name="صورة_التذاكر", description="تحط صورة تطلع داخل التذاكر (لكل التذاكر أو لتذكرة معينة)")
+@app_commands.describe(
+    صورة="ارفع الصورة (اتركها فاضية عشان تحذف الصورة)",
+    رقم_التذكرة="رقم التذكرة من 1 إلى 20 (فاضي = كل التذاكر)",
+)
+async def set_ticket_image(inter: discord.Interaction, صورة: discord.Attachment = None,
+                           رقم_التذكرة: app_commands.Range[int, 1, 20] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    slot = رقم_التذكرة or 0
+    where = f"التذكرة رقم {slot}" if slot else "كل التذاكر"
+    if صورة is None:
+        db.execute("DELETE FROM ticket_images WHERE guild_id = ? AND slot = ?", (inter.guild.id, slot))
+        db.commit()
+        return await inter.response.send_message(embed=embed("🖼️ صور التذاكر", f"انحذفت صورة {where}."), ephemeral=True)
+    if not (صورة.content_type or "").startswith("image/"):
+        return await inter.response.send_message(embed=err("لازم تكون صورة."), ephemeral=True)
+    if صورة.size > 8 * 1024 * 1024:
+        return await inter.response.send_message(embed=err("الصورة كبيرة، خلها أقل من 8 ميقا."), ephemeral=True)
+    data = await صورة.read()
+    db.execute("INSERT OR REPLACE INTO ticket_images (guild_id, slot, data, filename) VALUES (?, ?, ?, ?)",
+               (inter.guild.id, slot, data, صورة.filename))
+    db.commit()
+    await inter.response.send_message(embed=embed("🖼️ صور التذاكر", f"✅ تم حط الصورة لـ **{where}**.\nتطلع في أي تذكرة تنفتح من الحين."), ephemeral=True)
 
 
 def ticket_buttons(claim_on: bool = True) -> discord.ui.View:
@@ -1882,7 +1946,9 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
     )
     ping = staff.mention if staff and (ttype["ping_staff"] if ttype["ping_staff"] is not None else 1) else ""
     claim_on = bool(ttype["claim_on"] if ttype["claim_on"] is not None else 1)
-    await ch.send(content=f"{inter.user.mention} {ping}", embed=e, view=ticket_buttons(claim_on))
+    f, url = ticket_image_file(guild.id, slot)
+    e.set_image(url=url)
+    await ch.send(content=f"{inter.user.mention} {ping}", embed=e, view=ticket_buttons(claim_on), file=f)
     await inter.followup.send(embed=embed("✅ انفتحت تذكرتك", ch.mention), ephemeral=True)
     await log(f"{inter.user.mention} فتح تذكرة **{ttype['name']}** {ch.mention}", guild)
 
@@ -1913,10 +1979,32 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
         db.commit()
         await inter.response.send_message(embed=embed("↩️ تم ترك التذكرة", "التذكرة الحين متاحة لأي إداري يستلمها."))
 
-    elif action == "close":
-        if not staff and inter.user.id != t["owner_id"]:
-            return await inter.response.send_message(embed=err("ما تقدر تقفل هذي التذكرة."), ephemeral=True)
-        await inter.response.send_message(embed=embed("🔒 التذكرة بتنقفل بعد 5 ثواني", f"قفلها: {inter.user.mention}", 0x006C35))
+    elif action in ("close", "closeyes", "closeno"):
+        # مين يقدر يقفل: اللي مستلم التذكرة بس (وإذا التذكرة بدون استلام: الإدارة المسؤولة). صاحب التذكرة ما يقفل.
+        claim_on = ttype is None or ttype["claim_on"] != 0
+        is_admin = inter.user.guild_permissions.administrator
+        if claim_on:
+            if not t["claimed_by"] and not is_admin:
+                return await inter.response.send_message(embed=err("لازم أحد من الإدارة يستلم التذكرة أول، واللي يستلمها هو اللي يقفلها."), ephemeral=True)
+            if t["claimed_by"] and t["claimed_by"] != inter.user.id and not is_admin:
+                return await inter.response.send_message(embed=err(f"بس اللي مستلم التذكرة <@{t['claimed_by']}> يقدر يقفلها."), ephemeral=True)
+        elif not staff and not is_admin:
+            return await inter.response.send_message(embed=err("القفل للإدارة المسؤولة بس."), ephemeral=True)
+
+        if action == "close":
+            v = discord.ui.View(timeout=None)
+            v.add_item(discord.ui.Button(label="نعم، اقفل التذكرة", style=discord.ButtonStyle.success, custom_id="ticket:closeyes"))
+            v.add_item(discord.ui.Button(label="لا", style=discord.ButtonStyle.secondary, custom_id="ticket:closeno"))
+            return await inter.response.send_message(embed=embed("❓ تأكيد القفل", "**هل تم خدمة العضو بأكمل وجه؟**"), view=v)
+
+        if action == "closeno":
+            try:
+                return await inter.response.edit_message(embed=embed("↩️ تم إلغاء القفل", "التذكرة باقية مفتوحة."), view=None)
+            except discord.HTTPException:
+                return
+
+        # closeyes
+        await inter.response.edit_message(embed=embed("🔒 تم خدمة العضو", "التذكرة بتنقفل بعد 5 ثواني."), view=None)
         db.execute("DELETE FROM tickets WHERE channel_id = ?", (inter.channel.id,))
         db.commit()
         await log(f"{inter.user.mention} قفل التذكرة **{inter.channel.name}** (صاحبها <@{t['owner_id']}>)", inter.guild)
@@ -2033,14 +2121,20 @@ async def quiz_shortcut(message: discord.Message, n: int):
     """العضو يكتب T1 داخل تذكرته وتطلع له الأسئلة على طول"""
     t = db.execute("SELECT * FROM tickets WHERE channel_id = ?", (message.channel.id,)).fetchone()
     if not t or message.author.id != t["owner_id"]:
-        return
+        return False  # برا التذكرة: يكمل للردود التلقائية
+    if t["quiz_used"]:
+        await message.reply(embed=err("استخدمت `T1` في هذي التذكرة قبل. الاختبار مرة وحدة بس لكل تذكرة."))
+        return True
     # T1 داخل أي تذكرة = أسئلة نفس التذكرة (مثلاً تذكرة 11 تجيب أسئلة 11)
     qs = get_questions(message.guild.id, t["slot"]) or get_questions(message.guild.id, n)
     if not qs:
         row = db.execute("SELECT slot FROM quiz_questions WHERE guild_id = ? ORDER BY slot LIMIT 1", (message.guild.id,)).fetchone()
         qs = get_questions(message.guild.id, row["slot"]) if row else []
     if not qs:
-        return await message.reply(embed=err("ما فيه أسئلة. خل الإدارة تحطها بـ /تحميل_الاسئلة"))
+        await message.reply(embed=err("ما فيه أسئلة. خل الإدارة تحطها بـ /تحميل_الاسئلة"))
+        return True
+    db.execute("UPDATE tickets SET quiz_used = 1 WHERE channel_id = ?", (message.channel.id,))
+    db.commit()
     state = {"qs": qs, "i": 0, "right": 0, "wrong": []}
     quiz_state[(message.channel.id, message.author.id)] = state
     e, v = quiz_question_view(state)
@@ -2049,6 +2143,7 @@ async def quiz_shortcut(message: discord.Message, n: int):
         await message.delete()
     except discord.HTTPException:
         pass
+    return True
 
 
 quiz_state = {}  # (channel_id, user_id) -> {"qs": [...], "i": int, "right": int, "wrong": [..]}
@@ -4294,6 +4389,149 @@ async def handle_rules(inter: discord.Interaction):
         pass
 
 
+# ============================================================
+# النشرة الإخبارية + الاقتراحات
+# ============================================================
+db.execute("CREATE TABLE IF NOT EXISTS text_settings (guild_id INTEGER, key TEXT, value TEXT, PRIMARY KEY (guild_id, key))")
+db.commit()
+
+
+def get_text(guild_id: int, key: str, default: str = "") -> str:
+    row = db.execute("SELECT value FROM text_settings WHERE guild_id = ? AND key = ?", (guild_id, key)).fetchone()
+    return row[0] if row and row[0] is not None else default
+
+
+def set_text(guild_id: int, key: str, value: str):
+    db.execute("INSERT OR REPLACE INTO text_settings (guild_id, key, value) VALUES (?, ?, ?)", (guild_id, key, value))
+    db.commit()
+
+
+NEWS_SOURCES_DEFAULT = "مجهول، عسكري، مدني"
+
+
+def news_sources(gid: int):
+    raw = get_text(gid, "news_sources", NEWS_SOURCES_DEFAULT)
+    items = [x.strip() for x in re.split(r"[،,\n]", raw) if x.strip()]
+    return items[:25] or ["مجهول", "عسكري", "مدني"]
+
+
+@bot.tree.command(name="تسطيب_النشرة", description="تسطيب النشرة الإخبارية (للأدمن)")
+@app_commands.describe(
+    روم_النشر="الروم اللي تنزل فيه النشرات",
+    الرتبة="الرتبة اللي تقدر تنشر (فاضي = أي أحد)",
+)
+async def setup_news(inter: discord.Interaction, روم_النشر: discord.TextChannel = None, الرتبة: discord.Role = None,
+):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    gid = inter.guild.id
+    if روم_النشر: set_setting(gid, "ch_news", روم_النشر.id)
+    if الرتبة: set_setting(gid, "role_news", الرتبة.id)
+    ch, role = get_setting(gid, "ch_news"), get_setting(gid, "role_news")
+    await inter.response.send_message(embed=embed("📰 تسطيب النشرة", (
+        f"**روم النشر:** {f'<#{ch}>' if ch else 'ما تحدد'}\n"
+        f"**مين ينشر:** {f'<@&{role}>' if role else 'أي أحد'}\n"
+        "**يصدر الخبر من:** مجهول (دايم)\n"
+        "\n"
+        "بعدها أرسل الزر بـ /ارسال_النشرة")), ephemeral=True)
+
+
+@bot.tree.command(name="ارسال_النشرة", description="إرسال زر النشرة الإخبارية في روم")
+async def send_news_panel(inter: discord.Interaction, الروم: discord.TextChannel):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="نشر نشرة إخبارية", emoji="📰", style=discord.ButtonStyle.success, custom_id="news:open"))
+    e = embed("📰 - الــنــشــرة الــيــومــيــة الــاعــلــامــيــة",
+              f"- اضغط الزر اللي تحت عشان تنشر نشرة إخبارية في **{config.SERVER_NAME}** .")
+    try:
+        await الروم.send(embed=e, view=v)
+    except discord.HTTPException:
+        return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
+    await inter.response.send_message(embed=embed("✅ انرسل زر النشرة", الروم.mention), ephemeral=True)
+
+
+class NewsModal(discord.ui.Modal, title="📰 النشرة الإخبارية"):
+    location = discord.ui.TextInput(label="الموقع المعني", max_length=200, placeholder="مثال: البنك المركزي")
+    status = discord.ui.TextInput(label="تصنيف الحالة", max_length=200, placeholder="مثال: سطو مسلح")
+    direction = discord.ui.TextInput(label="يتم التوجه", max_length=200, placeholder="مثال: العساكر")
+    scope = discord.ui.TextInput(label="في نطاق مسؤولية", max_length=200, placeholder="مثال: مجرم")
+
+    def __init__(self, source: str):
+        super().__init__()
+        self.source = source
+
+    async def on_submit(self, inter: discord.Interaction):
+        gid = inter.guild.id
+        ch = inter.guild.get_channel(get_setting(gid, "ch_news")) or inter.channel
+        text = (
+            f"**1-يــصــدر الــخــبــر مــن:** {self.source}\n\n"
+            f"**2-الــمــوقــع الــمــعــنــى:** {self.location.value}\n\n"
+            f"**3-تــصــنــيــف الــحــالــه:** {self.status.value}\n\n"
+            f"**4-يــتــم الــتــوجــه :** {self.direction.value}\n\n"
+            f"**5-فــي نــطــاق مــســؤولــيــه:** {self.scope.value}"
+        )
+        e = embed("📰 - الــنــشــرة الــيــومــيــة الــاعــلــامــيــة", text)
+        try:
+            await ch.send(embed=e)
+        except discord.HTTPException:
+            return await inter.response.send_message(embed=err("ما قدرت أنشر. تأكد من صلاحياتي في روم النشر."), ephemeral=True)
+        await inter.response.send_message(embed=embed("✅ تم نشر النشرة", ch.mention), ephemeral=True)
+        # اسم الناشر يروح للوق بس (عشان المجهول يبقى مجهول)
+        await log(f"📰 {inter.user.mention} نشر نشرة إخبارية (المصدر: {self.source}) في {ch.mention}", inter.guild)
+
+
+async def news_open(inter: discord.Interaction):
+    role = get_setting(inter.guild.id, "role_news")
+    if role and not inter.user.guild_permissions.administrator and not any(r.id == role for r in inter.user.roles):
+        return await inter.response.send_message(embed=err(f"النشر لرتبة <@&{role}> بس."), ephemeral=True)
+    await inter.response.send_modal(NewsModal("مجهول"))  # الخبر يصدر دايم من مجهول
+
+
+# ---------- الاقتراحات ----------
+@bot.tree.command(name="تسطيب_الاقتراحات", description="تحديد روم الاقتراحات والإيموجيات (للأدمن)")
+@app_commands.describe(الروم="روم الاقتراحات", ايموجي_الصح="إيموجي الموافقة (مثل ✅ أو إيموجي السيرفر)",
+                       ايموجي_الخطأ="إيموجي الرفض (مثل ❌ أو إيموجي السيرفر)")
+async def setup_suggestions(inter: discord.Interaction, الروم: discord.TextChannel,
+                            ايموجي_الصح: str = None, ايموجي_الخطأ: str = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    gid = inter.guild.id
+    set_setting(gid, "ch_suggest", الروم.id)
+    if ايموجي_الصح: set_text(gid, "sug_yes", ايموجي_الصح.strip())
+    if ايموجي_الخطأ: set_text(gid, "sug_no", ايموجي_الخطأ.strip())
+    await inter.response.send_message(embed=embed("💡 الاقتراحات", (
+        f"**الروم:** {الروم.mention}\n**الصح:** {get_text(gid, 'sug_yes', '✅')}\n**الخطأ:** {get_text(gid, 'sug_no', '❌')}\n\n"
+        "الحين أي عضو يكتب في الروم، البوت يحوّل كلامه لإيمبد ويحط الإيموجيات.")), ephemeral=True)
+
+
+async def suggestion_check(message: discord.Message) -> bool:
+    if not message.guild or message.channel.id != get_setting(message.guild.id, "ch_suggest"):
+        return False
+    text = message.content.strip()
+    if not text:
+        return False
+    gid = message.guild.id
+    e = discord.Embed(title="💡 - اقتراح جديد", description=text[:4000], color=0x006C35, timestamp=now())
+    e.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
+    e.add_field(name="المقترح", value=message.author.mention)
+    e.set_footer(text=config.SERVER_NAME)
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
+    try:
+        msg = await message.channel.send(embed=e)
+    except discord.HTTPException:
+        return True
+    for em in (get_text(gid, "sug_yes", "✅"), get_text(gid, "sug_no", "❌")):
+        try:
+            await msg.add_reaction(em)
+        except discord.HTTPException:
+            await log(f"⚠️ ما قدرت أحط الإيموجي {em} في الاقتراحات. حط إيموجي من نفس السيرفر أو إيموجي عادي.", message.guild)
+    return True
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type != discord.InteractionType.component or not inter.guild:
@@ -4328,6 +4566,8 @@ async def on_interaction(inter: discord.Interaction):
             pass
     elif cid.startswith("pts:") or cid.startswith("mdt:"):
         await handle_points_interaction(inter, cid)
+    elif cid == "news:open":
+        await news_open(inter)
     elif cid == "rules:open":
         await handle_rules(inter)
     elif cid == "bank:menu":

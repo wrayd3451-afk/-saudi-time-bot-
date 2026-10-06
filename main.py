@@ -5590,19 +5590,86 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 @bot.event
 async def on_member_join(member: discord.Member):
     gid = member.guild.id
-    if not prot_on(gid) or member.bot:
+    if prot_on(gid) and not member.bot:
+        days = get_setting(gid, "prot_newacc")
+        if days and (now() - member.created_at).days < days:
+            try:
+                await member.send(embed=embed("🛡️ الحماية", f"حسابك جديد مرة. لازم يكون عمر حسابك {days} أيام على الأقل عشان تدخل **{member.guild.name}**."))
+            except discord.HTTPException:
+                pass
+            try:
+                await member.kick(reason=f"الحماية: حساب جديد (أقل من {days} أيام)")
+                await log(f"🛡️ طردت {member} لأن حسابه جديد", member.guild)
+                return
+            except discord.HTTPException:
+                pass
+    await give_auto_roles(member)
+
+
+AUTO_ROLE_KEYS = {"human": ("auto_human1", "auto_human2", "auto_human3"), "bot": ("auto_bot1", "auto_bot2")}
+
+
+def auto_roles_for(guild: discord.Guild, is_bot: bool):
+    keys = AUTO_ROLE_KEYS["bot" if is_bot else "human"]
+    return [r for r in (guild.get_role(get_setting(guild.id, k)) for k in keys) if r]
+
+
+async def give_auto_roles(member: discord.Member):
+    roles = [r for r in auto_roles_for(member.guild, member.bot)
+             if r not in member.roles and r < member.guild.me.top_role and not r.managed]
+    if not roles:
         return
-    days = get_setting(gid, "prot_newacc")
-    if days and (now() - member.created_at).days < days:
-        try:
-            await member.send(embed=embed("🛡️ الحماية", f"حسابك جديد مرة. لازم يكون عمر حسابك {days} أيام على الأقل عشان تدخل **{member.guild.name}**."))
-        except discord.HTTPException:
-            pass
-        try:
-            await member.kick(reason=f"الحماية: حساب جديد (أقل من {days} أيام)")
-            await log(f"🛡️ طردت {member} لأن حسابه جديد", member.guild)
-        except discord.HTTPException:
-            pass
+    try:
+        await member.add_roles(*roles, reason="رتب تلقائية")
+    except discord.HTTPException:
+        await log(f"⚠️ ما قدرت أعطي {member.mention} الرتب التلقائية. خل رتبة البوت فوقها.", member.guild)
+
+
+@bot.tree.command(name="تسطيب_الرتب_التلقائية", description="رتب تنعطى تلقائي لأي شخص أو بوت يدخل السيرفر")
+@app_commands.describe(
+    الأعضاء="رتبة تنعطى لكل شخص يدخل", الأعضاء_2="رتبة ثانية للأشخاص (اختياري)", الأعضاء_3="رتبة ثالثة للأشخاص (اختياري)",
+    البوتات="رتبة تنعطى لكل بوت يدخل", البوتات_2="رتبة ثانية للبوتات (اختياري)",
+    للموجودين="تعطيها الحين للي داخل السيرفر من قبل وما عندهم إياها؟", حذف="تشيل كل الرتب التلقائية",
+)
+@app_commands.choices(للموجودين=[app_commands.Choice(name="نعم", value=1)], حذف=[app_commands.Choice(name="نعم", value=1)])
+async def setup_auto_roles(inter: discord.Interaction, الأعضاء: discord.Role = None, الأعضاء_2: discord.Role = None,
+                           الأعضاء_3: discord.Role = None, البوتات: discord.Role = None, البوتات_2: discord.Role = None,
+                           للموجودين: app_commands.Choice[int] = None, حذف: app_commands.Choice[int] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    gid = inter.guild.id
+    if حذف:
+        for k in AUTO_ROLE_KEYS["human"] + AUTO_ROLE_KEYS["bot"]:
+            set_setting(gid, k, 0)
+    for key, role in zip(AUTO_ROLE_KEYS["human"] + AUTO_ROLE_KEYS["bot"], (الأعضاء, الأعضاء_2, الأعضاء_3, البوتات, البوتات_2)):
+        if role:
+            set_setting(gid, key, role.id)
+    humans, bots_ = auto_roles_for(inter.guild, False), auto_roles_for(inter.guild, True)
+    warn = [r.mention for r in humans + bots_ if r >= inter.guild.me.top_role]
+    text = (f"**👤 الأشخاص:** {' '.join(r.mention for r in humans) or 'ما فيه'}\n"
+            f"**🤖 البوتات:** {' '.join(r.mention for r in bots_) or 'ما فيه'}\n\n"
+            "أي أحد يدخل السيرفر ياخذ رتبه لحاله ✅")
+    if warn:
+        text += f"\n\n⚠️ هذي الرتب فوق رتبة البوت وما يقدر يعطيها: {' '.join(warn)}\nارفع رتبة البوت فوقها."
+    if not للموجودين:
+        return await inter.response.send_message(embed=embed("🎭 الرتب التلقائية", text), ephemeral=True)
+    await inter.response.send_message(embed=embed("🎭 الرتب التلقائية", text + "\n\n⏳ أعطيها للموجودين الحين..."), ephemeral=True)
+    if not inter.guild.chunked:
+        await inter.guild.chunk()
+    n = 0
+    for m in inter.guild.members:
+        need = [r for r in auto_roles_for(inter.guild, m.bot) if r not in m.roles and r < inter.guild.me.top_role]
+        if need:
+            try:
+                await m.add_roles(*need, reason="رتب تلقائية")
+                n += 1
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.7)
+    try:
+        await inter.followup.send(f"✅ عطيت الرتب لـ **{n}** من الموجودين.", ephemeral=True)
+    except discord.HTTPException:
+        pass
 
 
 INVITE_RE = re.compile(r"(discord\.gg/|discord(app)?\.com/invite/)", re.I)

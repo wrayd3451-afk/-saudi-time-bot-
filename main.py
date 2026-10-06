@@ -457,21 +457,29 @@ class VRPBot(discord.Client):
         if get_setting(0, "commands_hash") == digest:
             print("ℹ️ الأوامر ما تغيّرت، ما يحتاج أرسلها")
             return
-        try:
-            if GUILD_ID:
-                guild = discord.Object(id=GUILD_ID)
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-            else:
-                await self.tree.sync()
+        self._pending_sync = digest  # نرسلها في on_ready لكل السيرفرات اللي فيها البوت
+
+    async def _sync_all(self):
+        digest = getattr(self, "_pending_sync", None)
+        if digest is None:
+            return
+        self._pending_sync = None
+        ok = 0
+        for g in self.guilds:  # كل سيرفر (حتى لو GUILD_ID قديم أو السيرفر انحذف)
+            try:
+                self.tree.copy_global_to(guild=g)
+                await self.tree.sync(guild=g)
+                ok += 1
+            except discord.HTTPException as e:
+                print(f"⚠️ ديسكورد رفض تحديث الأوامر في {g.name}: {e}")
+            await asyncio.sleep(1)
+        if ok:
             set_setting(0, "commands_hash", digest)
-            print(f"✅ انرسلت {len(self.tree.get_commands())} أمر لديسكورد")
-        except discord.HTTPException as e:
-            # ما نطيّح البوت، يكمل شغال بالأوامر اللي عند ديسكورد
-            print(f"⚠️ ديسكورد رفض تحديث الأوامر: {e}")
+        print(f"✅ انرسلت {len(self.tree.get_commands())} أمر لـ {ok} سيرفر")
 
     async def on_ready(self):
         print(f"✅ البوت شغال: {self.user} ")
+        await self._sync_all()
         if not getattr(self, "_voice_task", None):
             self._voice_task = asyncio.create_task(voice_keeper())
         if not getattr(self, "_snap_task", None):
@@ -3836,7 +3844,7 @@ UNITS = {
     "lspd": {"prefix": "D", "start": 30, "role": "role_police", "label": "LSPD"},
     "swat": {"prefix": "S", "start": 20, "role": "role_swat", "label": "SWAT"},
 }
-UNIT_TAG = re.compile(r"^\s*[DS]-\d+\s*\|\s*")
+UNIT_TAG = re.compile(r"(^[\u200e\u200f\s]*[DS]-\d+\s*\|\s*)|(\s*\|\s*[DS]-\d+\s*$)|[\u200e\u200f]")
 
 
 def units_view() -> discord.ui.View:
@@ -3848,7 +3856,9 @@ def units_view() -> discord.ui.View:
 
 def unit_nick(member: discord.Member, code: str) -> str:
     base = UNIT_TAG.sub("", member.display_name).strip() or member.name
-    return f"{code} | {base}"[:32]
+    # اليونت آخر الاسم وعلى اليمين دايم (حتى لو الاسم عربي)
+    base = base[:32 - len(code) - 4]
+    return f"\u200e{base} | {code}"
 
 
 async def handle_unit(inter: discord.Interaction, kind: str):
@@ -5800,6 +5810,75 @@ async def add_emojis_cmd(inter: discord.Interaction, الإيموجيات: str):
     await inter.response.send_message(f"⏳ بضيف **{len(items)}** إيموجي... انتظر.")
     status = await inter.original_response()
     asyncio.create_task(add_emojis(inter.guild, items, status))
+
+
+# ============================================================
+# دعوة الأعضاء القدام للسيرفر الجديد
+# ============================================================
+def old_member_ids() -> set:
+    ids = set()
+    for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+        cols = [r[1] for r in db.execute(f"PRAGMA table_info({name})")]
+        for c in ("user_id", "owner_id"):
+            if c in cols:
+                ids.update(r[0] for r in db.execute(f"SELECT DISTINCT {c} FROM {name}").fetchall()
+                           if isinstance(r[0], int) and r[0] > 10 ** 15)
+    return ids
+
+
+async def run_old_invites(guild: discord.Guild, owner: discord.abc.User, link: str, text: str, status):
+    targets = [i for i in old_member_ids() if guild.get_member(i) is None and i != owner.id
+               and not (bot.user and i == bot.user.id)]
+    e = embed("🇸🇦 سـعـودي تـايـم رجـع !", (text or
+              "حياك الله 💚\nسعودي تايم رجع بسيرفر جديد، ونبيك معنا من جديد 👑\n\n"
+              f"**🔗 رابط السيرفر الجديد:**\n{link}\n\nلا تتأخر… المدينة ناقصتك 🔥") + (f"\n\n{link}" if text and link not in text else ""))
+    sent, failed = 0, []
+    for n, uid in enumerate(targets, 1):
+        user = bot.get_user(uid)
+        try:
+            if user is None:
+                user = await bot.fetch_user(uid)
+            if user.bot:
+                continue
+            await user.send(embed=e)
+            sent += 1
+        except discord.HTTPException:
+            failed.append(user or uid)
+        if n % 10 == 0:
+            try:
+                await status.edit(content=f"📨 أرسل للأعضاء القدام... {n}/{len(targets)} (وصل {sent})")
+            except discord.HTTPException:
+                pass
+        await asyncio.sleep(1.5)
+    lines = [f"{u.name} ({u.id})" if isinstance(u, (discord.User, discord.Member)) else str(u) for u in failed]
+    try:
+        await status.edit(content=(
+            f"✅ خلصت! وصلت الدعوة لـ **{sent}** عضو من {len(targets)}.\n"
+            + (f"📋 **{len(failed)}** ما قدرت أراسلهم (ديسكورد ما يخلي البوت يراسل أحد ما يشاركه سيرفر). "
+               "أرسلت لك أسماءهم في الخاص عشان تراسلهم بنفسك." if failed else "")))
+    except discord.HTTPException:
+        pass
+    if failed:
+        try:
+            await owner.send("📋 الأعضاء القدام اللي ما وصلتهم الدعوة، راسلهم بنفسك أو أضفهم:",
+                             file=discord.File(io.BytesIO("\n".join(lines).encode()), filename="old_members.txt"))
+        except discord.HTTPException:
+            pass
+
+
+@bot.tree.command(name="دعوة_القدامى", description="يرسل رابط السيرفر الجديد لكل الأعضاء القدام في الخاص")
+@app_commands.describe(الرابط="رابط دعوة السيرفر الجديد (خله ما ينتهي)", الرسالة="رسالة خاصة (اختياري)")
+async def invite_old_members(inter: discord.Interaction, الرابط: str, الرسالة: str = None):
+    if not is_owner(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
+    if "discord" not in الرابط:
+        return await inter.response.send_message(embed=err("حط رابط دعوة ديسكورد، مثل: https://discord.gg/xxxx"), ephemeral=True)
+    n = len([i for i in old_member_ids() if inter.guild.get_member(i) is None])
+    if not n:
+        return await inter.response.send_message(embed=err("ما لقيت أعضاء قدام عند البوت (أو كلهم موجودين هنا)."), ephemeral=True)
+    await inter.response.send_message(f"📨 بدأت أرسل الدعوة لـ **{n}** عضو قديم... (تاخذ تقريبًا {max(1, n * 2 // 60)} دقيقة)")
+    status = await inter.original_response()
+    asyncio.create_task(run_old_invites(inter.guild, inter.user, الرابط.strip(), الرسالة, status))
 
 
 @bot.event

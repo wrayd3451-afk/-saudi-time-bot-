@@ -474,6 +474,8 @@ class VRPBot(discord.Client):
         print(f"✅ البوت شغال: {self.user} ")
         if not getattr(self, "_voice_task", None):
             self._voice_task = asyncio.create_task(voice_keeper())
+        if not getattr(self, "_snap_task", None):
+            self._snap_task = asyncio.create_task(auto_server_snapshot())
         if not getattr(self, "_backup_task", None):
             self._backup_task = asyncio.create_task(backup_loop())
             try:
@@ -1352,6 +1354,8 @@ async def setup_line(inter: discord.Interaction, صورة: discord.Attachment = 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
+        return
+    if await prot_message(message):
         return
     if await suggestion_check(message):
         return
@@ -4727,7 +4731,8 @@ async def _room_apply(guild: discord.Guild, ch, user, open_: bool):
             await ch.set_permissions(guild.default_role, overwrite=ow)
         except discord.HTTPException:
             pass
-    await log(f"{user.mention} {'فتح' if open_ else 'قفل'} الروم {ch.mention}", guild)
+    await log(f"{user.mention} {'فتح' if open_ else 'قفل'} الروم {ch.mention}"
+              + (f" ⚠️ ما قدرت أعدّل: {'، '.join(failed)} (خل رتبة البوت فوقها)" if failed else ""), guild)
     return changed, failed
 
 
@@ -4744,23 +4749,21 @@ async def _toggle_room(inter: discord.Interaction, room, open_: bool):
         return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
     ch = room or inter.channel
     await inter.response.defer(ephemeral=True)
-    changed, failed = await _room_apply(inter.guild, ch, inter.user, open_)
-    if open_:
-        try:
-            await ch.send(embed=embed("🔓 - تم فتح الروم", "الروم الحين مفتوح ."))
-        except discord.HTTPException:
-            pass
-    await inter.followup.send(embed=embed("🚪 الرومات", _room_text(ch, open_, changed, failed)), ephemeral=True)
+    await _room_apply(inter.guild, ch, inter.user, open_)
+    try:
+        await ch.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم")
+    except discord.HTTPException:
+        pass
+    await inter.followup.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم", ephemeral=True)
 
 
 async def room_prefix(message: discord.Message, open_: bool):
     """-فت يفتح الروم، -قف يقفله (الروم اللي انكتب فيه الأمر)"""
     if not is_power(message.author):
         return await message.reply(embed=err("هذا الأمر للأدمن والأونر بس."))
-    changed, failed = await _room_apply(message.guild, message.channel, message.author, open_)
+    await _room_apply(message.guild, message.channel, message.author, open_)
     try:
-        await message.channel.send(embed=embed("🔓 - تم فتح الروم" if open_ else "🔒 - تم قفل الروم",
-                                               _room_text(message.channel, open_, changed, failed)))
+        await message.channel.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم")
     except discord.HTTPException:
         pass
 
@@ -4775,6 +4778,674 @@ async def open_room(inter: discord.Interaction, الروم: discord.TextChannel 
 @app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
 async def close_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
     await _toggle_room(inter, الروم, False)
+
+
+# ============================================================
+# حماية السيرفر: نسخة كاملة (الرتب + الرومات + الصلاحيات + إعدادات البوت)
+# وتسترجعها في سيرفر ثاني لو صار شي
+# ============================================================
+CLONE_SKIP_TABLES = {"tickets", "duty_active", "sqlite_sequence"}
+
+
+def _ow_dump(overwrites: dict) -> list:
+    out = []
+    for target, ow in overwrites.items():
+        allow, deny = ow.pair()
+        out.append({"type": "role" if isinstance(target, discord.Role) else "member",
+                    "id": target.id, "allow": allow.value, "deny": deny.value})
+    return out
+
+
+def _bot_data_dump(gid: int) -> dict:
+    data = {}
+    for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+        if name in CLONE_SKIP_TABLES:
+            continue
+        cols = [r[1] for r in db.execute(f"PRAGMA table_info({name})")]
+        if "guild_id" not in cols:
+            continue
+        rows = []
+        for row in db.execute(f"SELECT * FROM {name} WHERE guild_id = ?", (gid,)).fetchall():
+            if name == "assets" and row["key"] == "server_clone":
+                continue  # النسخة نفسها ما تنحط داخل النسخة
+            d = {}
+            for c in cols:
+                v = row[c]
+                d[c] = {"b64": base64.b64encode(bytes(v)).decode()} if isinstance(v, (bytes, bytearray, memoryview)) else v
+            rows.append(d)
+        if rows:
+            data[name] = rows
+    return data
+
+
+def make_server_snapshot(guild: discord.Guild) -> dict:
+    roles = [{"id": r.id, "name": r.name, "color": r.color.value, "hoist": r.hoist, "mentionable": r.mentionable,
+              "permissions": r.permissions.value, "position": r.position}
+             for r in sorted(guild.roles, key=lambda r: r.position) if not r.is_default() and not r.managed]
+    cats = [{"id": c.id, "name": c.name, "position": c.position, "overwrites": _ow_dump(c.overwrites)}
+            for c in sorted(guild.categories, key=lambda c: c.position)]
+    chans = []
+    for ch in sorted(guild.channels, key=lambda c: c.position):
+        if isinstance(ch, discord.CategoryChannel):
+            continue
+        d = {"id": ch.id, "name": ch.name, "position": ch.position, "category_id": ch.category_id,
+             "overwrites": _ow_dump(ch.overwrites), "synced": bool(ch.category and ch.permissions_synced)}
+        if isinstance(ch, discord.StageChannel):
+            d.update(type="stage")
+        elif isinstance(ch, discord.VoiceChannel):
+            d.update(type="voice", bitrate=ch.bitrate, user_limit=ch.user_limit)
+        elif isinstance(ch, discord.ForumChannel):
+            d.update(type="forum", topic=ch.topic or "", nsfw=ch.nsfw)
+        elif isinstance(ch, discord.TextChannel):
+            d.update(type="news" if ch.is_news() else "text", topic=ch.topic or "", nsfw=ch.nsfw,
+                     slowmode=ch.slowmode_delay)
+        else:
+            continue
+        chans.append(d)
+    return {"version": 1, "source_guild": guild.id, "name": guild.name, "created": now().isoformat(),
+            "everyone_perms": guild.default_role.permissions.value,
+            "roles": roles, "categories": cats, "channels": chans, "bot_data": _bot_data_dump(guild.id)}
+
+
+def save_snapshot(gid: int, snap: dict):
+    db.execute("INSERT OR REPLACE INTO assets (guild_id, key, filename, data) VALUES (?, 'server_clone', 'server_backup.json', ?)",
+               (gid, json.dumps(snap, ensure_ascii=False).encode()))
+    db.commit()
+
+
+def snapshot_file(snap: dict) -> discord.File:
+    return discord.File(io.BytesIO(json.dumps(snap, ensure_ascii=False).encode()),
+                        filename=f"server_backup_{now().strftime('%Y-%m-%d')}.json")
+
+
+@bot.tree.command(name="نسخ_السيرفر", description="ياخذ نسخة كاملة من السيرفر (رتب، رومات، صلاحيات، إعدادات البوت)")
+async def clone_backup(inter: discord.Interaction):
+    if not is_owner(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر والأونر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    snap = make_server_snapshot(inter.guild)
+    save_snapshot(inter.guild.id, snap)
+    await do_backup(force=True)
+    sent_dm = False
+    try:  # نسخة في الخاص: لو السيرفر تهكر، الملف يبقى عندك
+        await inter.user.send(embed=embed("🛡️ نسخة السيرفر", (
+            f"نسخة **{inter.guild.name}**\n**رتب:** {len(snap['roles'])} · **كاتيجوري:** {len(snap['categories'])} · "
+            f"**رومات:** {len(snap['channels'])}\n\nاحتفظ بالملف. لو صار شي، دخّل البوت السيرفر الجديد واكتب "
+            "`/استرجاع_السيرفر` وارفع الملف.")), file=snapshot_file(snap))
+        sent_dm = True
+    except discord.HTTPException:
+        pass
+    await inter.followup.send(embed=embed("🛡️ تم نسخ السيرفر", (
+        f"**رتب:** {len(snap['roles'])} · **كاتيجوري:** {len(snap['categories'])} · **رومات:** {len(snap['channels'])}\n"
+        f"**إعدادات البوت:** {sum(len(v) for v in snap['bot_data'].values())} سطر\n\n"
+        + ("📩 أرسلت لك الملف في الخاص، احتفظ فيه." if sent_dm else "⚠️ ما قدرت أرسل لك في الخاص. افتح الخاص وأعد الأمر.")
+    )), ephemeral=True)
+
+
+async def _restore_server(target: discord.Guild, snap: dict, status_ch, wipe: bool):
+    async def say(t):
+        try:
+            await status_ch.send(t)
+        except discord.HTTPException:
+            pass
+
+    rmap, cmap = {}, {}  # الايدي القديم ← الجديد
+    rmap[snap["source_guild"]] = target.default_role.id  # @everyone
+    if wipe:
+        await say("🧹 أحذف الرومات والرتب القديمة...")
+        for ch in list(target.channels):
+            if ch.id == status_ch.id:
+                continue
+            try:
+                await ch.delete(reason="استرجاع السيرفر")
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.4)
+        for r in list(target.roles):
+            if r.is_default() or r.managed or r >= target.me.top_role:
+                continue
+            try:
+                await r.delete(reason="استرجاع السيرفر")
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.4)
+
+    try:
+        await target.default_role.edit(permissions=discord.Permissions(snap["everyone_perms"]))
+    except discord.HTTPException:
+        pass
+    await say(f"👑 أسوي الرتب ({len(snap['roles'])})...")
+    created = []
+    for r in snap["roles"]:  # من تحت لفوق
+        try:
+            nr = await target.create_role(name=r["name"], colour=discord.Colour(r["color"]), hoist=r["hoist"],
+                                          mentionable=r["mentionable"], permissions=discord.Permissions(r["permissions"]),
+                                          reason="استرجاع السيرفر")
+            rmap[r["id"]] = nr.id
+            created.append(nr)
+        except discord.HTTPException:
+            try:  # البوت ما يقدر يعطي صلاحية ما عنده، نسويها بدون صلاحيات
+                nr = await target.create_role(name=r["name"], colour=discord.Colour(r["color"]), hoist=r["hoist"],
+                                              mentionable=r["mentionable"], reason="استرجاع السيرفر")
+                rmap[r["id"]] = nr.id
+                created.append(nr)
+            except discord.HTTPException:
+                pass
+        await asyncio.sleep(0.4)
+    try:  # الترتيب: نفس ترتيب السيرفر الأصلي تحت رتبة البوت
+        top = target.me.top_role.position
+        positions = {role: max(1, top - len(created) + i) for i, role in enumerate(created)}
+        await target.edit_role_positions(positions=positions)
+    except discord.HTTPException:
+        pass
+
+    def build_ow(items):
+        out = {}
+        for o in items:
+            if o["type"] == "role":
+                tgt = target.get_role(rmap.get(o["id"], 0))
+            else:
+                tgt = target.get_member(o["id"])
+            if tgt:
+                out[tgt] = discord.PermissionOverwrite.from_pair(discord.Permissions(o["allow"]), discord.Permissions(o["deny"]))
+        return out
+
+    await say(f"📁 أسوي الكاتيجوري ({len(snap['categories'])})...")
+    for c in snap["categories"]:
+        try:
+            nc = await target.create_category(c["name"], overwrites=build_ow(c["overwrites"]), reason="استرجاع السيرفر")
+            cmap[c["id"]] = nc.id
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(0.4)
+
+    await say(f"💬 أسوي الرومات ({len(snap['channels'])})...")
+    for d in snap["channels"]:
+        cat = target.get_channel(cmap.get(d.get("category_id") or 0, 0))
+        ow = build_ow(d["overwrites"])
+        try:
+            if d["type"] == "voice":
+                nc = await target.create_voice_channel(d["name"], category=cat, overwrites=ow,
+                                                       bitrate=min(d.get("bitrate", 64000), int(target.bitrate_limit)),
+                                                       user_limit=d.get("user_limit", 0))
+            elif d["type"] == "stage":
+                nc = await target.create_stage_channel(d["name"], category=cat, overwrites=ow)
+            elif d["type"] == "forum":
+                nc = await target.create_forum(d["name"], category=cat, overwrites=ow, topic=d.get("topic") or None,
+                                               nsfw=d.get("nsfw", False))
+            else:
+                nc = await target.create_text_channel(d["name"], category=cat, overwrites=ow, topic=d.get("topic") or None,
+                                                      nsfw=d.get("nsfw", False), slowmode_delay=d.get("slowmode", 0),
+                                                      news=d["type"] == "news" and "COMMUNITY" in target.features)
+            cmap[d["id"]] = nc.id
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(0.4)
+
+    # إعدادات البوت: ننسخها ونبدّل ايديات الرتب والرومات القديمة بالجديدة
+    ids = {**rmap, **cmap}
+
+    def conv(v):
+        if isinstance(v, dict) and "b64" in v:
+            return base64.b64decode(v["b64"])
+        if isinstance(v, int) and v in ids:
+            return ids[v]
+        return v
+
+    n = 0
+    for table, rows in (snap.get("bot_data") or {}).items():
+        if table in CLONE_SKIP_TABLES:
+            continue
+        try:
+            cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})")]
+        except sqlite3.Error:
+            continue
+        for row in rows:
+            row = {k: conv(v) for k, v in row.items() if k in cols and k != "id"}
+            row["guild_id"] = target.id
+            keys = list(row)
+            try:
+                db.execute(f"INSERT OR REPLACE INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                           [row[k] for k in keys])
+                n += 1
+            except sqlite3.Error:
+                pass
+    db.commit()
+    await say(f"✅ **خلص الاسترجاع!**\nرتب: {len(created)} · رومات وكاتيجوري: {len(cmap)} · إعدادات البوت: {n}\n\n"
+              "📌 الباقي عليك: ارفع رتبة البوت فوق، وأعد إرسال اللوحات (التذاكر، القوانين، البنك...) "
+              "لأن الرسايل القديمة ما تنسخ. واحذف هالروم لو تبي.")
+
+
+@bot.tree.command(name="استرجاع_السيرفر", description="يرجّع نسخة السيرفر في هذا السيرفر (رتب، رومات، إعدادات البوت)")
+@app_commands.describe(
+    الملف="ملف النسخة اللي وصلك في الخاص (فاضي = آخر نسخة محفوظة عند البوت)",
+    حذف_الموجود="يحذف الرومات والرتب اللي في هذا السيرفر قبل (للسيرفر الجديد الفاضي)",
+)
+@app_commands.choices(حذف_الموجود=[app_commands.Choice(name="نعم، احذف الموجود", value=1)])
+async def clone_restore(inter: discord.Interaction, الملف: discord.Attachment = None,
+                        حذف_الموجود: app_commands.Choice[int] = None):
+    if inter.user.id != inter.guild.owner_id:
+        return await inter.response.send_message(embed=err("الاسترجاع لصاحب السيرفر بس."), ephemeral=True)
+    if not inter.guild.me.guild_permissions.administrator:
+        return await inter.response.send_message(embed=err("عطني صلاحية **Administrator** في هذا السيرفر أول."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    snap = None
+    if الملف:
+        try:
+            snap = json.loads((await الملف.read()).decode())
+        except (ValueError, UnicodeDecodeError, discord.HTTPException):
+            return await inter.followup.send(embed=err("الملف خربان أو مو ملف نسخة."), ephemeral=True)
+    else:  # آخر نسخة من أي سيرفر صاحبه نفس الشخص
+        for row in db.execute("SELECT guild_id, data FROM assets WHERE key = 'server_clone'").fetchall():
+            s = json.loads(bytes(row[1]).decode())
+            g = bot.get_guild(row[0])
+            if g is None or g.owner_id == inter.user.id or row[0] == inter.guild.id:
+                if snap is None or s.get("created", "") > snap.get("created", ""):
+                    snap = s
+    if not snap or "roles" not in snap:
+        return await inter.followup.send(embed=err("ما لقيت نسخة. ارفع الملف اللي وصلك في الخاص."), ephemeral=True)
+    if snap["source_guild"] == inter.guild.id and حذف_الموجود:
+        return await inter.followup.send(embed=err("ما تقدر تحذف وتسترجع في نفس السيرفر الأصلي."), ephemeral=True)
+    await inter.followup.send(embed=embed("🛡️ بدأ الاسترجاع", (
+        f"نسخة **{snap.get('name')}** ({snap.get('created', '')[:10]})\n"
+        f"رتب: {len(snap['roles'])} · رومات: {len(snap['channels'])}\n\nبياخذ كم دقيقة، تابع هنا في الروم.")), ephemeral=True)
+    await log(f"🛡️ {inter.user.mention} بدأ استرجاع نسخة **{snap.get('name')}**", inter.guild)
+    asyncio.create_task(_restore_server(inter.guild, snap, inter.channel, bool(حذف_الموجود)))
+
+
+async def auto_server_snapshot():
+    """كل 24 ساعة يحدّث نسخة كل سيرفر (تنحفظ مع النسخة الاحتياطية)"""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        for g in bot.guilds:
+            try:
+                save_snapshot(g.id, make_server_snapshot(g))
+            except Exception as ex:  # noqa
+                print("snapshot error:", ex)
+        await asyncio.sleep(24 * 3600)
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    """لما البوت يدخل سيرفر جديد (مثل السيرفر البديل) ترسل الأوامر له على طول"""
+    try:
+        bot.tree.copy_global_to(guild=guild)
+        await bot.tree.sync(guild=guild)
+        print(f"✅ دخلت سيرفر جديد: {guild.name} وأرسلت الأوامر")
+    except discord.HTTPException as e:
+        print(f"⚠️ ما قدرت أرسل الأوامر لـ {guild.name}: {e}")
+
+
+# ============================================================
+# 🛡️ نظام الحماية (ضد التهكير والتخريب والسبام)
+# ============================================================
+import collections
+
+db.execute("CREATE TABLE IF NOT EXISTS prot_whitelist (guild_id INTEGER, target_id INTEGER, kind TEXT, PRIMARY KEY (guild_id, target_id))")
+db.commit()
+
+PROT_WINDOW = 60          # ثانية
+_prot_hits = collections.defaultdict(collections.deque)      # (gid, uid, kind) -> أوقات
+_deleted_channels = collections.defaultdict(lambda: collections.deque(maxlen=60))  # gid -> (وقت, نسخة الروم)
+_deleted_roles = collections.defaultdict(lambda: collections.deque(maxlen=60))
+_spam = collections.defaultdict(collections.deque)
+_banned_by = collections.defaultdict(list)   # (gid, uid) -> اللي حظرهم
+_punished = {}            # (gid, uid) -> وقت (عشان ما نعاقب نفس الشخص مرتين ورا بعض)
+DANGER_PERMS = ("administrator", "manage_guild", "manage_roles", "manage_channels", "ban_members",
+                "kick_members", "manage_webhooks", "mention_everyone")
+
+
+def prot(gid: int, key: str, default: int = 0) -> int:
+    v = get_setting(gid, key)
+    return v if v else default
+
+
+def prot_on(gid: int) -> bool:
+    return get_setting(gid, "prot_on") == 1
+
+
+def is_trusted(guild: discord.Guild, uid: int) -> bool:
+    if uid in (guild.owner_id, bot.user.id if bot.user else 0):
+        return True
+    rows = {r[0] for r in db.execute("SELECT target_id FROM prot_whitelist WHERE guild_id = ?", (guild.id,)).fetchall()}
+    if uid in rows:
+        return True
+    m = guild.get_member(uid)
+    return bool(m and any(r.id in rows for r in m.roles))
+
+
+def _hit(gid: int, uid: int, kind: str, window: int = PROT_WINDOW) -> int:
+    q = _prot_hits[(gid, uid, kind)]
+    t = now().timestamp()
+    q.append(t)
+    while q and t - q[0] > window:
+        q.popleft()
+    return len(q)
+
+
+async def prot_alert(guild: discord.Guild, text: str):
+    await log("🛡️ **الحماية:** " + text, guild)
+    try:
+        owner = guild.owner or (await guild.fetch_member(guild.owner_id) if guild.owner_id else None)
+        if owner:
+            await owner.send(embed=embed("🛡️ تنبيه حماية", f"**{guild.name}**\n{text}"))
+    except discord.HTTPException:
+        pass
+
+
+async def prot_punish(guild: discord.Guild, uid: int, reason: str):
+    key = (guild.id, uid)
+    if now().timestamp() - _punished.get(key, 0) < 30:
+        return
+    _punished[key] = now().timestamp()
+    member = guild.get_member(uid)
+    if member is None:
+        try:
+            member = await guild.fetch_member(uid)
+        except discord.HTTPException:
+            member = None
+    mode = get_text(guild.id, "prot_punish", "strip")
+    done = "ما قدرت أعاقبه (رتبته فوق رتبة البوت)"
+    try:
+        if member and member.bot:
+            await guild.ban(member, reason=f"الحماية: {reason}", delete_message_seconds=0)
+            done = "انحظر (بوت)"
+        elif mode == "ban":
+            await guild.ban(discord.Object(id=uid), reason=f"الحماية: {reason}", delete_message_seconds=0)
+            done = "انحظر"
+        elif mode == "kick" and member:
+            await member.kick(reason=f"الحماية: {reason}")
+            done = "انطرد"
+        elif member:
+            removable = [r for r in member.roles if not r.is_default() and not r.managed and r < guild.me.top_role]
+            await member.remove_roles(*removable, reason=f"الحماية: {reason}")
+            done = f"انسحبت منه كل رتبه ({len(removable)}) فراحت صلاحياته (الرتب نفسها ما تغيّرت)"
+    except discord.HTTPException:
+        pass
+    await prot_alert(guild, f"<@{uid}> {reason}\n**العقوبة:** {done}")
+
+
+async def prot_restore(guild: discord.Guild, uid: int):
+    """نرجّع اللي خرّبه آخر دقيقتين: الرومات والرتب المحذوفة، ونحذف اللي سوّاه"""
+    t = now().timestamp()
+    roles_back = 0
+    for when, data in list(_deleted_roles[guild.id]):
+        if data["by"] != uid or t - when > 120:
+            continue
+        try:
+            await guild.create_role(name=data["name"], permissions=discord.Permissions(data["perms"]),
+                                    colour=discord.Colour(data["color"]), hoist=data["hoist"],
+                                    mentionable=data["mentionable"], reason="الحماية: استرجاع")
+            roles_back += 1
+        except discord.HTTPException:
+            pass
+        _deleted_roles[guild.id].remove((when, data))
+    chans_back = 0
+    for when, data in sorted(list(_deleted_channels[guild.id]), key=lambda x: x[1]["position"]):
+        if data["by"] != uid or t - when > 120:
+            continue
+        cat = guild.get_channel(data["category_id"]) if data["category_id"] else None
+        ow = {}
+        for tid, (allow, deny) in data["overwrites"].items():
+            tgt = guild.get_role(tid) or guild.get_member(tid)
+            if tgt:
+                ow[tgt] = discord.PermissionOverwrite.from_pair(discord.Permissions(allow), discord.Permissions(deny))
+        try:
+            if data["type"] == "category":
+                await guild.create_category(data["name"], overwrites=ow, position=data["position"])
+            elif data["type"] == "voice":
+                await guild.create_voice_channel(data["name"], category=cat, overwrites=ow, position=data["position"])
+            else:
+                await guild.create_text_channel(data["name"], category=cat, overwrites=ow, position=data["position"],
+                                                topic=data.get("topic") or None)
+            chans_back += 1
+        except discord.HTTPException:
+            pass
+        _deleted_channels[guild.id].remove((when, data))
+        await asyncio.sleep(0.4)
+    if roles_back or chans_back:
+        await prot_alert(guild, f"♻️ رجّعت **{chans_back}** روم و **{roles_back}** رتبة انحذفت من <@{uid}>")
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    _deleted_channels[channel.guild.id].append((now().timestamp(), {
+        "id": channel.id, "name": channel.name, "position": channel.position, "by": 0,
+        "type": "category" if isinstance(channel, discord.CategoryChannel) else
+                "voice" if isinstance(channel, discord.VoiceChannel) else "text",
+        "category_id": getattr(channel, "category_id", None), "topic": getattr(channel, "topic", None),
+        "overwrites": {t.id: tuple(p.value for p in ow.pair()) for t, ow in channel.overwrites.items()},
+    }))
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    _deleted_roles[role.guild.id].append((now().timestamp(), {
+        "id": role.id, "name": role.name, "perms": role.permissions.value, "color": role.color.value,
+        "hoist": role.hoist, "mentionable": role.mentionable, "by": 0}))
+
+
+def _mark_by(store, gid: int, target_id: int, uid: int):
+    for _, d in store[gid]:
+        if d["id"] == target_id:
+            d["by"] = uid
+
+
+@bot.event
+async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
+    guild = entry.guild
+    if not prot_on(guild.id) or entry.user_id is None:
+        return
+    uid = entry.user_id
+    A = discord.AuditLogAction
+    act = entry.action
+    if act == A.channel_delete:
+        await asyncio.sleep(0.5)
+        _mark_by(_deleted_channels, guild.id, entry.target.id, uid)
+    elif act == A.role_delete:
+        await asyncio.sleep(0.5)
+        _mark_by(_deleted_roles, guild.id, entry.target.id, uid)
+    if is_trusted(guild, uid):
+        return
+    limit = prot(guild.id, "prot_limit", 3)
+    names = {A.channel_delete: "حذف رومات", A.channel_create: "إنشاء رومات", A.role_delete: "حذف رتب",
+             A.role_create: "إنشاء رتب", A.ban: "حظر أعضاء", A.kick: "طرد أعضاء"}
+
+    if act in names:
+        if act == A.ban and entry.target:
+            _banned_by[(guild.id, uid)].append(entry.target.id)
+        if act in (A.ban, A.kick):  # الطرد والحظر: أكثر من 3 في اليوم
+            day_limit = prot(guild.id, "prot_kick_limit", 3)
+            hit = _hit(guild.id, uid, "kickban", 24 * 3600) > day_limit
+            why = f"{names[act]} أكثر من {day_limit} في اليوم"
+        else:
+            hit = _hit(guild.id, uid, act.name) >= limit
+            why = f"حاول **{names[act]}** ({limit} مرات بدقيقة)"
+        if hit:
+            _prot_hits.pop((guild.id, uid, "kickban"), None)
+            await prot_punish(guild, uid, why)
+            await prot_restore(guild, uid)
+            unb = 0
+            for vid in _banned_by.pop((guild.id, uid), []):  # نفك الحظر عن اللي حظرهم
+                try:
+                    await guild.unban(discord.Object(id=vid), reason="الحماية: حظر بدون حق")
+                    unb += 1
+                except discord.HTTPException:
+                    pass
+            if unb:
+                await prot_alert(guild, f"♻️ فكيت الحظر عن **{unb}** عضو حظرهم <@{uid}>")
+    elif act == A.member_prune:
+        await prot_punish(guild, uid, "سوّى **Prune** (طرد جماعي)")
+    elif act == A.bot_add:
+        try:
+            await guild.kick(entry.target, reason="الحماية: بوت انضاف بدون إذن")
+        except discord.HTTPException:
+            pass
+        await prot_punish(guild, uid, f"ضاف بوت بدون إذن ({entry.target}) وانطرد البوت")
+    elif act == A.webhook_create:
+        try:
+            for wh in await guild.webhooks():
+                if wh.id == entry.target.id:
+                    await wh.delete(reason="الحماية")
+        except discord.HTTPException:
+            pass
+        if _hit(guild.id, uid, "webhook") >= 2:
+            await prot_punish(guild, uid, "سوّى ويب هوك أكثر من مرة")
+        else:
+            await prot_alert(guild, f"<@{uid}> سوّى ويب هوك، وحذفته")
+    elif act == A.role_update:
+        before, after = entry.before, entry.after
+        bp, ap = getattr(before, "permissions", None), getattr(after, "permissions", None)
+        if bp is not None and ap is not None:
+            added = [p for p in DANGER_PERMS if getattr(ap, p) and not getattr(bp, p)]
+            if added:
+                role = guild.get_role(entry.target.id)
+                try:
+                    if role:
+                        await role.edit(permissions=bp, reason="الحماية: صلاحية خطيرة")
+                except discord.HTTPException:
+                    pass
+                await prot_punish(guild, uid, f"عطى رتبة صلاحيات خطيرة ({', '.join(added)}) ورجّعتها")
+    elif act == A.member_role_update:
+        added = getattr(entry.after, "roles", []) or []
+        danger = [r for r in added if isinstance(r, discord.Role) and r.permissions.administrator]
+        if danger:
+            target = guild.get_member(entry.target.id)
+            try:
+                if target and target.id != guild.owner_id:
+                    await target.remove_roles(*danger, reason="الحماية: رتبة أدمن بدون إذن")
+            except discord.HTTPException:
+                pass
+            await prot_punish(guild, uid, f"عطى {entry.target} رتبة أدمن ({', '.join(r.name for r in danger)}) وشلتها")
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    gid = member.guild.id
+    if not prot_on(gid) or member.bot:
+        return
+    days = get_setting(gid, "prot_newacc")
+    if days and (now() - member.created_at).days < days:
+        try:
+            await member.send(embed=embed("🛡️ الحماية", f"حسابك جديد مرة. لازم يكون عمر حسابك {days} أيام على الأقل عشان تدخل **{member.guild.name}**."))
+        except discord.HTTPException:
+            pass
+        try:
+            await member.kick(reason=f"الحماية: حساب جديد (أقل من {days} أيام)")
+            await log(f"🛡️ طردت {member} لأن حسابه جديد", member.guild)
+        except discord.HTTPException:
+            pass
+
+
+INVITE_RE = re.compile(r"(discord\.gg/|discord(app)?\.com/invite/)", re.I)
+
+
+async def prot_message(message: discord.Message) -> bool:
+    """سبام + روابط سيرفرات + منشن كثير. يرجع True لو انحذفت الرسالة"""
+    gid = message.guild.id
+    if not prot_on(gid) or is_trusted(message.guild, message.author.id) or is_power(message.author):
+        return False
+    if get_setting(gid, "prot_links") != 2 and INVITE_RE.search(message.content):
+        try:
+            await message.delete()
+            await message.channel.send(f"{message.author.mention} ممنوع روابط السيرفرات 🚫", delete_after=5)
+        except discord.HTTPException:
+            pass
+        return True
+    if len(message.raw_mentions) + len(message.raw_role_mentions) >= 6 or message.mention_everyone:
+        try:
+            await message.delete()
+            await message.author.timeout(timedelta(minutes=10), reason="الحماية: منشن كثير")
+            await message.channel.send(f"{message.author.mention} انسكت 10 دقايق بسبب المنشن الكثير 🔇", delete_after=8)
+        except discord.HTTPException:
+            pass
+        return True
+    q = _spam[(gid, message.author.id)]
+    t = now().timestamp()
+    q.append(t)
+    while q and t - q[0] > 5:
+        q.popleft()
+    if len(q) >= 6:
+        q.clear()
+        try:
+            await message.author.timeout(timedelta(minutes=10), reason="الحماية: سبام")
+            await message.channel.send(f"{message.author.mention} انسكت 10 دقايق بسبب السبام 🔇", delete_after=8)
+            await message.channel.purge(limit=15, check=lambda m: m.author.id == message.author.id)
+        except discord.HTTPException:
+            pass
+        return True
+    return False
+
+
+@bot.tree.command(name="الحماية", description="تشغيل وتسطيب نظام الحماية (لصاحب السيرفر)")
+@app_commands.describe(
+    التشغيل="تشغيل أو إطفاء الحماية",
+    العقوبة="وش يصير للي يخرّب",
+    الحد="كم مرة بالدقيقة (حذف رومات/رتب...) قبل العقوبة - الافتراضي 3",
+    حد_الطرد="كم طرد/حظر مسموح في اليوم لكل شخص - الافتراضي 3",
+    الروابط="منع روابط السيرفرات الثانية",
+    عمر_الحساب="أقل عمر للحساب بالأيام عشان يدخل (0 = بدون)",
+)
+@app_commands.choices(
+    التشغيل=[app_commands.Choice(name="تشغيل ✅", value=1), app_commands.Choice(name="إطفاء ❌", value=2)],
+    العقوبة=[app_commands.Choice(name="سحب كل رتبه (تروح صلاحياته هو بس)", value="strip"), app_commands.Choice(name="طرد", value="kick"),
+             app_commands.Choice(name="حظر", value="ban")],
+    الروابط=[app_commands.Choice(name="ممنوعة ✅", value=1), app_commands.Choice(name="مسموحة ❌", value=2)],
+)
+async def protection_setup(inter: discord.Interaction, التشغيل: app_commands.Choice[int] = None,
+                           العقوبة: app_commands.Choice[str] = None, الحد: app_commands.Range[int, 1, 20] = None,
+                           حد_الطرد: app_commands.Range[int, 1, 50] = None,
+                           الروابط: app_commands.Choice[int] = None, عمر_الحساب: app_commands.Range[int, 0, 60] = None):
+    if inter.user.id != inter.guild.owner_id:
+        return await inter.response.send_message(embed=err("الحماية لصاحب السيرفر بس."), ephemeral=True)
+    gid = inter.guild.id
+    if التشغيل: set_setting(gid, "prot_on", التشغيل.value)
+    if العقوبة: set_text(gid, "prot_punish", العقوبة.value)
+    if الحد: set_setting(gid, "prot_limit", الحد)
+    if حد_الطرد: set_setting(gid, "prot_kick_limit", حد_الطرد)
+    if الروابط: set_setting(gid, "prot_links", الروابط.value)
+    if عمر_الحساب is not None: set_setting(gid, "prot_newacc", عمر_الحساب)
+    pun = {"strip": "سحب كل رتبه", "kick": "طرد", "ban": "حظر"}[get_text(gid, "prot_punish", "strip")]
+    wl = db.execute("SELECT target_id, kind FROM prot_whitelist WHERE guild_id = ?", (gid,)).fetchall()
+    me = inter.guild.me
+    warn = []
+    if not me.guild_permissions.administrator:
+        warn.append("⚠️ عطني **Administrator** عشان أقدر أحمي السيرفر.")
+    if me.top_role.position < len(inter.guild.roles) - 2:
+        warn.append("⚠️ ارفع رتبة البوت **فوق كل الرتب**، اللي فوق البوت ما أقدر أعاقبه.")
+    await inter.response.send_message(embed=embed("🛡️ نظام الحماية", (
+        f"**الحالة:** {'✅ شغالة' if prot_on(gid) else '❌ طافية'}\n"
+        f"**العقوبة:** {pun}\n**الحد:** {prot(gid, 'prot_limit', 3)} مرات بالدقيقة\n"
+        f"**الطرد والحظر:** أكثر من {prot(gid, 'prot_kick_limit', 3)} في اليوم ← عقوبة\n"
+        f"**روابط السيرفرات:** {'مسموحة' if get_setting(gid, 'prot_links') == 2 else 'ممنوعة'}\n"
+        f"**عمر الحساب:** {get_setting(gid, 'prot_newacc') or 'بدون'}{' أيام' if get_setting(gid, 'prot_newacc') else ''}\n\n"
+        "**وش تحمي:**\n• حذف/إنشاء رومات ورتب بكثرة ← عقوبة + ترجيع اللي انحذف\n"
+        "• طرد أو حظر أكثر من الحد في اليوم، Prune ← عقوبة\n• إضافة بوتات ← ينطرد البوت\n• ويب هوك ← ينحذف\n"
+        "• إعطاء صلاحيات خطيرة أو رتبة أدمن ← ترجع + عقوبة\n• سبام، منشن كثير، روابط ← حذف + إسكات\n\n"
+        f"**المستثنين ({len(wl)}):** " + (" ".join(f"<@&{t}>" if k == "role" else f"<@{t}>" for t, k in wl) or "لا أحد")
+        + "\nأضف الناس اللي تثق فيهم بـ /استثناء_الحماية"
+        + ("\n\n" + "\n".join(warn) if warn else ""))), ephemeral=True)
+
+
+@bot.tree.command(name="استثناء_الحماية", description="تضيف أو تشيل شخص/رتبة من الاستثناء (يقدرون يعدّلون بدون عقوبة)")
+@app_commands.describe(العضو="شخص تثق فيه", الرتبة="رتبة تثق فيها", شيل="اختر نعم عشان تشيله من الاستثناء")
+@app_commands.choices(شيل=[app_commands.Choice(name="نعم", value=1)])
+async def protection_whitelist(inter: discord.Interaction, العضو: discord.Member = None, الرتبة: discord.Role = None,
+                               شيل: app_commands.Choice[int] = None):
+    if inter.user.id != inter.guild.owner_id:
+        return await inter.response.send_message(embed=err("الاستثناء لصاحب السيرفر بس."), ephemeral=True)
+    if not العضو and not الرتبة:
+        return await inter.response.send_message(embed=err("اختر عضو أو رتبة."), ephemeral=True)
+    for t, kind in ((العضو, "user"), (الرتبة, "role")):
+        if t is None:
+            continue
+        if شيل:
+            db.execute("DELETE FROM prot_whitelist WHERE guild_id = ? AND target_id = ?", (inter.guild.id, t.id))
+        else:
+            db.execute("INSERT OR REPLACE INTO prot_whitelist VALUES (?, ?, ?)", (inter.guild.id, t.id, kind))
+    db.commit()
+    who = " ".join(x.mention for x in (العضو, الرتبة) if x)
+    await inter.response.send_message(embed=embed("🛡️ الاستثناء", f"{'🗑️ انشال' if شيل else '✅ انضاف'} {who}"), ephemeral=True)
 
 
 @bot.event

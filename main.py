@@ -5032,20 +5032,15 @@ async def clone_restore(inter: discord.Interaction, الملف: discord.Attachme
         return await inter.response.send_message(embed=err("عطني صلاحية **Administrator** في هذا السيرفر أول."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
     snap = None
-    if الملف:
+    if الملف and (الملف.filename or "").lower().endswith(".json"):
         try:
             snap = json.loads((await الملف.read()).decode())
         except (ValueError, UnicodeDecodeError, discord.HTTPException):
-            return await inter.followup.send(embed=err("الملف خربان أو مو ملف نسخة."), ephemeral=True)
-    else:  # آخر نسخة من أي سيرفر صاحبه نفس الشخص
-        for row in db.execute("SELECT guild_id, data FROM assets WHERE key = 'server_clone'").fetchall():
-            s = json.loads(bytes(row[1]).decode())
-            g = bot.get_guild(row[0])
-            if g is None or g.owner_id == inter.user.id or row[0] == inter.guild.id:
-                if snap is None or s.get("created", "") > snap.get("created", ""):
-                    snap = s
+            snap = None
+    if snap is None:  # بدون ملف (أو رفع صورة بالغلط): آخر نسخة من سيرفر ثاني صاحبه نفس الشخص
+        snap = latest_snapshot_for(inter.user.id, inter.guild.id)
     if not snap or "roles" not in snap:
-        return await inter.followup.send(embed=err("ما لقيت نسخة. ارفع الملف اللي وصلك في الخاص."), ephemeral=True)
+        return await inter.followup.send(embed=err("ما لقيت نسخة. اكتب `/نسخ_السيرفر` في سيرفرك الأساسي أول."), ephemeral=True)
     if snap["source_guild"] == inter.guild.id and حذف_الموجود:
         return await inter.followup.send(embed=err("ما تقدر تحذف وتسترجع في نفس السيرفر الأصلي."), ephemeral=True)
     await inter.followup.send(embed=embed("🛡️ بدأ الاسترجاع", (
@@ -5077,11 +5072,11 @@ async def restore_prefix(message: discord.Message):
     if not g.me.guild_permissions.administrator:
         return await message.reply("❌ عطني **Administrator** أول.")
     snap = None
-    if message.attachments:
+    if message.attachments and message.attachments[0].filename.lower().endswith(".json"):
         try:
             snap = json.loads((await message.attachments[0].read()).decode())
         except (ValueError, UnicodeDecodeError, discord.HTTPException):
-            return await message.reply("❌ الملف خربان.")
+            snap = None
     snap = snap or latest_snapshot_for(message.author.id, g.id)
     if not snap or "roles" not in snap:
         return await message.reply("❌ ما لقيت نسخة. اكتب `/نسخ_السيرفر` في سيرفرك الأساسي أول.")

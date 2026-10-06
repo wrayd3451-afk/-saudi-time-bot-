@@ -5115,6 +5115,57 @@ async def clone_backup(inter: discord.Interaction, الرسايل: app_commands.
     )), ephemeral=True)
 
 
+async def order_roles_like(guild: discord.Guild, snap: dict) -> int:
+    """يرتّب رتب السيرفر بنفس ترتيب النسخة (بالاسم). يرجع كم رتبة ترتبت"""
+    by_name = collections.defaultdict(list)
+    for r in sorted(guild.roles, key=lambda r: r.position):
+        if not r.is_default():
+            by_name[r.name].append(r)
+    wanted = []  # من تحت لفوق حسب النسخة
+    for r in snap.get("roles", []):
+        if by_name.get(r["name"]):
+            wanted.append(by_name[r["name"]].pop(0))
+    top = guild.me.top_role
+    wanted = [r for r in wanted if r < top]
+    others = [r for r in sorted(guild.roles, key=lambda r: r.position)
+              if not r.is_default() and r < top and r not in wanted]
+    final = wanted + others  # رتب النسخة تحت، والرتب الجديدة فوقها تحت البوت
+    if not final:
+        return 0
+    try:
+        await guild.edit_role_positions(positions={r: i + 1 for i, r in enumerate(final)}, reason="ترتيب الرتب مثل النسخة")
+        return len(wanted)
+    except discord.HTTPException as e:
+        print("order roles error:", e)
+        return -1
+
+
+@bot.tree.command(name="ترتيب_الرتب", description="يرتّب رتب السيرفر بنفس ترتيب السيرفر القديم (من النسخة)")
+async def reorder_roles_cmd(inter: discord.Interaction):
+    if inter.user.id != inter.guild.owner_id and not await bot.is_owner(inter.user):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    names = {r.name for r in inter.guild.roles}
+    snap, best = None, 0
+    for row in db.execute("SELECT guild_id, data FROM assets WHERE key = 'server_clone'").fetchall():
+        if row[0] == inter.guild.id:
+            continue
+        cand = json.loads(bytes(row[1]).decode())
+        score = sum(1 for r in cand.get("roles", []) if r["name"] in names)  # النسخة اللي رتبها تشبه هالسيرفر
+        if score > best:
+            snap, best = cand, score
+    if not snap:
+        return await inter.followup.send(embed=err("ما لقيت نسخة السيرفر القديم."), ephemeral=True)
+    n = await order_roles_like(inter.guild, snap)
+    if n < 0:
+        return await inter.followup.send(embed=err(
+            "ديسكورد رفض الترتيب. تأكد إن **رتبة البوت أعلى رتبة** في القائمة (اسحبها فوق الكل) وعندها Administrator، وأعد الأمر."),
+            ephemeral=True)
+    await inter.followup.send(embed=embed("✅ ترتيب الرتب", (
+        f"رتّبت **{n}** رتبة بنفس ترتيب سيرفرك القديم **{snap.get('name')}** 👑\n"
+        "الرتب الجديدة (اللي ما كانت في القديم) صارت فوقها تحت البوت.")), ephemeral=True)
+
+
 async def _restore_server(target: discord.Guild, snap: dict, status_ch, wipe: bool):
     async def say(t):
         try:
@@ -5149,7 +5200,7 @@ async def _restore_server(target: discord.Guild, snap: dict, status_ch, wipe: bo
         pass
     await say(f"👑 أسوي الرتب ({len(snap['roles'])})...")
     created = []
-    for r in snap["roles"]:  # من تحت لفوق
+    for r in reversed(snap["roles"]):  # من فوق لتحت: كل رتبة جديدة تنحط تحت اللي قبلها، فيطلع نفس الترتيب
         try:
             nr = await target.create_role(name=r["name"], colour=discord.Colour(r["color"]), hoist=r["hoist"],
                                           mentionable=r["mentionable"], permissions=discord.Permissions(r["permissions"]),
@@ -5165,12 +5216,7 @@ async def _restore_server(target: discord.Guild, snap: dict, status_ch, wipe: bo
             except discord.HTTPException:
                 pass
         await asyncio.sleep(0.4)
-    try:  # الترتيب: نفس ترتيب السيرفر الأصلي تحت رتبة البوت
-        top = target.me.top_role.position
-        positions = {role: max(1, top - len(created) + i) for i, role in enumerate(created)}
-        await target.edit_role_positions(positions=positions)
-    except discord.HTTPException:
-        pass
+    await order_roles_like(target, snap)
 
     def build_ow(items):
         out = {}

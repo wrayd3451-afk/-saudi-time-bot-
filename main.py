@@ -371,6 +371,10 @@ CREATE TABLE IF NOT EXISTS settings (
 db.commit()
 
 # أعمدة جديدة لتفاصيل التذاكر (تنضاف حتى لو البيانات قديمة)
+try:  # الرد التلقائي لرتبة معينة بس
+    db.execute("ALTER TABLE auto_replies ADD COLUMN role_id INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+    pass
 try:  # T1 مرة وحدة بس في كل تذكرة
     db.execute("ALTER TABLE tickets ADD COLUMN quiz_used INTEGER DEFAULT 0")
 except sqlite3.OperationalError:
@@ -487,7 +491,7 @@ bot = VRPBot()
 def has_role(member: discord.Member, role_id: int) -> bool:
     if not isinstance(member, discord.Member):
         return False
-    if member.guild_permissions.administrator:
+    if is_power(member):
         return True
     return role_id != 0 and any(r.id == role_id for r in member.roles)
 
@@ -867,7 +871,7 @@ async def help_cmd(inter: discord.Interaction):
     e.add_field(name="📜 القوانين", value="/تحميل_القوانين · /اضافة_قوانين · /حذف_قوانين · /ارسال_القوانين", inline=False)
     e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
     e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
-    e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` · `-خط` · /تسطيب_الخط · /تسطيب_الادارة_العليا", inline=False)
+    e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` (مشرف السجناء) · `-خط` · /تسطيب_الخط · /تسطيب_الادارة_العليا", inline=False)
     e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · العضو يكتب `T1` في تذكرته (بس T1) · `-تفعيل @العضو`", inline=False)
     e.add_field(name="✈️ الأقيام", value="`-قيم` في روم إنشاء القيم · `-تفتيش @العضو` في روم التفتيش · /تسطيب_التفتيش", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
@@ -961,7 +965,20 @@ async def manual_backup(inter: discord.Interaction):
     await inter.followup.send(embed=embed("💾 تم الحفظ", f"النسخة في {ch.mention}" if ch else "ما قدرت ألقى روم النسخ."), ephemeral=True)
 
 
-@bot.tree.command(name="اصلاح_الصلاحيات", description="يفك قفل قراءة الرسائل والصور والفويسات في كل الرومات دفعة وحدة - لصاحب السيرفر")
+# الصلاحيات العادية للأعضاء (بدون أي صلاحية إدارية)
+NORMAL_PERMS = dict(
+    view_channel=True, read_message_history=True, send_messages=True, send_messages_in_threads=True,
+    create_public_threads=True, embed_links=True, attach_files=True, add_reactions=True,
+    use_external_emojis=True, use_external_stickers=True, send_voice_messages=True, use_application_commands=True,
+    change_nickname=True, connect=True, speak=True, stream=True, use_voice_activation=True,
+    use_soundboard=True, use_embedded_activities=True, request_to_speak=True,
+)
+
+
+CHANNEL_KEEP = {"view_channel", "send_messages", "send_messages_in_threads", "create_public_threads"}
+
+
+@bot.tree.command(name="اصلاح_الصلاحيات", description="يعطي الكل الصلاحيات العادية (كتابة، صور، فويس، صوتي...) في كل الرومات - لصاحب السيرفر")
 async def fix_history_perms(inter: discord.Interaction):
     if not is_owner(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
@@ -971,9 +988,9 @@ async def fix_history_perms(inter: discord.Interaction):
     # 1) صلاحية @everyone في السيرفر: عرض الرومات + قراءة الرسائل السابقة
     try:
         p = guild.default_role.permissions
-        if not (p.read_message_history and p.view_channel and p.attach_files and p.send_voice_messages and p.embed_links):
-            p.update(read_message_history=True, view_channel=True, attach_files=True,
-                     send_voice_messages=True, embed_links=True)
+        normal = dict(NORMAL_PERMS)
+        if any(not getattr(p, k) for k in normal):
+            p.update(**normal)
             await guild.default_role.edit(permissions=p, reason="اصلاح الصلاحيات")
             fixed += 1
     except (discord.Forbidden, discord.HTTPException):
@@ -983,7 +1000,9 @@ async def fix_history_perms(inter: discord.Interaction):
     for ch in guild.channels:
         for target, ow in list(ch.overwrites.items()):
             changed = False
-            for perm in ("read_message_history", "attach_files", "send_voice_messages", "embed_links"):
+            for perm in NORMAL_PERMS:
+                if perm in CHANNEL_KEEP:
+                    continue  # ما نلمسها: الرومات الخاصة تبقى خاصة، ورومات القراءة بس تبقى بدون كتابة
                 if getattr(ow, perm) is False:
                     setattr(ow, perm, None)
                     changed = True
@@ -994,7 +1013,7 @@ async def fix_history_perms(inter: discord.Interaction):
                 except (discord.Forbidden, discord.HTTPException):
                     failed.append(ch.name)
                 await asyncio.sleep(0.4)
-    msg = f"✅ تم إصلاح **{fixed}** صلاحية.\nالحين الأعضاء يشوفون الرسايل ويرسلون **صور** و**رسايل صوتية** في الرومات اللي يقدرون يكتبون فيها.\nالرومات الخاصة ما تغيّرت وبقت خاصة."
+    msg = f"✅ تم إصلاح **{fixed}** صلاحية.\nالحين الكل عنده الصلاحيات العادية: يكتب، يرسل **صور** و**فويسات**، يتفاعل، ويدخل **الرومات الصوتية** ويتكلم.\nالرومات الخاصة ما تغيّرت وبقت خاصة."
     if failed:
         msg += "\n\n⚠️ ما قدرت أعدّل: " + "، ".join(sorted(set(failed))[:20]) + "\nارفع رتبة البوت فوق الرتب وعطه صلاحية **Manage Roles** و **Manage Channels**."
     await inter.followup.send(embed=embed("🔧 إصلاح الصلاحيات", msg), ephemeral=True)
@@ -1079,8 +1098,21 @@ async def voice_keeper():
 # ============================================================
 # التسطيب: الرومات والرتب
 # ============================================================
+def has_owner_role(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    rid = get_setting(member.guild.id, "role_owner")
+    return bool(rid and any(r.id == rid for r in member.roles))
+
+
+def is_power(member) -> bool:
+    """أدمن أو الرتبة الأونرية"""
+    return isinstance(member, discord.Member) and (member.guild_permissions.administrator or has_owner_role(member))
+
+
 def admin_only(inter: discord.Interaction) -> bool:
-    return isinstance(inter.user, discord.Member) and inter.user.guild_permissions.administrator
+    """الأدمن أو الرتبة الأونرية (أقوى صلاحية)"""
+    return isinstance(inter.user, discord.Member) and (inter.user.guild_permissions.administrator or has_owner_role(inter.user))
 
 
 @bot.tree.command(name="تسطيب_رومات", description="تحديد رومات البوت (لصاحب صلاحية الأدمن)")
@@ -1172,7 +1204,8 @@ ROLE_KEYS = [
     ("المفعلين", "role_activator", "المفعّلين (يقدرون يستخدمون -تفعيل)"),
     ("السوات", "role_swat", "السوات"),
     ("العدل", "role_justice", "العدل"),
-    ("الاونر", "role_owner", "الأونر (يقدرون يستخدمون -حظر)"),
+    ("الاونر", "role_owner", "الأونر (أقوى صلاحية في البوت)"),
+    ("مشرف_السجناء", "role_prison", "مشرف السجناء (يقدرون يستخدمون -حظر)"),
 ]
 
 
@@ -1189,7 +1222,8 @@ ROLE_KEYS = [
     المفعلين="الرتبة اللي تقدر تستخدم -تفعيل",
     السوات="رتبة السوات",
     العدل="رتبة العدل",
-    الاونر="الرتبة الأونرية اللي تقدر تستخدم -حظر",
+    الاونر="الرتبة الأونرية: أقوى صلاحية، تقدر تستخدم كل أوامر البوت",
+    مشرف_السجناء="الرتبة اللي تقدر تستخدم -حظر و -فك_حظر",
 )
 async def setup_roles(
     inter: discord.Interaction,
@@ -1205,6 +1239,7 @@ async def setup_roles(
     السوات: discord.Role = None,
     العدل: discord.Role = None,
     الاونر: discord.Role = None,
+    مشرف_السجناء: discord.Role = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
@@ -1212,7 +1247,7 @@ async def setup_roles(
     given = {"الادارة": الادارة, "الشرطة": الشرطة, "الاجرام": الاجرام,
              "الاعلام": الاعلام, "الاقيام": الاقيام,
              "عضو_رسمي": عضو_رسمي, "مقيم": مقيم, "عضو_غير_رسمي": عضو_غير_رسمي,
-             "المفعلين": المفعلين, "السوات": السوات, "العدل": العدل, "الاونر": الاونر}
+             "المفعلين": المفعلين, "السوات": السوات, "العدل": العدل, "الاونر": الاونر, "مشرف_السجناء": مشرف_السجناء}
     changed = []
     for arg, key, label in ROLE_KEYS:
         role = given[arg]
@@ -1327,6 +1362,10 @@ async def on_message(message: discord.Message):
     first = message.content.strip().split()[:1]
     if message.content.strip() == "-خط":
         return await line_command(message)
+    if message.content.strip() in ("-فت", "-فتح"):
+        return await room_prefix(message, True)
+    if message.content.strip() in ("-قف", "-قفل"):
+        return await room_prefix(message, False)
     # T1 بس = أسئلة التذكرة (داخل التذكرة ولصاحبها)، وغيرها يروح للردود التلقائية
     if message.content.strip().strip("•·").strip().upper() == "T1":
         if await quiz_shortcut(message, 1):
@@ -1352,7 +1391,7 @@ async def on_message(message: discord.Message):
     if game_ch and message.channel.id != game_ch:
         return
     host_role = get_setting(gid, "role_host")
-    if not (message.author.guild_permissions.administrator or
+    if not (is_power(message.author) or
             (host_role and any(r.id == host_role for r in message.author.roles))):
         return await message.reply(embed=err("هذا الأمر لرتبة الأقيام بس."))
     if not ticket_ch_id:
@@ -1414,6 +1453,9 @@ async def auto_reply(message: discord.Message):
     ).fetchone()
     if not row:
         return
+    rid = row["role_id"] if "role_id" in row.keys() else 0
+    if rid and not any(r.id == rid for r in getattr(message.author, "roles", [])):
+        return  # الرد لرتبة معينة بس
     try:
         if row["as_embed"]:
             e = discord.Embed(description=row["response"], color=0x006C35)
@@ -1431,31 +1473,35 @@ class AutoReplyModal(discord.ui.Modal, title="💬 الرد التلقائي"):
         placeholder="اكتب الرد اللي يرسله البوت، وتقدر تنزل سطر",
     )
 
-    def __init__(self, trigger: str, as_embed: bool):
+    def __init__(self, trigger: str, as_embed: bool, role_id: int = 0):
         super().__init__()
         self.trigger = trigger
         self.as_embed = as_embed
+        self.role_id = role_id
 
     async def on_submit(self, inter: discord.Interaction):
         db.execute(
-            "INSERT INTO auto_replies (guild_id, trigger, response, as_embed) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(guild_id, trigger) DO UPDATE SET response = excluded.response, as_embed = excluded.as_embed",
-            (inter.guild.id, self.trigger, self.response.value, int(self.as_embed)),
+            "INSERT INTO auto_replies (guild_id, trigger, response, as_embed, role_id) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, trigger) DO UPDATE SET response = excluded.response, as_embed = excluded.as_embed, "
+            "role_id = excluded.role_id",
+            (inter.guild.id, self.trigger, self.response.value, int(self.as_embed), self.role_id),
         )
         db.commit()
         await inter.response.send_message(
-            embed=embed("✅ انضاف الرد", f"إذا أحد كتب **{self.trigger}** يرد البوت بـ{'ايمبد' if self.as_embed else 'رسالة'}:\n\n{self.response.value}"[:4000]),
+            embed=embed("✅ انضاف الرد", f"إذا {f'أحد معه <@&{self.role_id}>' if self.role_id else 'أي أحد'} كتب **{self.trigger}** يرد البوت بـ{'ايمبد' if self.as_embed else 'رسالة'}:\n\n{self.response.value}"[:4000]),
             ephemeral=True,
         )
 
 
 @bot.tree.command(name="اضافة_رد", description="إضافة رد تلقائي على كلمة")
-@app_commands.describe(الكلمة="الكلمة اللي إذا أحد كتبها يرد البوت", ايمبد="الرد يطلع ايمبد؟")
+@app_commands.describe(الكلمة="الكلمة اللي إذا أحد كتبها يرد البوت", ايمبد="الرد يطلع ايمبد؟",
+                       الرتبة="البوت يرد بس على اللي معه هالرتبة (فاضي = يرد على الكل)")
 @app_commands.choices(ايمبد=[app_commands.Choice(name="لا، رسالة عادية", value=0), app_commands.Choice(name="إيه، ايمبد", value=1)])
-async def add_auto_reply(inter: discord.Interaction, الكلمة: app_commands.Range[str, 1, 100], ايمبد: app_commands.Choice[int] = None):
+async def add_auto_reply(inter: discord.Interaction, الكلمة: app_commands.Range[str, 1, 100], ايمبد: app_commands.Choice[int] = None,
+                         الرتبة: discord.Role = None):
     if not is_admin(inter):
         return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
-    await inter.response.send_modal(AutoReplyModal(الكلمة.strip(), bool(ايمبد and ايمبد.value)))
+    await inter.response.send_modal(AutoReplyModal(الكلمة.strip(), bool(ايمبد and ايمبد.value), الرتبة.id if الرتبة else 0))
 
 
 @bot.tree.command(name="حذف_رد", description="حذف رد تلقائي")
@@ -1673,6 +1719,34 @@ def get_ticket_types(guild_id: int):
     return db.execute("SELECT * FROM ticket_types WHERE guild_id = ? ORDER BY slot", (guild_id,)).fetchall()
 
 
+@bot.tree.command(name="قائمة_التذاكر", description="تشوف كل التذاكر: رقمها واسمها وتفاصيلها")
+async def list_tickets(inter: discord.Interaction):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    types_ = get_ticket_types(inter.guild.id)
+    if not types_:
+        return await inter.response.send_message(embed=err("ما سطّبت ولا تذكرة. استخدم /تسطيب_تذكرة"), ephemeral=True)
+    e = embed("🎫 - قائمة التذاكر", f"عدد التذاكر: **{len(types_)}** من 20")
+    for t in types_:
+        sups = db.execute("SELECT role_id FROM ticket_supervisors WHERE guild_id = ? AND slot = ?",
+                          (inter.guild.id, t["slot"])).fetchall()
+        opened = db.execute("SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND slot = ?",
+                            (inter.guild.id, t["slot"])).fetchone()[0]
+        qn = db.execute("SELECT COUNT(*) FROM quiz_questions WHERE guild_id = ? AND slot = ?",
+                        (inter.guild.id, t["slot"])).fetchone()[0]
+        info = [
+            f"**الشكل:** {'أزرار' if t['slot'] > 10 else 'منيو'}",
+            ("**المسؤول:** " + (f"<@&{t['staff_role']}>" if t['staff_role'] else "ما تحدد")),
+            f"**الاستلام:** {'✅' if (t['claim_on'] if t['claim_on'] is not None else 1) else '❌'}",
+            f"**المشرفين:** {' '.join(f'<@&{r[0]}>' for r in sups) if sups else 'لا أحد'}",
+            f"**مفتوحة الحين:** {opened} · **الأسئلة:** {qn}",
+        ]
+        e.add_field(name=f"#{t['slot']} - {t['emoji'] or '🎫'} {t['name']}", value="\n".join(info)[:1024], inline=False)
+        if len(e.fields) >= 25:
+            break
+    await inter.response.send_message(embed=e, ephemeral=True)
+
+
 @bot.tree.command(name="تسطيب_تذكرة", description="إضافة أو تعديل نوع تذكرة (1-10 منيو، 11-20 أزرار)")
 @app_commands.describe(
     الرقم="1 إلى 10 تطلع في المنيو، و 11 إلى 20 تطلع أزرار",
@@ -1822,6 +1896,54 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التذاكر", الروم.mention), ephemeral=True)
 
 
+# ---------- مشرفين التذاكر ----------
+db.execute("CREATE TABLE IF NOT EXISTS ticket_supervisors (guild_id INTEGER, slot INTEGER, role_id INTEGER, PRIMARY KEY (guild_id, slot, role_id))")
+db.commit()
+
+
+def supervisor_roles(guild: discord.Guild, slot: int):
+    rows = db.execute("SELECT role_id FROM ticket_supervisors WHERE guild_id = ? AND slot = ?", (guild.id, slot)).fetchall()
+    return [r for r in (guild.get_role(x[0]) for x in rows) if r]
+
+
+def is_supervisor(member: discord.Member, slot: int) -> bool:
+    ids = {x[0] for x in db.execute("SELECT role_id FROM ticket_supervisors WHERE guild_id = ? AND slot = ?",
+                                    (member.guild.id, slot)).fetchall()}
+    return any(r.id in ids for r in member.roles)
+
+
+STAFF_PERMS = dict(view_channel=True, send_messages=True, read_message_history=True,
+                   attach_files=True, embed_links=True, send_voice_messages=True)
+
+
+@bot.tree.command(name="تسطيب_مشرف_التذاكر", description="رتبة مشرف لتذاكر معينة (مشرف مساعدة، مشرف شكاوى، مشرف الجمارك...)")
+@app_commands.describe(
+    الرتبة="رتبة المشرف",
+    الأرقام="أرقام التذاكر اللي يشرف عليها، مثل: 1 أو 2,3",
+    حذف="اختر نعم عشان تشيل الرتبة من هالتذاكر",
+)
+@app_commands.choices(حذف=[app_commands.Choice(name="نعم", value=1)])
+async def setup_ticket_supervisor(inter: discord.Interaction, الرتبة: discord.Role, الأرقام: str,
+                                  حذف: app_commands.Choice[int] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    slots = sorted({int(x) for x in re.findall(r"\d+", الأرقام.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+                    if 1 <= int(x) <= 20})
+    if not slots:
+        return await inter.response.send_message(embed=err("اكتب أرقام التذاكر من 1 إلى 20، مثل: 1 أو 2,3"), ephemeral=True)
+    for sl in slots:
+        if حذف:
+            db.execute("DELETE FROM ticket_supervisors WHERE guild_id = ? AND slot = ? AND role_id = ?", (inter.guild.id, sl, الرتبة.id))
+        else:
+            db.execute("INSERT OR IGNORE INTO ticket_supervisors VALUES (?, ?, ?)", (inter.guild.id, sl, الرتبة.id))
+    db.commit()
+    rows = db.execute("SELECT slot, role_id FROM ticket_supervisors WHERE guild_id = ? ORDER BY slot", (inter.guild.id,)).fetchall()
+    allv = "\n".join(f"• تذكرة {r[0]}: <@&{r[1]}>" for r in rows) or "ما فيه مشرفين."
+    await inter.response.send_message(embed=embed("👮 مشرفين التذاكر", (
+        f"{'🗑️ انشال' if حذف else '✅ تم تعيين'} {الرتبة.mention} {'من' if حذف else 'على'} التذاكر: {', '.join(map(str, slots))}\n\n"
+        f"**كل المشرفين:**\n{allv}\n\nالمشرف يشوف التذكرة دايم حتى بعد ما تنستلم، ويقدر يقفلها.")), ephemeral=True)
+
+
 # ---------- صور التذاكر ----------
 db.execute("CREATE TABLE IF NOT EXISTS ticket_images (guild_id INTEGER, slot INTEGER, data BLOB, filename TEXT, PRIMARY KEY (guild_id, slot))")
 db.commit()
@@ -1877,7 +1999,7 @@ def ticket_buttons(claim_on: bool = True) -> discord.ui.View:
 
 
 def is_ticket_staff(member: discord.Member, ttype) -> bool:
-    if member.guild_permissions.administrator:
+    if is_power(member):
         return True
     return ttype is not None and any(r.id == ttype["staff_role"] for r in member.roles)
 
@@ -1921,8 +2043,11 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         inter.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True,
                                                  embed_links=True, send_voice_messages=True),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True,
+                                              manage_roles=True),
     }
+    for sup in supervisor_roles(guild, slot):
+        overwrites[sup] = discord.PermissionOverwrite(**STAFF_PERMS)
     if staff:
         overwrites[staff] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
                                                         attach_files=True, embed_links=True, send_voice_messages=True)
@@ -1963,7 +2088,7 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
     if action in ("claim", "unclaim") and ttype is not None and ttype["claim_on"] == 0:
         return await inter.response.send_message(embed=err("هذي التذكرة ما فيها استلام."), ephemeral=True)
     if action == "claim":
-        if not staff:
+        if not staff and not is_supervisor(inter.user, t["slot"]):
             return await inter.response.send_message(embed=err("الاستلام للإدارة المسؤولة بس."), ephemeral=True)
         if t["claimed_by"]:
             return await inter.response.send_message(embed=err(f"التذكرة مستلمة من <@{t['claimed_by']}>"), ephemeral=True)
@@ -1971,18 +2096,35 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
         add_points(inter.guild.id, inter.user.id, "admin", "ticket", pts_value(inter.guild.id, "pts_ticket"))
         db.commit()
         await inter.response.send_message(embed=embed("✅ تم استلام التذكرة", f"المسؤول عن التذكرة: {inter.user.mention}"))
+        # الإداريين الثانيين ما يشوفون التذكرة بعد الاستلام (المشرفين يشوفونها)
+        try:
+            await inter.channel.set_permissions(inter.user, overwrite=discord.PermissionOverwrite(**STAFF_PERMS))
+            srole = inter.guild.get_role(ttype["staff_role"]) if ttype else None
+            if srole:
+                await inter.channel.set_permissions(srole, overwrite=discord.PermissionOverwrite(view_channel=False))
+        except discord.HTTPException:
+            await log(f"⚠️ ما قدرت أخفي التذكرة {inter.channel.mention} عن الإداريين. عطني صلاحية Manage Roles.", inter.guild)
 
     elif action == "unclaim":
-        if t["claimed_by"] != inter.user.id and not inter.user.guild_permissions.administrator:
+        if t["claimed_by"] != inter.user.id and not is_power(inter.user) and not is_supervisor(inter.user, t["slot"]):
             return await inter.response.send_message(embed=err("بس اللي مستلم التذكرة يقدر يتركها."), ephemeral=True)
         db.execute("UPDATE tickets SET claimed_by = 0 WHERE channel_id = ?", (inter.channel.id,))
         db.commit()
         await inter.response.send_message(embed=embed("↩️ تم ترك التذكرة", "التذكرة الحين متاحة لأي إداري يستلمها."))
+        try:
+            srole = inter.guild.get_role(ttype["staff_role"]) if ttype else None
+            if srole:
+                await inter.channel.set_permissions(srole, overwrite=discord.PermissionOverwrite(**STAFF_PERMS))
+            old = inter.guild.get_member(t["claimed_by"]) if t["claimed_by"] else None
+            if old and old.id != t["owner_id"]:
+                await inter.channel.set_permissions(old, overwrite=None)
+        except discord.HTTPException:
+            pass
 
     elif action in ("close", "closeyes", "closeno"):
         # مين يقدر يقفل: اللي مستلم التذكرة بس (وإذا التذكرة بدون استلام: الإدارة المسؤولة). صاحب التذكرة ما يقفل.
         claim_on = ttype is None or ttype["claim_on"] != 0
-        is_admin = inter.user.guild_permissions.administrator
+        is_admin = is_power(inter.user) or is_supervisor(inter.user, t["slot"])
         if claim_on:
             if not t["claimed_by"] and not is_admin:
                 return await inter.response.send_message(embed=err("لازم أحد من الإدارة يستلم التذكرة أول، واللي يستلمها هو اللي يقفلها."), ephemeral=True)
@@ -2294,7 +2436,7 @@ async def inspect_command(message: discord.Message):
     if message.channel.id != inspect_ch:
         return
     host_role = get_setting(gid, "role_host")
-    if not (message.author.guild_permissions.administrator or
+    if not (is_power(message.author) or
             (host_role and any(r.id == host_role for r in message.author.roles))):
         return await message.reply(embed=err("التفتيش لرتبة الأقيام بس."))
 
@@ -2446,10 +2588,11 @@ async def unmute_command(message: discord.Message):
 
 
 async def ban_command(message: discord.Message, ban: bool):
-    owner_role = get_setting(message.guild.id, "role_owner")
-    allowed = message.author.id == message.guild.owner_id or (owner_role and any(r.id == owner_role for r in message.author.roles))
+    prison_role = get_setting(message.guild.id, "role_prison")
+    allowed = message.author.id == message.guild.owner_id or (prison_role and any(r.id == prison_role for r in message.author.roles))
     if not allowed:
-        return await message.reply(embed=err("الحظر للرتبة الأونرية بس."))
+        return await message.reply(embed=err("الحظر لمشرف السجناء بس." if prison_role else
+                                             "رتبة مشرف السجناء ما تحددت. حددها بـ /تسطيب_رتب"))
     parts = message.content.split()
     raw = parts[1].strip("<@!>") if len(parts) > 1 else ""
     if not raw.isdigit():
@@ -2459,7 +2602,7 @@ async def ban_command(message: discord.Message, ban: bool):
     if uid in (message.author.id, message.guild.owner_id, bot.user.id if bot.user else 0):
         return await message.reply(embed=err("ما تقدر تحظر هذا الشخص."))
     member = message.guild.get_member(uid)
-    if ban and member and staff_level(member) >= staff_level(message.author):
+    if ban and member and staff_level(member) > 0 and staff_level(member) >= staff_level(message.author):
         return await message.reply(embed=err("رتبته مثلك أو أعلى منك."))
     try:
         if ban:
@@ -2485,7 +2628,7 @@ async def ban_command(message: discord.Message, ban: bool):
 # التفعيل: -تفعيل @العضو ايدي_سوني
 # ============================================================
 def can_activate(member: discord.Member) -> bool:
-    if member.guild_permissions.administrator:
+    if is_power(member):
         return True
     ids = {r.id for r in member.roles}
     activator = get_setting(member.guild.id, "role_activator")
@@ -2688,7 +2831,7 @@ def admin_rank_name(member: discord.Member) -> str:
 def is_staff_member(member: discord.Member) -> bool:
     if not isinstance(member, discord.Member):
         return False
-    if member.guild_permissions.administrator:
+    if is_power(member):
         return True
     ids = {r.id for r in member.roles}
     keys = ["role_admin"] + [k for k, _ in RANK_KEYS]
@@ -3502,7 +3645,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -3710,7 +3853,7 @@ async def handle_unit(inter: discord.Interaction, kind: str):
         return await inter.response.send_message(
             embed=err(f"رتبة {'الشرطة' if kind == 'lspd' else 'السوات'} ما تحددت. خل الإدارة تستخدم /تسطيب_رتب"), ephemeral=True
         )
-    if not (inter.user.guild_permissions.administrator or any(r.id == role_id for r in inter.user.roles)):
+    if not (is_power(inter.user) or any(r.id == role_id for r in inter.user.roles)):
         return await inter.response.send_message(embed=err(f"هذا الزر لرتبة <@&{role_id}> بس."), ephemeral=True)
 
     row = db.execute("SELECT kind, number FROM units WHERE guild_id = ? AND user_id = ?",
@@ -3779,7 +3922,8 @@ POLICE_RANKS = [
 
 
 def is_owner(inter: discord.Interaction) -> bool:
-    return inter.guild is not None and inter.user.id == inter.guild.owner_id
+    """صاحب السيرفر أو الرتبة الأونرية"""
+    return inter.guild is not None and (inter.user.id == inter.guild.owner_id or has_owner_role(inter.user))
 
 
 def get_account(uid: int):
@@ -4451,39 +4595,61 @@ async def send_news_panel(inter: discord.Interaction, الروم: discord.TextCh
     await inter.response.send_message(embed=embed("✅ انرسل زر النشرة", الروم.mention), ephemeral=True)
 
 
+def _news_input(label, cid, ph):
+    return discord.ui.TextInput(label=label, custom_id=cid, placeholder=ph, max_length=1000,
+                                style=discord.TextStyle.paragraph)
+
+
 class NewsModal(discord.ui.Modal, title="📰 النشرة الإخبارية"):
-    location = discord.ui.TextInput(label="الموقع المعني", max_length=200, placeholder="مثال: البنك المركزي")
-    status = discord.ui.TextInput(label="تصنيف الحالة", max_length=200, placeholder="مثال: سطو مسلح")
-    direction = discord.ui.TextInput(label="يتم التوجه", max_length=200, placeholder="مثال: العساكر")
-    scope = discord.ui.TextInput(label="في نطاق مسؤولية", max_length=200, placeholder="مثال: مجرم")
+    """ما لها وقت ينتهي، والإرسال ينعالج في on_interaction عشان يشتغل حتى لو البوت رستر وانت تكتب"""
 
-    def __init__(self, source: str):
-        super().__init__()
-        self.source = source
+    def __init__(self, source: str = "مجهول"):
+        super().__init__(timeout=None, custom_id="news:modal")
+        self.add_item(_news_input("الموقع المعني", "loc", "مثال: البنك المركزي"))
+        self.add_item(_news_input("تصنيف الحالة", "status", "مثال: سطو مسلح"))
+        self.add_item(_news_input("يتم التوجه", "dir", "مثال: العساكر"))
+        self.add_item(_news_input("في نطاق مسؤولية", "scope", "مثال: مجرم"))
 
-    async def on_submit(self, inter: discord.Interaction):
-        gid = inter.guild.id
-        ch = inter.guild.get_channel(get_setting(gid, "ch_news")) or inter.channel
-        text = (
-            f"**1-يــصــدر الــخــبــر مــن:** {self.source}\n\n"
-            f"**2-الــمــوقــع الــمــعــنــى:** {self.location.value}\n\n"
-            f"**3-تــصــنــيــف الــحــالــه:** {self.status.value}\n\n"
-            f"**4-يــتــم الــتــوجــه :** {self.direction.value}\n\n"
-            f"**5-فــي نــطــاق مــســؤولــيــه:** {self.scope.value}"
-        )
-        e = embed("📰 - الــنــشــرة الــيــومــيــة الــاعــلــامــيــة", text)
-        try:
-            await ch.send(embed=e)
-        except discord.HTTPException:
-            return await inter.response.send_message(embed=err("ما قدرت أنشر. تأكد من صلاحياتي في روم النشر."), ephemeral=True)
-        await inter.response.send_message(embed=embed("✅ تم نشر النشرة", ch.mention), ephemeral=True)
-        # اسم الناشر يروح للوق بس (عشان المجهول يبقى مجهول)
-        await log(f"📰 {inter.user.mention} نشر نشرة إخبارية (المصدر: {self.source}) في {ch.mention}", inter.guild)
+
+def _modal_values(data) -> dict:
+    out = {}
+
+    def walk(x):
+        if isinstance(x, dict):
+            if "custom_id" in x and "value" in x:
+                out[x["custom_id"]] = x["value"]
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+    walk(data.get("components", []))
+    return out
+
+
+async def news_submit(inter: discord.Interaction):
+    v = _modal_values(inter.data or {})
+    gid = inter.guild.id
+    ch = inter.guild.get_channel(get_setting(gid, "ch_news")) or inter.channel
+    text = (
+        f"**1-يــصــدر الــخــبــر مــن:** مجهول\n\n"
+        f"**2-الــمــوقــع الــمــعــنــى:** {v.get('loc', '-')}\n\n"
+        f"**3-تــصــنــيــف الــحــالــه:** {v.get('status', '-')}\n\n"
+        f"**4-يــتــم الــتــوجــه :** {v.get('dir', '-')}\n\n"
+        f"**5-فــي نــطــاق مــســؤولــيــه:** {v.get('scope', '-')}"
+    )
+    e = embed("📰 - الــنــشــرة الــيــومــيــة الــاعــلــامــيــة", text[:4096])
+    try:
+        await ch.send(embed=e)
+    except discord.HTTPException:
+        return await inter.response.send_message(embed=err("ما قدرت أنشر. تأكد من صلاحياتي في روم النشر."), ephemeral=True)
+    await inter.response.send_message(embed=embed("✅ تم نشر النشرة", ch.mention), ephemeral=True)
+    await log(f"📰 {inter.user.mention} نشر نشرة إخبارية في {ch.mention}", inter.guild)
 
 
 async def news_open(inter: discord.Interaction):
     role = get_setting(inter.guild.id, "role_news")
-    if role and not inter.user.guild_permissions.administrator and not any(r.id == role for r in inter.user.roles):
+    if role and not is_power(inter.user) and not any(r.id == role for r in inter.user.roles):
         return await inter.response.send_message(embed=err(f"النشر لرتبة <@&{role}> بس."), ephemeral=True)
     await inter.response.send_modal(NewsModal("مجهول"))  # الخبر يصدر دايم من مجهول
 
@@ -4532,8 +4698,90 @@ async def suggestion_check(message: discord.Message) -> bool:
     return True
 
 
+# ============================================================
+# فتح وقفل الرومات: كل الرتب اللي في صلاحيات الروم
+# ============================================================
+async def _room_apply(guild: discord.Guild, ch, user, open_: bool):
+    me = guild.me
+    roles = [t for t in ch.overwrites if isinstance(t, discord.Role)
+             and t not in me.roles and not t.managed and not t.permissions.administrator]
+    changed, failed = [], []
+    for role in roles:
+        if role.is_default() and open_:
+            continue  # @everyone ما نفتحه، الروم يبقى للرتب اللي حاطها بس
+        ow = ch.overwrites_for(role)
+        if open_:
+            ow.update(view_channel=True, send_messages=True, read_message_history=True)
+        else:
+            ow.update(view_channel=False, send_messages=False)
+        try:
+            await ch.set_permissions(role, overwrite=ow, reason=f"{'فتح' if open_ else 'قفل'} الروم بواسطة {user}")
+            changed.append(role.mention)
+        except discord.HTTPException:
+            failed.append(role.name)
+        await asyncio.sleep(0.3)
+    if not open_ and guild.default_role not in roles:
+        try:  # نتأكد إن @everyone ما يشوف الروم وهو مقفول
+            ow = ch.overwrites_for(guild.default_role)
+            ow.update(view_channel=False, send_messages=False)
+            await ch.set_permissions(guild.default_role, overwrite=ow)
+        except discord.HTTPException:
+            pass
+    await log(f"{user.mention} {'فتح' if open_ else 'قفل'} الروم {ch.mention}", guild)
+    return changed, failed
+
+
+def _room_text(ch, open_, changed, failed):
+    text = (f"{'🔓 تم فتح' if open_ else '🔒 تم قفل'} {ch.mention}\n\n"
+            f"**الرتب ({len(changed)}):** {' '.join(changed) if changed else 'ما فيه رتب في صلاحيات الروم'}")
+    if failed:
+        text += f"\n\n⚠️ ما قدرت أعدّل: {'، '.join(failed)}\nخل رتبة البوت فوقها وعطه **Manage Roles**."
+    return text
+
+
+async def _toggle_room(inter: discord.Interaction, room, open_: bool):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    ch = room or inter.channel
+    await inter.response.defer(ephemeral=True)
+    changed, failed = await _room_apply(inter.guild, ch, inter.user, open_)
+    if open_:
+        try:
+            await ch.send(embed=embed("🔓 - تم فتح الروم", "الروم الحين مفتوح ."))
+        except discord.HTTPException:
+            pass
+    await inter.followup.send(embed=embed("🚪 الرومات", _room_text(ch, open_, changed, failed)), ephemeral=True)
+
+
+async def room_prefix(message: discord.Message, open_: bool):
+    """-فت يفتح الروم، -قف يقفله (الروم اللي انكتب فيه الأمر)"""
+    if not is_power(message.author):
+        return await message.reply(embed=err("هذا الأمر للأدمن والأونر بس."))
+    changed, failed = await _room_apply(message.guild, message.channel, message.author, open_)
+    try:
+        await message.channel.send(embed=embed("🔓 - تم فتح الروم" if open_ else "🔒 - تم قفل الروم",
+                                               _room_text(message.channel, open_, changed, failed)))
+    except discord.HTTPException:
+        pass
+
+
+@bot.tree.command(name="فتح_روم", description="يفتح الروم: يعطي كل الرتب اللي في صلاحياته عرض + كتابة")
+@app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
+async def open_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
+    await _toggle_room(inter, الروم, True)
+
+
+@bot.tree.command(name="قفل_روم", description="يقفل الروم: يشيل العرض والكتابة من كل الرتب اللي في صلاحياته")
+@app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
+async def close_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
+    await _toggle_room(inter, الروم, False)
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
+    if inter.type == discord.InteractionType.modal_submit and inter.guild \
+            and (inter.data or {}).get("custom_id") == "news:modal":
+        return await news_submit(inter)
     if inter.type != discord.InteractionType.component or not inter.guild:
         return
     cid = (inter.data or {}).get("custom_id", "")

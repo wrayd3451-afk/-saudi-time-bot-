@@ -1364,6 +1364,8 @@ async def on_message(message: discord.Message):
     if message.content.strip().startswith("-تفتيش"):
         return await inspect_command(message)
     first = message.content.strip().split()[:1]
+    if message.content.strip().split()[:1] in (["-ايموجي"], ["-إيموجي"], ["-ايموجيات"]):
+        return await emoji_prefix(message)
     if message.content.strip() == "-استرجاع":
         return await restore_prefix(message)
     if message.content.strip() == "-خط":
@@ -3651,7 +3653,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -4860,25 +4862,244 @@ def snapshot_file(snap: dict) -> discord.File:
                         filename=f"server_backup_{now().strftime('%Y-%m-%d')}.json")
 
 
+# ---------- نسخ الكلام والإيموجيات والملصقات ----------
+import gzip
+
+MEDIA_FILE_BUDGET = 6 * 1024 * 1024   # أقصى حجم للمرفقات المنسوخة
+PART_SIZE = 8 * 1024 * 1024           # حجم كل جزء في الخاص
+
+
+def _b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+async def collect_media(guild: discord.Guild, per_channel: int) -> dict:
+    media = {"emojis": [], "stickers": [], "messages": {}}
+    for e in guild.emojis:
+        try:
+            media["emojis"].append({"id": e.id, "name": e.name, "animated": e.animated, "data": _b64(await e.read())})
+        except discord.HTTPException:
+            pass
+    for s in guild.stickers:
+        try:
+            media["stickers"].append({"name": s.name, "description": s.description or s.name, "emoji": s.emoji or "⭐",
+                                      "format": s.format.name, "data": _b64(await s.read())})
+        except (discord.HTTPException, AttributeError):
+            pass
+    if per_channel <= 0:
+        return media
+    budget = MEDIA_FILE_BUDGET
+    ticket_chs = {r[0] for r in db.execute("SELECT channel_id FROM tickets WHERE guild_id = ?", (guild.id,)).fetchall()}
+    for ch in guild.text_channels:
+        if ch.id in ticket_chs or ch.name == BACKUP_CH_NAME:
+            continue
+        msgs = []
+        try:
+            async for m in ch.history(limit=per_channel, oldest_first=False):
+                if m.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+                files = []
+                for a in m.attachments:
+                    if a.size <= 1024 * 1024 and budget - a.size > 0:
+                        try:
+                            files.append({"name": a.filename, "data": _b64(await a.read())})
+                            budget -= a.size
+                        except discord.HTTPException:
+                            pass
+                if not (m.content or m.embeds or files):
+                    continue
+                msgs.append({
+                    "bot": bool(bot.user and m.author.id == bot.user.id),
+                    "author": m.author.display_name, "avatar": m.author.display_avatar.url,
+                    "content": m.content, "embeds": [e.to_dict() for e in m.embeds if e.type == "rich"][:10],
+                    "files": files, "components": [c.to_dict() for c in m.components],
+                })
+        except discord.HTTPException:
+            continue
+        if msgs:
+            media["messages"][str(ch.id)] = list(reversed(msgs))  # من الأقدم للأحدث
+    return media
+
+
+def snapshot_parts(snap: dict):
+    raw = gzip.compress(json.dumps(snap, ensure_ascii=False).encode())
+    parts = [raw[i:i + PART_SIZE] for i in range(0, len(raw), PART_SIZE)] or [raw]
+    day = now().strftime('%Y-%m-%d')
+    if len(parts) == 1:
+        return [discord.File(io.BytesIO(parts[0]), filename=f"server_backup_{day}.gz")]
+    return [discord.File(io.BytesIO(p), filename=f"server_backup_{day}.part{i + 1}of{len(parts)}.gz")
+            for i, p in enumerate(parts)]
+
+
+def media_path(gid: int) -> str:
+    return f"server_full_{gid}.gz"
+
+
+def save_full(gid: int, snap: dict):
+    try:
+        with open(media_path(gid), "wb") as f:
+            f.write(gzip.compress(json.dumps(snap, ensure_ascii=False).encode()))
+    except OSError:
+        pass
+
+
+def load_full(gid: int):
+    try:
+        with open(media_path(gid), "rb") as f:
+            return json.loads(gzip.decompress(f.read()).decode())
+    except (OSError, ValueError):
+        return None
+
+
+async def read_snapshot_attachments(atts) -> dict | None:
+    """يقبل ملف .json أو .gz أو أجزاء .partNofM.gz (يرتبها ويجمعها)"""
+    atts = [a for a in atts if a.filename.lower().endswith((".json", ".gz"))]
+    if not atts:
+        return None
+
+    def order(a):
+        m_ = re.search(r"part(\d+)of", a.filename)
+        return int(m_.group(1)) if m_ else 0
+    try:
+        blob = b"".join([await a.read() for a in sorted(atts, key=order)])
+        if blob[:2] == b"\x1f\x8b":
+            blob = gzip.decompress(blob)
+        return json.loads(blob.decode())
+    except (ValueError, OSError, discord.HTTPException):
+        return None
+
+
+_ID_RE = re.compile(r"\d{17,20}")
+
+
+def _remap(obj, ids: dict):
+    s = json.dumps(obj, ensure_ascii=False)
+    s = _ID_RE.sub(lambda m_: str(ids.get(int(m_.group(0)), m_.group(0))), s)
+    return json.loads(s)
+
+
+def _view_from(rows: list):
+    if not rows:
+        return None
+    v = discord.ui.View(timeout=None)
+    for ri, row in enumerate(rows[:5]):
+        for c in row.get("components", []):
+            emo = discord.PartialEmoji.from_dict(c["emoji"]) if c.get("emoji") else None
+            try:
+                if c.get("type") == 2:
+                    style = discord.ButtonStyle(c.get("style", 1))
+                    if style == discord.ButtonStyle.link:
+                        v.add_item(discord.ui.Button(label=c.get("label"), url=c.get("url"), emoji=emo, row=ri))
+                    elif style != discord.ButtonStyle.premium:
+                        v.add_item(discord.ui.Button(label=c.get("label"), style=style, emoji=emo, row=ri,
+                                                     custom_id=c.get("custom_id"), disabled=c.get("disabled", False)))
+                elif c.get("type") == 3:
+                    opts = [discord.SelectOption(label=o["label"], value=o["value"], description=o.get("description"),
+                                                 emoji=discord.PartialEmoji.from_dict(o["emoji"]) if o.get("emoji") else None)
+                            for o in c.get("options", [])]
+                    v.add_item(discord.ui.Select(custom_id=c.get("custom_id"), placeholder=c.get("placeholder"),
+                                                 min_values=c.get("min_values", 1), max_values=c.get("max_values", 1),
+                                                 options=opts, row=ri))
+            except (ValueError, TypeError, KeyError):
+                pass
+    return v if v.children else None
+
+
+async def restore_media(target: discord.Guild, media: dict, ids: dict, say):
+    # الإيموجيات أول (عشان الرسايل اللي فيها إيموجي تطلع صح)
+    ok = 0
+    for e in media.get("emojis", []):
+        try:
+            ne = await target.create_custom_emoji(name=e["name"], image=base64.b64decode(e["data"]), reason="استرجاع السيرفر")
+            ids[e["id"]] = ne.id
+            ok += 1
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(1)
+    if media.get("emojis"):
+        await say(f"😀 رجّعت **{ok}** إيموجي من {len(media['emojis'])}")
+    ok = 0
+    for s in media.get("stickers", []):
+        try:
+            ext = {"apng": "png", "png": "png", "gif": "gif"}.get(s.get("format", "png"), "png")
+            await target.create_sticker(name=s["name"], description=s["description"][:100], emoji=s["emoji"],
+                                        file=discord.File(io.BytesIO(base64.b64decode(s["data"])), filename=f"s.{ext}"))
+            ok += 1
+        except (discord.HTTPException, ValueError):
+            pass
+        await asyncio.sleep(1)
+    if media.get("stickers"):
+        await say(f"🏷️ رجّعت **{ok}** ملصق من {len(media['stickers'])}")
+
+    total = sum(len(v) for v in media.get("messages", {}).values())
+    if not total:
+        return
+    await say(f"💬 أرجّع الكلام ({total} رسالة)... هذا ياخذ وقت شوي.")
+    sent = 0
+    for old_id, msgs in media["messages"].items():
+        ch = target.get_channel(ids.get(int(old_id), 0))
+        if not isinstance(ch, discord.TextChannel):
+            continue
+        hook = None
+        for m in msgs:
+            m = _remap({k: v for k, v in m.items() if k not in ("files", "avatar")}, ids) | {"files": m["files"], "avatar": m["avatar"]}
+            embeds = [discord.Embed.from_dict(e) for e in m["embeds"]]
+            files = [discord.File(io.BytesIO(base64.b64decode(f["data"])), filename=f["name"]) for f in m["files"]]
+            try:
+                if m["bot"]:
+                    view = _view_from(m.get("components") or [])
+                    kw = {"content": m["content"] or None, "embeds": embeds, "files": files}
+                    if view:
+                        kw["view"] = view
+                    await ch.send(**kw)
+                else:
+                    if hook is None:
+                        hook = await ch.create_webhook(name="استرجاع", reason="استرجاع السيرفر")
+                    await hook.send(content=m["content"] or None, embeds=embeds, files=files,
+                                    username=(m["author"] or "عضو")[:80], avatar_url=m["avatar"],
+                                    allowed_mentions=discord.AllowedMentions.none())
+                sent += 1
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.7)
+        if hook:
+            try:
+                await hook.delete()
+            except discord.HTTPException:
+                pass
+    await say(f"💬 رجّعت **{sent}** رسالة")
+
+
 @bot.tree.command(name="نسخ_السيرفر", description="ياخذ نسخة كاملة من السيرفر (رتب، رومات، صلاحيات، إعدادات البوت)")
-async def clone_backup(inter: discord.Interaction):
+@app_commands.describe(الرسايل="كم رسالة ينسخ من كل روم (الافتراضي 50، 0 = بدون كلام)")
+async def clone_backup(inter: discord.Interaction, الرسايل: app_commands.Range[int, 0, 100] = 50):
     if not is_owner(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر والأونر بس."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
     snap = make_server_snapshot(inter.guild)
-    save_snapshot(inter.guild.id, snap)
+    save_snapshot(inter.guild.id, snap)          # النسخة الخفيفة (رتب + رومات + إعدادات)
+    await inter.followup.send("⏳ أنسخ الكلام والإيموجيات... انتظر شوي.", ephemeral=True)
+    media = await collect_media(inter.guild, الرسايل)
+    full = dict(snap, media=media)
+    save_full(inter.guild.id, full)              # النسخة الكاملة
     await do_backup(force=True)
+    nmsg = sum(len(v) for v in media["messages"].values())
     sent_dm = False
     try:  # نسخة في الخاص: لو السيرفر تهكر، الملف يبقى عندك
+        parts = snapshot_parts(full)
         await inter.user.send(embed=embed("🛡️ نسخة السيرفر", (
-            f"نسخة **{inter.guild.name}**\n**رتب:** {len(snap['roles'])} · **كاتيجوري:** {len(snap['categories'])} · "
-            f"**رومات:** {len(snap['channels'])}\n\nاحتفظ بالملف. لو صار شي، دخّل البوت السيرفر الجديد واكتب "
-            "`/استرجاع_السيرفر` وارفع الملف.")), file=snapshot_file(snap))
+            f"نسخة **{inter.guild.name}**\n**رتب:** {len(snap['roles'])} · **رومات:** {len(snap['channels'])} · "
+            f"**رسايل:** {nmsg} · **إيموجي:** {len(media['emojis'])} · **ملصقات:** {len(media['stickers'])}\n\n"
+            "احتفظ بالملف" + (f"ات ({len(parts)} أجزاء، لازم كلها)" if len(parts) > 1 else "") +
+            ". لو صار شي: دخّل البوت السيرفر الجديد واكتب `-استرجاع`.")))
+        for f in parts:
+            await inter.user.send(file=f)
         sent_dm = True
     except discord.HTTPException:
         pass
     await inter.followup.send(embed=embed("🛡️ تم نسخ السيرفر", (
         f"**رتب:** {len(snap['roles'])} · **كاتيجوري:** {len(snap['categories'])} · **رومات:** {len(snap['channels'])}\n"
+        f"**رسايل:** {nmsg} · **إيموجي:** {len(media['emojis'])} · **ملصقات:** {len(media['stickers'])}\n"
         f"**إعدادات البوت:** {sum(len(v) for v in snap['bot_data'].values())} سطر\n\n"
         + ("📩 أرسلت لك الملف في الخاص، احتفظ فيه." if sent_dm else "⚠️ ما قدرت أرسل لك في الخاص. افتح الخاص وأعد الأمر.")
     )), ephemeral=True)
@@ -5013,9 +5234,10 @@ async def _restore_server(target: discord.Guild, snap: dict, status_ch, wipe: bo
             except sqlite3.Error:
                 pass
     db.commit()
+    if snap.get("media"):
+        await restore_media(target, snap["media"], ids, say)
     await say(f"✅ **خلص الاسترجاع!**\nرتب: {len(created)} · رومات وكاتيجوري: {len(cmap)} · إعدادات البوت: {n}\n\n"
-              "📌 الباقي عليك: ارفع رتبة البوت فوق، وأعد إرسال اللوحات (التذاكر، القوانين، البنك...) "
-              "لأن الرسايل القديمة ما تنسخ. واحذف هالروم لو تبي.")
+              "📌 ارفع رتبة البوت فوق. ولو لوحة ما اشتغلت، أعد إرسالها. واحذف هالروم لو تبي.")
 
 
 @bot.tree.command(name="استرجاع_السيرفر", description="يرجّع نسخة السيرفر في هذا السيرفر (رتب، رومات، إعدادات البوت)")
@@ -5032,13 +5254,10 @@ async def clone_restore(inter: discord.Interaction, الملف: discord.Attachme
         return await inter.response.send_message(embed=err("عطني صلاحية **Administrator** في هذا السيرفر أول."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
     snap = None
-    if الملف and (الملف.filename or "").lower().endswith(".json"):
-        try:
-            snap = json.loads((await الملف.read()).decode())
-        except (ValueError, UnicodeDecodeError, discord.HTTPException):
-            snap = None
+    if الملف:
+        snap = await read_snapshot_attachments([الملف])
     if snap is None:  # بدون ملف (أو رفع صورة بالغلط): آخر نسخة من سيرفر ثاني صاحبه نفس الشخص
-        snap = latest_snapshot_for(inter.user.id, inter.guild.id)
+        snap = best_snapshot(latest_snapshot_for(inter.user.id, inter.guild.id, await bot.is_owner(inter.user)))
     if not snap or "roles" not in snap:
         return await inter.followup.send(embed=err("ما لقيت نسخة. اكتب `/نسخ_السيرفر` في سيرفرك الأساسي أول."), ephemeral=True)
     if snap["source_guild"] == inter.guild.id and حذف_الموجود:
@@ -5050,13 +5269,23 @@ async def clone_restore(inter: discord.Interaction, الملف: discord.Attachme
     asyncio.create_task(_restore_server(inter.guild, snap, inter.channel, bool(حذف_الموجود)))
 
 
-def latest_snapshot_for(user_id: int, exclude_gid: int):
+def best_snapshot(snap):
+    """نضيف للنسخة الخفيفة الكلام والإيموجيات من آخر نسخة كاملة لنفس السيرفر (لو موجودة)"""
+    if snap and not snap.get("media"):
+        full = load_full(snap.get("source_guild", 0))
+        if full and full.get("media"):
+            return dict(snap, media=full["media"])
+    return snap
+
+
+def latest_snapshot_for(user_id: int, exclude_gid: int, is_bot_owner: bool = False):
     snap = None
     for row in db.execute("SELECT guild_id, data FROM assets WHERE key = 'server_clone'").fetchall():
         if row[0] == exclude_gid:
             continue
         g = bot.get_guild(row[0])
-        if g is not None and g.owner_id != user_id:
+        # صاحب البوت ياخذ أي نسخة (حتى لو انسرقت ملكية السيرفر الأصلي)
+        if not is_bot_owner and g is not None and g.owner_id != user_id:
             continue
         s_ = json.loads(bytes(row[1]).decode())
         if snap is None or s_.get("created", "") > snap.get("created", ""):
@@ -5072,12 +5301,9 @@ async def restore_prefix(message: discord.Message):
     if not g.me.guild_permissions.administrator:
         return await message.reply("❌ عطني **Administrator** أول.")
     snap = None
-    if message.attachments and message.attachments[0].filename.lower().endswith(".json"):
-        try:
-            snap = json.loads((await message.attachments[0].read()).decode())
-        except (ValueError, UnicodeDecodeError, discord.HTTPException):
-            snap = None
-    snap = snap or latest_snapshot_for(message.author.id, g.id)
+    if message.attachments:
+        snap = await read_snapshot_attachments(message.attachments)
+    snap = snap or best_snapshot(latest_snapshot_for(message.author.id, g.id, await bot.is_owner(message.author)))
     if not snap or "roles" not in snap:
         return await message.reply("❌ ما لقيت نسخة. اكتب `/نسخ_السيرفر` في سيرفرك الأساسي أول.")
     wipe = len(g.channels) <= 10  # سيرفر جديد فاضي: نحذف رومات ديسكورد الافتراضية
@@ -5478,6 +5704,102 @@ async def protection_whitelist(inter: discord.Interaction, العضو: discord.M
     db.commit()
     who = " ".join(x.mention for x in (العضو, الرتبة) if x)
     await inter.response.send_message(embed=embed("🛡️ الاستثناء", f"{'🗑️ انشال' if شيل else '✅ انضاف'} {who}"), ephemeral=True)
+
+
+# ============================================================
+# إضافة إيموجيات كثيرة مرة وحدة (من سيرفرات ثانية، متحركة وعادية)
+# ============================================================
+EMOJI_TAG_RE = re.compile(r"<(a?):([A-Za-z0-9_~]{1,32}):(\d{15,21})>")
+EMOJI_URL_RE = re.compile(r"cdn\.discordapp\.com/emojis/(\d{15,21})\.(gif|png|webp|jpg)(?:\?[^\s]*)?", re.I)
+
+
+def parse_emojis(text: str):
+    found, seen = [], set()
+    for anim, name, eid in EMOJI_TAG_RE.findall(text):
+        if eid not in seen:
+            seen.add(eid)
+            found.append((eid, name, anim == "a"))
+    for m_ in EMOJI_URL_RE.finditer(text):
+        eid = m_.group(1)
+        if eid not in seen:
+            seen.add(eid)
+            anim = m_.group(2).lower() == "gif" or "animated=true" in m_.group(0).lower()
+            found.append((eid, f"emoji_{len(found) + 1}", anim))
+    return found
+
+
+async def add_emojis(guild: discord.Guild, items, status):
+    import aiohttp
+    added, failed, full = [], 0, 0
+    static_left = guild.emoji_limit - sum(1 for e in guild.emojis if not e.animated)
+    anim_left = guild.emoji_limit - sum(1 for e in guild.emojis if e.animated)
+    async with aiohttp.ClientSession() as http:
+        for n, (eid, name, anim) in enumerate(items, 1):
+            if (anim and anim_left <= 0) or (not anim and static_left <= 0):
+                full += 1
+                continue
+            url = f"https://cdn.discordapp.com/emojis/{eid}.{'gif' if anim else 'png'}?quality=lossless"
+            try:
+                async with http.get(url) as r:
+                    data = await r.read() if r.status == 200 else None
+                if not data:
+                    failed += 1
+                    continue
+                name = re.sub(r"[^A-Za-z0-9_]", "_", name)[:32]
+                name = name if len(name) >= 2 else f"e_{name or eid[-4:]}"
+                e = await guild.create_custom_emoji(name=name, image=data, reason="إضافة إيموجيات")
+                added.append(str(e))
+                if anim:
+                    anim_left -= 1
+                else:
+                    static_left -= 1
+            except (discord.HTTPException, aiohttp.ClientError, asyncio.TimeoutError):
+                failed += 1
+            if n % 10 == 0:
+                try:
+                    await status.edit(content=f"⏳ أضيف الإيموجيات... {n}/{len(items)} (انضاف {len(added)})")
+                except discord.HTTPException:
+                    pass
+            await asyncio.sleep(1.2)
+    text = f"✅ انضاف **{len(added)}** إيموجي من {len(items)}"
+    if full:
+        text += (f"\n⚠️ **{full}** ما انضافت لأن خانات السيرفر امتلت "
+                 f"(سيرفرك يقبل {guild.emoji_limit} عادي + {guild.emoji_limit} متحرك، والبوستات تزيدها)")
+    if failed:
+        text += f"\n❌ **{failed}** ما قدرت أضيفها"
+    preview = " ".join(added)
+    if preview:
+        text += "\n\n" + (preview if len(preview) < 1500 else preview[:1500] + " ...")
+    try:
+        await status.edit(content=text)
+    except discord.HTTPException:
+        pass
+
+
+async def emoji_prefix(message: discord.Message):
+    """-ايموجي ثم الإيموجيات (أو روابطها) - تقدر تكتب كثير في رسالة وحدة"""
+    if not is_power(message.author) and not message.author.guild_permissions.manage_expressions:
+        return await message.reply("❌ هذا الأمر للإدارة بس.")
+    items = parse_emojis(message.content)
+    if not items:
+        return await message.reply(
+            "❌ ما لقيت إيموجيات.\nاكتب `-ايموجي` وبعدها الإيموجيات (متحركة أو عادية)، أو روابطها.\n"
+            "💡 بدون نيترو: اضغط مطوّل على الإيموجي ← **Copy Link** ← والصق الروابط.")
+    status = await message.reply(f"⏳ بضيف **{len(items)}** إيموجي... انتظر.")
+    asyncio.create_task(add_emojis(message.guild, items, status))
+
+
+@bot.tree.command(name="اضافة_ايموجيات", description="تضيف إيموجيات كثيرة مرة وحدة من سيرفرات ثانية (متحركة وعادية)")
+@app_commands.describe(الإيموجيات="حط الإيموجيات أو روابطها هنا، كثير مرة وحدة")
+async def add_emojis_cmd(inter: discord.Interaction, الإيموجيات: str):
+    if not admin_only(inter) and not inter.user.guild_permissions.manage_expressions:
+        return await inter.response.send_message(embed=err("هذا الأمر للإدارة بس."), ephemeral=True)
+    items = parse_emojis(الإيموجيات)
+    if not items:
+        return await inter.response.send_message(embed=err("ما لقيت إيموجيات. حط الإيموجيات نفسها أو روابطها."), ephemeral=True)
+    await inter.response.send_message(f"⏳ بضيف **{len(items)}** إيموجي... انتظر.")
+    status = await inter.original_response()
+    asyncio.create_task(add_emojis(inter.guild, items, status))
 
 
 @bot.event

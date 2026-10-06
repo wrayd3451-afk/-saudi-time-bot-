@@ -1364,6 +1364,8 @@ async def on_message(message: discord.Message):
     if message.content.strip().startswith("-تفتيش"):
         return await inspect_command(message)
     first = message.content.strip().split()[:1]
+    if message.content.strip() == "-استرجاع":
+        return await restore_prefix(message)
     if message.content.strip() == "-خط":
         return await line_command(message)
     if message.content.strip() in ("-فت", "-فتح"):
@@ -3649,7 +3651,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -5051,6 +5053,41 @@ async def clone_restore(inter: discord.Interaction, الملف: discord.Attachme
         f"رتب: {len(snap['roles'])} · رومات: {len(snap['channels'])}\n\nبياخذ كم دقيقة، تابع هنا في الروم.")), ephemeral=True)
     await log(f"🛡️ {inter.user.mention} بدأ استرجاع نسخة **{snap.get('name')}**", inter.guild)
     asyncio.create_task(_restore_server(inter.guild, snap, inter.channel, bool(حذف_الموجود)))
+
+
+def latest_snapshot_for(user_id: int, exclude_gid: int):
+    snap = None
+    for row in db.execute("SELECT guild_id, data FROM assets WHERE key = 'server_clone'").fetchall():
+        if row[0] == exclude_gid:
+            continue
+        g = bot.get_guild(row[0])
+        if g is not None and g.owner_id != user_id:
+            continue
+        s_ = json.loads(bytes(row[1]).decode())
+        if snap is None or s_.get("created", "") > snap.get("created", ""):
+            snap = s_
+    return snap
+
+
+async def restore_prefix(message: discord.Message):
+    """-استرجاع : يكتبه صاحب السيرفر الجديد، والبوت يسوي كل شي لحاله"""
+    g = message.guild
+    if message.author.id != g.owner_id:
+        return await message.reply("❌ الاسترجاع لصاحب السيرفر بس.")
+    if not g.me.guild_permissions.administrator:
+        return await message.reply("❌ عطني **Administrator** أول.")
+    snap = None
+    if message.attachments:
+        try:
+            snap = json.loads((await message.attachments[0].read()).decode())
+        except (ValueError, UnicodeDecodeError, discord.HTTPException):
+            return await message.reply("❌ الملف خربان.")
+    snap = snap or latest_snapshot_for(message.author.id, g.id)
+    if not snap or "roles" not in snap:
+        return await message.reply("❌ ما لقيت نسخة. اكتب `/نسخ_السيرفر` في سيرفرك الأساسي أول.")
+    wipe = len(g.channels) <= 10  # سيرفر جديد فاضي: نحذف رومات ديسكورد الافتراضية
+    await message.reply(f"🛡️ بدأ الاسترجاع من نسخة **{snap.get('name')}**... انتظر كم دقيقة.")
+    asyncio.create_task(_restore_server(g, snap, message.channel, wipe))
 
 
 async def auto_server_snapshot():

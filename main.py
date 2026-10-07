@@ -453,29 +453,31 @@ class VRPBot(discord.Client):
         # نرسل الأوامر لديسكورد بس إذا تغيّرت، عشان نقلل الطلبات
         import hashlib, json
         payload = json.dumps([c.to_dict(self.tree) for c in self.tree.get_commands()], sort_keys=True, ensure_ascii=False)
-        digest = int(hashlib.sha1(payload.encode()).hexdigest()[:12], 16)
+        digest = int(hashlib.sha1(("global-v2" + payload).encode()).hexdigest()[:12], 16)
         if get_setting(0, "commands_hash") == digest:
             print("ℹ️ الأوامر ما تغيّرت، ما يحتاج أرسلها")
             return
         self._pending_sync = digest  # نرسلها في on_ready لكل السيرفرات اللي فيها البوت
 
     async def _sync_all(self):
+        """الأوامر تنرسل مرة وحدة (عامة لكل السيرفرات)، ونمسح النسخ الخاصة بكل سيرفر عشان ما تتكرر"""
         digest = getattr(self, "_pending_sync", None)
         if digest is None:
             return
         self._pending_sync = None
-        ok = 0
-        for g in self.guilds:  # كل سيرفر (حتى لو GUILD_ID قديم أو السيرفر انحذف)
+        try:
+            await self.tree.sync()
+        except discord.HTTPException as e:
+            return print(f"⚠️ ديسكورد رفض تحديث الأوامر: {e}")
+        for g in self.guilds:
             try:
-                self.tree.copy_global_to(guild=g)
-                await self.tree.sync(guild=g)
-                ok += 1
-            except discord.HTTPException as e:
-                print(f"⚠️ ديسكورد رفض تحديث الأوامر في {g.name}: {e}")
+                self.tree.clear_commands(guild=g)
+                await self.tree.sync(guild=g)  # يمسح الأوامر المكررة الخاصة بالسيرفر
+            except discord.HTTPException:
+                pass
             await asyncio.sleep(1)
-        if ok:
-            set_setting(0, "commands_hash", digest)
-        print(f"✅ انرسلت {len(self.tree.get_commands())} أمر لـ {ok} سيرفر")
+        set_setting(0, "commands_hash", digest)
+        print(f"✅ انرسلت {len(self.tree.get_commands())} أمر (بدون تكرار)")
 
     async def on_ready(self):
         print(f"✅ البوت شغال: {self.user} ")
@@ -1363,6 +1365,11 @@ async def setup_line(inter: discord.Interaction, صورة: discord.Attachment = 
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
+    # الجوال أحيانًا يحط علامات اتجاه مخفية (RTL) قبل الكلام، نشيلها عشان الأوامر تشتغل
+    try:
+        message.content = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", message.content or "")
+    except AttributeError:
+        pass
     if await prot_message(message):
         return
     if await suggestion_check(message):
@@ -1380,13 +1387,13 @@ async def on_message(message: discord.Message):
         return await role_prefix(message)
     if first == ["-نسخ_من"]:
         return await clone_from_prefix(message)
-    if message.content.strip() == "-استرجاع":
+    if first == ["-استرجاع"]:
         return await restore_prefix(message)
-    if message.content.strip() == "-خط":
+    if first == ["-خط"]:
         return await line_command(message)
-    if message.content.strip() in ("-فت", "-فتح"):
+    if first in (["-فت"], ["-فتح"]):
         return await room_prefix(message, True)
-    if message.content.strip() in ("-قف", "-قفل"):
+    if first in (["-قف"], ["-قفل"]):
         return await room_prefix(message, False)
     # T1 بس = أسئلة التذكرة (داخل التذكرة ولصاحبها)، وغيرها يروح للردود التلقائية
     if message.content.strip().strip("•·").strip().upper() == "T1":
@@ -5617,12 +5624,7 @@ async def auto_server_snapshot():
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     """لما البوت يدخل سيرفر جديد (مثل السيرفر البديل) ترسل الأوامر له على طول"""
-    try:
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print(f"✅ دخلت سيرفر جديد: {guild.name} وأرسلت الأوامر")
-    except discord.HTTPException as e:
-        print(f"⚠️ ما قدرت أرسل الأوامر لـ {guild.name}: {e}")
+    print(f"✅ دخلت سيرفر جديد: {guild.name} (الأوامر العامة تطلع فيه لحالها)")
 
 
 # ============================================================

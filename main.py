@@ -1374,6 +1374,10 @@ async def on_message(message: discord.Message):
     first = message.content.strip().split()[:1]
     if message.content.strip().split()[:1] in (["-ايموجي"], ["-إيموجي"], ["-ايموجيات"]):
         return await emoji_prefix(message)
+    if first == ["-اسم"]:
+        return await rename_prefix(message)
+    if first == ["-ر"]:
+        return await role_prefix(message)
     if message.content.strip() == "-استرجاع":
         return await restore_prefix(message)
     if message.content.strip() == "-خط":
@@ -3661,7 +3665,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -5994,6 +5998,244 @@ async def invite_old_members(inter: discord.Interaction, الرابط: str, ال
     asyncio.create_task(run_old_invites(inter.guild, inter.user, الرابط.strip(), الرسالة, status))
 
 
+# ============================================================
+# -اسم ايدي الاسم_الجديد   |   -ر ايدي ايدي_رتبة ايدي_رتبة ...
+# الإدارة في الروم المخصص بس، والأونر في أي مكان
+# ============================================================
+async def _resolve_member(guild: discord.Guild, raw: str):
+    raw = raw.strip("<@!>")
+    if not raw.isdigit():
+        return None
+    m = guild.get_member(int(raw))
+    if m is None:
+        try:
+            m = await guild.fetch_member(int(raw))
+        except discord.HTTPException:
+            m = None
+    return m
+
+
+def _staff_room_check(message: discord.Message, key: str):
+    """يرجع رسالة خطأ لو ما يحق له، أو None"""
+    a = message.author
+    if has_owner_role(a) or a.id == message.guild.owner_id:
+        return None  # الأونر في كل مكان
+    if not has_role(a, get_setting(message.guild.id, "role_admin")):
+        return "هذا الأمر للإدارة بس."
+    ch = get_setting(message.guild.id, key)
+    if ch and message.channel.id != ch:
+        return f"هذا الأمر في <#{ch}> بس."
+    return None
+
+
+async def rename_prefix(message: discord.Message):
+    bad = _staff_room_check(message, "ch_names")
+    if bad:
+        return await message.reply(f"❌ {bad}")
+    parts = message.content.split(maxsplit=2)
+    if len(parts) < 3:
+        return await message.reply("❌ الاستخدام: `-اسم ايدي_الشخص الاسم الجديد`")
+    member = await _resolve_member(message.guild, parts[1])
+    if not member:
+        return await message.reply("❌ ما لقيت الشخص. تأكد من الايدي.")
+    if member.id != message.author.id and not has_owner_role(message.author) and message.author.id != message.guild.owner_id \
+            and staff_level(member) >= staff_level(message.author) and staff_level(member) > 0:
+        return await message.reply("❌ رتبته مثلك أو أعلى منك.")
+    new = parts[2].strip()[:32]
+    old = member.display_name
+    try:
+        await member.edit(nick=new, reason=f"تغيير اسم بواسطة {message.author}")
+    except discord.HTTPException:
+        return await message.reply("❌ ما قدرت أغيّر اسمه. خل رتبة البوت فوق رتبته (وصاحب السيرفر ما يتغيّر اسمه).")
+    await message.reply(f"✅ تم تغيير اسم {member.mention}\n**من:** {old}\n**إلى:** {new}")
+    await log(f"✏️ {message.author.mention} غيّر اسم {member.mention} من **{old}** إلى **{new}**", message.guild)
+
+
+async def role_prefix(message: discord.Message):
+    bad = _staff_room_check(message, "ch_roles_cmd")
+    if bad:
+        return await message.reply(f"❌ {bad}")
+    parts = message.content.split()
+    if len(parts) < 3:
+        return await message.reply("❌ الاستخدام: `-ر ايدي_الشخص ايدي_الرتبة` (وتقدر تحط أكثر من رتبة)")
+    member = await _resolve_member(message.guild, parts[1])
+    if not member:
+        return await message.reply("❌ ما لقيت الشخص. تأكد من الايدي.")
+    is_top = has_owner_role(message.author) or message.author.id == message.guild.owner_id
+    added, removed, failed = [], [], []
+    for raw in parts[2:]:
+        raw = raw.strip("<@&>")
+        role = message.guild.get_role(int(raw)) if raw.isdigit() else None
+        if role is None or role.is_default() or role.managed:
+            failed.append(f"`{raw}` (ما لقيتها)")
+            continue
+        if role >= message.guild.me.top_role:
+            failed.append(f"{role.mention} (فوق رتبة البوت)")
+            continue
+        if not is_top and (role >= message.author.top_role or role.permissions.administrator):
+            failed.append(f"{role.mention} (أعلى من رتبتك)")
+            continue
+        try:
+            if role in member.roles:  # عنده الرتبة ← تنشال
+                await member.remove_roles(role, reason=f"بواسطة {message.author}")
+                removed.append(role.mention)
+            else:
+                await member.add_roles(role, reason=f"بواسطة {message.author}")
+                added.append(role.mention)
+        except discord.HTTPException:
+            failed.append(f"{role.mention} (ما قدرت)")
+    lines = [f"**العضو:** {member.mention}"]
+    if added:
+        lines.append(f"✅ **انعطى:** {' '.join(added)}")
+    if removed:
+        lines.append(f"➖ **انشال:** {' '.join(removed)}")
+    if failed:
+        lines.append(f"❌ **ما تم:** {'، '.join(failed)}")
+    await message.reply("\n".join(lines))
+    if added or removed:
+        await log(f"🎭 {message.author.mention} عدّل رتب {member.mention}: "
+                  f"{'+ ' + ' '.join(added) if added else ''} {'- ' + ' '.join(removed) if removed else ''}", message.guild)
+
+
+@bot.tree.command(name="تسطيب_روم_الادوار", description="تحدد الروم اللي الإدارة تستخدم فيه -ر و -اسم (الأونر في كل مكان)")
+@app_commands.describe(روم_الرتب="الروم اللي يشتغل فيه -ر", روم_الاسماء="الروم اللي يشتغل فيه -اسم")
+async def setup_role_rooms(inter: discord.Interaction, روم_الرتب: discord.TextChannel = None,
+                           روم_الاسماء: discord.TextChannel = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    if روم_الرتب:
+        set_setting(inter.guild.id, "ch_roles_cmd", روم_الرتب.id)
+    if روم_الاسماء:
+        set_setting(inter.guild.id, "ch_names", روم_الاسماء.id)
+    r, n = get_setting(inter.guild.id, "ch_roles_cmd"), get_setting(inter.guild.id, "ch_names")
+    await inter.response.send_message(embed=embed("🎭 روم الأدوار", (
+        f"**`-ر` :** {f'<#{r}>' if r else 'أي روم'}\n**`-اسم` :** {f'<#{n}>' if n else 'أي روم'}\n\n"
+        "الإدارة تستخدمها في الروم المحدد بس، والأونر في أي مكان 👑")), ephemeral=True)
+
+
+# ============================================================
+# 🎖️ التسجيل العسكري: زر يحسب المسجلين ويعطيهم رتبة، وكل دورة لها عدد
+# لما تكتمل الدورة: يمنشن المسجلين ويقفلها ويفتح دورة جديدة
+# ============================================================
+db.execute("CREATE TABLE IF NOT EXISTS enlist (message_id INTEGER, user_id INTEGER, created_at TEXT, PRIMARY KEY (message_id, user_id))")
+try:
+    db.execute("ALTER TABLE enlist ADD COLUMN batch INTEGER DEFAULT 1")
+except sqlite3.OperationalError:
+    pass
+db.execute("CREATE TABLE IF NOT EXISTS enlist_panels (message_id INTEGER PRIMARY KEY, guild_id INTEGER, role_id INTEGER, cap INTEGER, batch INTEGER)")
+db.commit()
+
+
+def enlist_panel_row(mid: int):
+    r = db.execute("SELECT * FROM enlist_panels WHERE message_id = ?", (mid,)).fetchone()
+    return (r["cap"], r["batch"]) if r else (30, 1)
+
+
+def enlist_batch_ids(mid: int, batch: int):
+    return [r[0] for r in db.execute("SELECT user_id FROM enlist WHERE message_id = ? AND batch = ? ORDER BY created_at",
+                                     (mid, batch)).fetchall()]
+
+
+def enlist_view(role_id: int, count: int, cap: int = 30) -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label=f"تسجيل ({count}/{cap})", emoji="🎖️", style=discord.ButtonStyle.success,
+                                 custom_id=f"enlist:join:{role_id}"))
+    v.add_item(discord.ui.Button(label="المسجلين", emoji="📋", style=discord.ButtonStyle.secondary,
+                                 custom_id=f"enlist:list:{role_id}"))
+    v.add_item(discord.ui.Button(label="منشن الدورة", emoji="📣", style=discord.ButtonStyle.primary,
+                                 custom_id=f"enlist:ping:{role_id}"))
+    return v
+
+
+def _enlist_embed(e: discord.Embed, count: int, cap: int = 30, batch: int = 1) -> discord.Embed:
+    e = e.copy()
+    e.clear_fields()
+    e.add_field(name="🪖 الدورة", value=f"**رقم {batch}**")
+    e.add_field(name="👥 المسجلين", value=f"**{count} / {cap}**")
+    return e
+
+
+@bot.tree.command(name="تسجيل_عسكري", description="لوحة تسجيل عسكري: اللي يضغط ياخذ رتبة، وكل ما تكتمل الدورة يمنشنهم ويفتح دورة جديدة")
+@app_commands.describe(الروم="الروم اللي تنرسل فيه اللوحة", الرتبة="الرتبة اللي تنعطى للي يسجل (مثل: طالب تحت تدريب)",
+                       العدد="كم شخص في كل دورة (الافتراضي 30)",
+                       الوصف="الكلام اللي في اللوحة", العنوان="عنوان اللوحة (الافتراضي: تسجيل عسكري)",
+                       الصورة="صورة للوحة (اختياري)")
+async def enlist_panel(inter: discord.Interaction, الروم: discord.TextChannel, الرتبة: discord.Role,
+                       العدد: app_commands.Range[int, 1, 200] = 30, الوصف: str = None, العنوان: str = None,
+                       الصورة: discord.Attachment = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    if الرتبة >= inter.guild.me.top_role:
+        return await inter.response.send_message(embed=err(f"{الرتبة.mention} فوق رتبة البوت. ارفع رتبة البوت فوقها."), ephemeral=True)
+    e = embed(f"🎖️ - {العنوان or 'تـسـجـيـل عـسـكـري'}", (الوصف or
+              "- باب التسجيل العسكري مفتوح الحين 🪖\n\nاضغط زر **تسجيل** عشان تنضم للدورة، وتاخذ رتبة "
+              f"{الرتبة.mention} وتبدأ تدريبك ."))
+    e = _enlist_embed(e, 0, العدد, 1)
+    kw = {}
+    if الصورة and (الصورة.content_type or "").startswith("image/"):
+        kw["file"] = await الصورة.to_file()
+        e.set_image(url=f"attachment://{kw['file'].filename}")
+    try:
+        msg = await الروم.send(embed=e, view=enlist_view(الرتبة.id, 0, العدد), **kw)
+    except discord.HTTPException:
+        return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
+    db.execute("INSERT OR REPLACE INTO enlist_panels VALUES (?, ?, ?, ?, 1)", (msg.id, inter.guild.id, الرتبة.id, العدد))
+    db.commit()
+    await inter.response.send_message(embed=embed("✅ انرسلت لوحة التسجيل", f"{الروم.mention}\nكل دورة **{العدد}** شخص."), ephemeral=True)
+
+
+async def handle_enlist(inter: discord.Interaction, cid: str):
+    _, action, rid = cid.split(":")
+    role = inter.guild.get_role(int(rid))
+    mid = inter.message.id
+    cap, batch = enlist_panel_row(mid)
+    if action in ("list", "ping"):
+        if not has_role(inter.user, get_setting(inter.guild.id, "role_admin")):
+            return await inter.response.send_message(embed=err("هذا الزر للإدارة بس."), ephemeral=True)
+        ids = enlist_batch_ids(mid, batch)
+        if action == "list":
+            text = "\n".join(f"{i}. <@{u}>" for i, u in enumerate(ids, 1)) or "ما أحد سجّل في هالدورة للحين."
+            return await inter.response.send_message(embed=embed(f"📋 مسجلين الدورة {batch} ({len(ids)}/{cap})", text[:4000]),
+                                                     ephemeral=True)
+        if not ids:
+            return await inter.response.send_message(embed=err("ما أحد سجّل في هالدورة للحين."), ephemeral=True)
+        await inter.response.send_message(f"📣 **مسجلين الدورة رقم {batch}** ({len(ids)}):\n" + " ".join(f"<@{u}>" for u in ids))
+        return
+    if role is None:
+        return await inter.response.send_message(embed=err("رتبة التسجيل انحذفت. خل الإدارة ترسل اللوحة من جديد."), ephemeral=True)
+    if db.execute("SELECT 1 FROM enlist WHERE message_id = ? AND user_id = ?", (mid, inter.user.id)).fetchone() \
+            or role in inter.user.roles:
+        return await inter.response.send_message(embed=err("أنت مسجّل من قبل ✅"), ephemeral=True)
+    try:
+        await inter.user.add_roles(role, reason="تسجيل عسكري")
+    except discord.HTTPException:
+        return await inter.response.send_message(embed=err("ما قدرت أعطيك الرتبة. خل الإدارة ترفع رتبة البوت."), ephemeral=True)
+    db.execute("INSERT OR IGNORE INTO enlist (message_id, user_id, created_at, batch) VALUES (?, ?, ?, ?)",
+               (mid, inter.user.id, now().isoformat(), batch))
+    db.commit()
+    ids = enlist_batch_ids(mid, batch)
+    count = len(ids)
+    e = inter.message.embeds[0] if inter.message.embeds else embed("🎖️ تسجيل عسكري")
+    full = count >= cap
+    if full:  # اكتملت الدورة ← دورة جديدة
+        db.execute("INSERT OR REPLACE INTO enlist_panels VALUES (?, ?, ?, ?, ?)", (mid, inter.guild.id, role.id, cap, batch + 1))
+        db.commit()
+        await inter.response.edit_message(embed=_enlist_embed(e, 0, cap, batch + 1), view=enlist_view(role.id, 0, cap))
+    else:
+        await inter.response.edit_message(embed=_enlist_embed(e, count, cap, batch), view=enlist_view(role.id, count, cap))
+    await inter.followup.send(embed=embed("🎖️ تم تسجيلك", f"أخذت رتبة {role.mention}\nأنت رقم **{count}** في الدورة **{batch}** 🪖"),
+                              ephemeral=True)
+    await log(f"🎖️ {inter.user.mention} سجّل في الدورة {batch} وأخذ {role.mention} ({count}/{cap})", inter.guild)
+    if full:
+        try:
+            await inter.channel.send(
+                f"🔒 **اكتملت الدورة رقم {batch}** ({cap} متدرب) وانقفل التسجيل فيها 🎖️\n"
+                + " ".join(f"<@{u}>" for u in ids)
+                + f"\n\n✅ انفتح التسجيل للدورة رقم **{batch + 1}**")
+        except discord.HTTPException:
+            pass
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type == discord.InteractionType.modal_submit and inter.guild \
@@ -6031,6 +6273,8 @@ async def on_interaction(inter: discord.Interaction):
             pass
     elif cid.startswith("pts:") or cid.startswith("mdt:"):
         await handle_points_interaction(inter, cid)
+    elif cid.startswith("enlist:"):
+        await handle_enlist(inter, cid)
     elif cid == "news:open":
         await news_open(inter)
     elif cid == "rules:open":

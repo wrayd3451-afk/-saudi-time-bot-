@@ -1378,6 +1378,8 @@ async def on_message(message: discord.Message):
         return await rename_prefix(message)
     if first == ["-ر"]:
         return await role_prefix(message)
+    if first == ["-نسخ_من"]:
+        return await clone_from_prefix(message)
     if message.content.strip() == "-استرجاع":
         return await restore_prefix(message)
     if message.content.strip() == "-خط":
@@ -1913,6 +1915,7 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
         return await inter.response.send_message(
             embed=err("فيه ايموجي غلط في وحدة من التذاكر. عدّلها بـ /تسطيب_تذكرة وحط ايموجي عادي مثل 🛃"), ephemeral=True
         )
+    register_panel(inter.guild.id, "tickets_btn" if buttons else "tickets", الروم.id, {"buttons": buttons, "slots": slots, "desc": الوصف})
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التذاكر", الروم.mention), ephemeral=True)
 
 
@@ -3493,6 +3496,7 @@ async def send_app_panel(inter: discord.Interaction, الروم: discord.TextCha
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
     except discord.HTTPException:
         return await inter.response.send_message(embed=err("فيه ايموجي غلط في أحد التقديمات."), ephemeral=True)
+    register_panel(inter.guild.id, "apps", الروم.id, {"desc": الوصف})
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التقديمات", الروم.mention), ephemeral=True)
 
 
@@ -3665,7 +3669,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -4862,7 +4866,10 @@ def make_server_snapshot(guild: discord.Guild) -> dict:
         chans.append(d)
     return {"version": 1, "source_guild": guild.id, "name": guild.name, "created": now().isoformat(),
             "everyone_perms": guild.default_role.permissions.value,
-            "roles": roles, "categories": cats, "channels": chans, "bot_data": _bot_data_dump(guild.id)}
+            "roles": roles, "categories": cats, "channels": chans, "bot_data": _bot_data_dump(guild.id),
+            "members": [{"id": m.id, "nick": m.nick,
+                         "roles": [r.id for r in m.roles if not r.is_default() and not r.managed]}
+                        for m in guild.members if not m.bot]}
 
 
 def save_snapshot(gid: int, snap: dict):
@@ -4889,6 +4896,13 @@ def _b64(b: bytes) -> str:
 
 async def collect_media(guild: discord.Guild, per_channel: int) -> dict:
     media = {"emojis": [], "stickers": [], "messages": {}}
+    for attr in ("icon", "banner", "splash"):
+        asset = getattr(guild, attr, None)
+        if asset:
+            try:
+                media[attr] = _b64(await asset.read())
+            except discord.HTTPException:
+                pass
     for e in guild.emojis:
         try:
             media["emojis"].append({"id": e.id, "name": e.name, "animated": e.animated, "data": _b64(await e.read())})
@@ -5090,6 +5104,8 @@ async def clone_backup(inter: discord.Interaction, الرسايل: app_commands.
     if not is_owner(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر والأونر بس."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
+    if not inter.guild.chunked:
+        await inter.guild.chunk()
     snap = make_server_snapshot(inter.guild)
     save_snapshot(inter.guild.id, snap)          # النسخة الخفيفة (رتب + رومات + إعدادات)
     await inter.followup.send("⏳ أنسخ الكلام والإيموجيات... انتظر شوي.", ephemeral=True)
@@ -5117,6 +5133,160 @@ async def clone_backup(inter: discord.Interaction, الرسايل: app_commands.
         f"**إعدادات البوت:** {sum(len(v) for v in snap['bot_data'].values())} سطر\n\n"
         + ("📩 أرسلت لك الملف في الخاص، احتفظ فيه." if sent_dm else "⚠️ ما قدرت أرسل لك في الخاص. افتح الخاص وأعد الأمر.")
     )), ephemeral=True)
+
+
+db.execute("CREATE TABLE IF NOT EXISTS restore_members (guild_id INTEGER, user_id INTEGER, roles TEXT, nick TEXT, PRIMARY KEY (guild_id, user_id))")
+db.commit()
+
+
+async def apply_restored_member(member: discord.Member) -> int:
+    """يرجّع للعضو رتبه واسمه من السيرفر القديم (لو موجود في النسخة)"""
+    row = db.execute("SELECT roles, nick FROM restore_members WHERE guild_id = ? AND user_id = ?",
+                     (member.guild.id, member.id)).fetchone()
+    if not row:
+        return 0
+    roles = [r for r in (member.guild.get_role(i) for i in json.loads(row[0] or "[]"))
+             if r and r < member.guild.me.top_role and not r.managed and r not in member.roles]
+    try:
+        if roles:
+            await member.add_roles(*roles, reason="استرجاع رتب السيرفر القديم")
+        if row[1] and member.id != member.guild.owner_id:
+            await member.edit(nick=row[1][:32])
+    except discord.HTTPException:
+        pass
+    db.execute("DELETE FROM restore_members WHERE guild_id = ? AND user_id = ?", (member.guild.id, member.id))
+    db.commit()
+    return 1
+
+
+# ---------- مكان اللوحات (عشان ترجع في مكانها بعد الاسترجاع) ----------
+db.execute("CREATE TABLE IF NOT EXISTS panels (guild_id INTEGER, kind TEXT, channel_id INTEGER, args TEXT, PRIMARY KEY (guild_id, kind, channel_id))")
+db.commit()
+
+
+def register_panel(gid: int, kind: str, channel_id: int, args: dict):
+    db.execute("INSERT OR REPLACE INTO panels VALUES (?, ?, ?, ?)", (gid, kind, channel_id, json.dumps(args, ensure_ascii=False)))
+    db.commit()
+
+
+async def post_ticket_panel(guild: discord.Guild, ch, buttons: bool, slots=None, desc=None):
+    types_ = [t for t in get_ticket_types(guild.id) if (t["slot"] in slots if slots else (t["slot"] > 10) == buttons)]
+    if not types_:
+        return False
+    slots = [t["slot"] for t in types_]
+    lines = "\n".join(f"{t['emoji'] or '🎫'} - {t['name']}" for t in types_)
+    e = embed("🎫 - التذاكر", (desc or f"- مرحبا بك عزيزي العضو في قسم التذاكر الخاص بـ **{config.SERVER_NAME}** .\n\n"
+                               + ("اضغط على الزر حق التذكرة اللي تبيها ." if buttons else "اختر نوع التذكرة من القائمة اللي تحت ."))
+              + f"\n\n{lines}")
+    pfile, _ = ticket_image_file(guild.id, 0)
+    pfile.filename = "panel" + os.path.splitext(pfile.filename)[1]
+    e.set_image(url=f"attachment://{pfile.filename}")
+    await ch.send(embed=e, file=pfile, view=ticket_buttons_panel(guild.id, slots) if buttons else ticket_select(guild.id, slots))
+    return True
+
+
+async def post_app_panel(guild: discord.Guild, ch, desc=None):
+    types_ = get_app_types(guild.id)
+    if not types_:
+        return False
+    lines = "\n".join(f"{t['emoji'] or '📝'} - {t['name']}" for t in types_)
+    e = embed("📝 - التقديمات", (desc or f"- مرحبا بك في قسم التقديمات الخاص بـ **{config.SERVER_NAME}** .\n\n"
+                                       "اختر التقديم من القائمة وجاوب على الأسئلة .") + f"\n\n{lines}")
+    await ch.send(embed=e, view=app_select_view(guild.id))
+    return True
+
+
+def _norm(name: str) -> str:
+    n = re.sub(r"[ـ\-_\s|┊︙・•.]", "", (name or "").lower())
+    return n.translate(str.maketrans({"ة": "ه", "ى": "ي", "أ": "ا", "إ": "ا", "آ": "ا", "ؤ": "و", "ئ": "ي"}))
+
+
+def _guess_channel(guild: discord.Guild, words):
+    for ch in guild.text_channels:
+        n = _norm(ch.name)
+        if any(w in n for w in words):
+            return ch
+    return None
+
+
+async def resend_panels(guild: discord.Guild) -> list:
+    """يرسل لوحات التذاكر والتقديمات في أماكنها (المحفوظة، أو يخمّنها من اسم الروم)"""
+    done = []
+    rows = db.execute("SELECT kind, channel_id, args FROM panels WHERE guild_id = ?", (guild.id,)).fetchall()
+    kinds = {r[0] for r in rows if guild.get_channel(r[1])}
+    for kind, cid, args in rows:
+        ch = guild.get_channel(cid)
+        if not isinstance(ch, discord.TextChannel):
+            continue
+        a = json.loads(args or "{}")
+        try:
+            ok = (await post_ticket_panel(guild, ch, a.get("buttons", False), a.get("slots"), a.get("desc"))
+                  if kind.startswith("tickets") else await post_app_panel(guild, ch, a.get("desc")))
+            if ok:
+                done.append(f"{'🎫 التذاكر' if kind.startswith('tickets') else '📝 التقديمات'} ← {ch.mention}")
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(1)
+    if not any(k.startswith("tickets") for k in kinds):  # ما نعرف مكانها: نخمّن من اسم الروم
+        # 1) كل تذكرة في الروم اللي اسمه فيه اسمها (جمارك، مساعدة، شكوى، طلب قيادة...)
+        placed = {}
+        for t in get_ticket_types(guild.id):
+            tn = _norm(t["name"])
+            if len(tn) < 3:
+                continue
+            ch_ = next((c for c in guild.text_channels if tn in _norm(c.name) or _norm(c.name).endswith(tn)), None)
+            if ch_ is None:  # جرّب كل كلمة من اسم التذكرة (مثل: شكوى من "تذكرة شكوى")
+                for w in [_norm(x) for x in re.split(r"[\s\-ـ]+", t["name"]) if len(_norm(x)) >= 4 and _norm(x) not in ("تذكره", "تذاكر")]:
+                    ch_ = next((c for c in guild.text_channels if w in _norm(c.name)), None)
+                    if ch_:
+                        break
+            if ch_:
+                placed.setdefault(ch_.id, []).append(t["slot"])
+        for cid_, slots_ in placed.items():
+            ch_ = guild.get_channel(cid_)
+            for buttons in (False, True):
+                part = [x for x in slots_ if (x > 10) == buttons]
+                if not part:
+                    continue
+                try:
+                    if await post_ticket_panel(guild, ch_, buttons, part):
+                        register_panel(guild.id, "tickets_btn" if buttons else "tickets", ch_.id, {"buttons": buttons, "slots": part})
+                        done.append(f"🎫 {'، '.join(t['name'] for t in get_ticket_types(guild.id) if t['slot'] in part)} ← {ch_.mention}")
+                except discord.HTTPException:
+                    pass
+                await asyncio.sleep(1)
+        # 2) لو ما لقى روم لأي تذكرة: روم عام اسمه تذاكر
+        ch = None if placed else _guess_channel(guild, ("تذاكر", "تذكره", "تكت", "ticket"))
+        if ch:
+            for buttons in (False, True):
+                try:
+                    if await post_ticket_panel(guild, ch, buttons):
+                        register_panel(guild.id, "tickets_btn" if buttons else "tickets", ch.id, {"buttons": buttons})
+                        done.append(f"🎫 التذاكر ({'أزرار' if buttons else 'منيو'}) ← {ch.mention}")
+                except discord.HTTPException:
+                    pass
+    if "apps" not in kinds:
+        ch = _guess_channel(guild, ("تقديم", "تقديمات", "apply"))
+        if ch:
+            try:
+                if await post_app_panel(guild, ch):
+                    register_panel(guild.id, "apps", ch.id, {})
+                    done.append(f"📝 التقديمات ← {ch.mention}")
+            except discord.HTTPException:
+                pass
+    return done
+
+
+@bot.tree.command(name="اعادة_اللوحات", description="يرجّع لوحات التذاكر والتقديمات في أماكنها القديمة")
+async def resend_panels_cmd(inter: discord.Interaction):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    done = await resend_panels(inter.guild)
+    await inter.followup.send(embed=embed("🔁 إعادة اللوحات", (
+        "\n".join(done) if done else
+        "ما قدرت أرسل شي. تأكد إن التذاكر والتقديمات مسطّبة (/قائمة_التذاكر)، "
+        "أو أرسلها بيدك مرة وحدة بـ /ارسال_التذاكر و /ارسال_التقديمات وبعدها يحفظ البوت مكانها.")), ephemeral=True)
 
 
 async def order_roles_like(guild: discord.Guild, snap: dict) -> int:
@@ -5296,6 +5466,35 @@ async def _restore_server(target: discord.Guild, snap: dict, status_ch, wipe: bo
     db.commit()
     if snap.get("media"):
         await restore_media(target, snap["media"], ids, say)
+    if not (snap.get("media") or {}).get("messages"):  # ما فيه كلام منسوخ ← نرسل اللوحات في أماكنها
+        placed = await resend_panels(target)
+        if placed:
+            await say("🎫 رجّعت اللوحات في أماكنها:\n" + "\n".join(placed))
+    # شكل السيرفر: الاسم والصورة والبانر
+    try:
+        kw = {"name": snap.get("name") or target.name}
+        media = snap.get("media") or {}
+        if media.get("icon"):
+            kw["icon"] = base64.b64decode(media["icon"])
+        if media.get("banner") and "BANNER" in target.features:
+            kw["banner"] = base64.b64decode(media["banner"])
+        await target.edit(**kw, reason="استرجاع السيرفر")
+    except (discord.HTTPException, ValueError):
+        pass
+    # رتب الأعضاء: اللي موجود ياخذها الحين، واللي يدخل بعدين ياخذها أول ما يدخل
+    db.execute("DELETE FROM restore_members WHERE guild_id = ?", (target.id,))
+    given = 0
+    for m in snap.get("members", []):
+        new_roles = [ids[r] for r in m.get("roles", []) if r in ids]
+        if not new_roles and not m.get("nick"):
+            continue
+        db.execute("INSERT OR REPLACE INTO restore_members VALUES (?, ?, ?, ?)",
+                   (target.id, m["id"], json.dumps(new_roles), m.get("nick")))
+        if target.get_member(m["id"]):
+            given += await apply_restored_member(target.get_member(m["id"]))
+    db.commit()
+    if snap.get("members"):
+        await say(f"👥 رجّعت رتب **{given}** عضو موجود، والباقي ياخذون رتبهم وأسماءهم أول ما يدخلون ✅")
     await say(f"✅ **خلص الاسترجاع!**\nرتب: {len(created)} · رومات وكاتيجوري: {len(cmap)} · إعدادات البوت: {n}\n\n"
               "📌 ارفع رتبة البوت فوق. ولو لوحة ما اشتغلت، أعد إرسالها. واحذف هالروم لو تبي.")
 
@@ -5371,12 +5570,44 @@ async def restore_prefix(message: discord.Message):
     asyncio.create_task(_restore_server(g, snap, message.channel, wipe))
 
 
+async def clone_from_prefix(message: discord.Message):
+    """-نسخ_من ايدي_السيرفر : ينسخ سيرفر ثاني (البوت فيه) لهذا السيرفر مباشرة، بكل شي"""
+    g = message.guild
+    parts = message.content.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await message.reply("❌ الاستخدام: `-نسخ_من ايدي_السيرفر_اللي_تبي_تنسخه`")
+    src = bot.get_guild(int(parts[1]))
+    if src is None:
+        return await message.reply("❌ البوت مو موجود في ذاك السيرفر. دخّله فيه أول.")
+    if src.id == g.id:
+        return await message.reply("❌ هذا نفس السيرفر.")
+    is_bot_owner = await bot.is_owner(message.author)
+    if message.author.id != g.owner_id or (src.owner_id != message.author.id and not is_bot_owner):
+        return await message.reply("❌ لازم تكون صاحب السيرفرين.")
+    if not g.me.guild_permissions.administrator:
+        return await message.reply("❌ عطني **Administrator** هنا أول.")
+    status = await message.reply(f"⏳ أنسخ **{src.name}** (رتب، رومات، كلام، إيموجيات، رتب الأعضاء)... انتظر.")
+    if not src.chunked:
+        await src.chunk()
+    snap = make_server_snapshot(src)
+    save_snapshot(src.id, snap)
+    snap["media"] = await collect_media(src, 50)
+    save_full(src.id, snap)
+    try:
+        await status.edit(content=f"🛡️ خلصت النسخ، أبدأ أحطه هنا... تابع الرسايل تحت.")
+    except discord.HTTPException:
+        pass
+    asyncio.create_task(_restore_server(g, snap, message.channel, len(g.channels) <= 10))
+
+
 async def auto_server_snapshot():
     """كل 24 ساعة يحدّث نسخة كل سيرفر (تنحفظ مع النسخة الاحتياطية)"""
     await bot.wait_until_ready()
     while not bot.is_closed():
         for g in bot.guilds:
             try:
+                if not g.chunked:
+                    await g.chunk()
                 save_snapshot(g.id, make_server_snapshot(g))
             except Exception as ex:  # noqa
                 print("snapshot error:", ex)
@@ -5653,6 +5884,8 @@ async def on_member_join(member: discord.Member):
                 return
             except discord.HTTPException:
                 pass
+    if await apply_restored_member(member):
+        return  # رجعت له رتبه القديمة
     await give_auto_roles(member)
 
 

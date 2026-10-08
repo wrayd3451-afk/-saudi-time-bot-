@@ -5716,6 +5716,18 @@ async def copy_messages_cmd(inter: discord.Interaction, ايدي_السيرفر:
     await say("✅ خلص نسخ الكلام")
 
 
+OLD_DECORS = ["⎧║-◞-ᵀˢ", "⎧║◞ᵀˢ", "⎧║-◞ᵀˢ", "⎧║◞-ᵀˢ"]  # زخارف قديمة تنشال
+
+
+def strip_old_decor(name: str) -> str:
+    n = name
+    for d in sorted(OLD_DECORS, key=len, reverse=True):
+        n = n.replace(d, "")
+    if n != name:
+        n = re.sub(r"[-\s]{2,}", "-", n).strip("-_ ")
+    return n
+
+
 OLD_TS_PREFIX = re.compile(r"^\s*(ts|ᴛꜱ|TS)\s*[┊|︙:・•\-]*\s*", re.I)
 
 
@@ -5727,7 +5739,7 @@ def decorated_name(name: str, suffix: str, sep: str, strip_old: bool) -> str:
 
 @bot.tree.command(name="تزيين_الرومات", description="يضيف ┊ᴛꜱ لآخر اسم كل روم ما فيه (مثل: تذكرة-شكاوى-┊ᴛꜱ)")
 @app_commands.describe(
-    الزخرفة="اللي ينضاف آخر الاسم (الافتراضي: ┊ ᴛꜱ)",
+    الزخرفة="اللي ينضاف آخر الاسم (الافتراضي: ┊ᴛꜱ)",
     الصوتية="تشمل الرومات الصوتية؟",
     الكاتيجوري="تشمل الكاتيجوري؟",
     تجربة="يعرض لك وش بيتغير بدون ما يغيّر شي",
@@ -5737,12 +5749,12 @@ def decorated_name(name: str, suffix: str, sep: str, strip_old: bool) -> str:
     الكاتيجوري=[app_commands.Choice(name="نعم", value=1), app_commands.Choice(name="لا", value=0)],
     تجربة=[app_commands.Choice(name="نعم، وريني بس", value=1)],
 )
-async def decorate_channels(inter: discord.Interaction, الزخرفة: str = "┊ ᴛꜱ",
+async def decorate_channels(inter: discord.Interaction, الزخرفة: str = "┊ᴛꜱ",
                             الصوتية: app_commands.Choice[int] = None, الكاتيجوري: app_commands.Choice[int] = None,
                             تجربة: app_commands.Choice[int] = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
-    suffix = الزخرفة.strip() or "┊ ᴛꜱ"
+    suffix = الزخرفة.strip() or "┊ᴛꜱ"
     voice = الصوتية is None or الصوتية.value == 1
     cats = bool(الكاتيجوري and الكاتيجوري.value == 1)
     targets = []
@@ -5751,13 +5763,16 @@ async def decorate_channels(inter: discord.Interaction, الزخرفة: str = "�
             continue
         if isinstance(ch, (discord.VoiceChannel, discord.StageChannel)) and not voice:
             continue
+        cleaned = strip_old_decor(ch.name)  # نشيل الزخرفة القديمة ⎧║-◞-ᵀˢ
         # أي روم مزخرف من قبل (فيه ┊ أو ᴛꜱ) نخليه بشكله ولا نلمسه
-        if ch.name == BACKUP_CH_NAME or suffix in ch.name or "┊" in ch.name or "ᴛꜱ" in ch.name:
+        if ch.name == BACKUP_CH_NAME or suffix in cleaned or "┊" in cleaned or "ᴛꜱ" in cleaned:
+            if cleaned != ch.name and cleaned:
+                targets.append((ch, cleaned))
             continue
         text_like = isinstance(ch, (discord.TextChannel, discord.ForumChannel))
         # الرومات الكتابية ما تقبل مسافة عادية، فنحط مسافة خاصة تبين مثل المسافة
         suf = suffix.replace(" ", "\u2005") if text_like else suffix
-        new = decorated_name(ch.name, suf, "-" if text_like else " ", False)
+        new = decorated_name(cleaned or ch.name, suf, "-" if text_like else " ", False)
         if new != ch.name:
             targets.append((ch, new))
     if not targets:

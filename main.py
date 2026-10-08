@@ -1400,6 +1400,17 @@ async def on_message(message: discord.Message):
             f"**يكتب هنا:** {'✅' if p.send_messages else '❌'}\n"
             f"**أنت صاحب السيرفر:** {'✅' if message.author.id == message.guild.owner_id else '❌'}\n"
             "**النسخ المحفوظة:** " + str(db.execute("SELECT COUNT(*) FROM assets WHERE key = 'server_clone'").fetchone()[0]))
+    if first in (["-مساعده"], ["-مساعدة"], ["-دعم"]):
+        if not is_power(message.author):
+            return
+        problem = await post_support_panel(message.guild, message.channel)
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+        if problem:
+            await message.channel.send(problem, delete_after=15)
+        return
     if first == ["-استرجاع"]:
         try:
             return await restore_prefix(message)
@@ -1870,7 +1881,9 @@ def ticket_select(guild_id: int, slots=None) -> discord.ui.View:
         discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=t["emoji"] or None)
         for t in get_ticket_types(guild_id) if (t["slot"] in slots if slots else t["slot"] <= 10)
     ]
-    view.add_item(discord.ui.Select(custom_id="ticket:open", placeholder="- اختر نوع التذكرة .", options=options))
+    options.append(discord.SelectOption(label="إعادة الاختيار", value="reset", emoji="🔄",
+                                        description="ترجّع القائمة من جديد"))
+    view.add_item(discord.ui.Select(custom_id="ticket:open", placeholder="- اختر نوع التذكرة .", options=options[:25]))
     return view
 
 
@@ -1917,17 +1930,12 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
              "ما سطّبت ولا تذكرة " + ("من 11 إلى 20 (الأزرار)." if buttons else "من 1 إلى 10 (المنيو)."))
             + " شف /تسطيب_تذكرة"), ephemeral=True)
     slots = [t["slot"] for t in types]
-    lines = "\n".join(f"{t['emoji'] or '🎫'} - {t['name']}" for t in types)
-    e = embed(
-        "🎫 - التذاكر",
-        (الوصف or f"- مرحبا بك عزيزي العضو في قسم التذاكر الخاص بـ **{config.SERVER_NAME}** .\n\n"
-                  + ("اضغط على الزر حق التذكرة اللي تبيها ." if buttons else "اختر نوع التذكرة من القائمة اللي تحت .")) + f"\n\n{lines}",
-    )
+    e = ticket_panel_embed(inter.guild, types, buttons, الوصف)
     if الصورة is not None and (الصورة.content_type or "").startswith("image/"):
         ext = os.path.splitext(الصورة.filename)[1].lower() or ".png"
         pfile = discord.File(io.BytesIO(await الصورة.read()), filename=f"panel{ext}")
     else:
-        pfile, _ = ticket_image_file(inter.guild.id, 0)
+        pfile, _ = ticket_image_file(inter.guild.id, -1)
         pfile.filename = "panel" + os.path.splitext(pfile.filename)[1]
     e.set_image(url=f"attachment://{pfile.filename}")
     try:
@@ -1991,6 +1999,82 @@ async def setup_ticket_supervisor(inter: discord.Interaction, الرتبة: disc
         f"**كل المشرفين:**\n{allv}\n\nالمشرف يشوف التذكرة دايم حتى بعد ما تنستلم، ويقدر يقفلها.")), ephemeral=True)
 
 
+# ---------- تصميم التذاكر ----------
+TK_DEFAULTS = {"tk_sep": "━━━━━━━━━━━━━━━━━━", "tk_dot": "◈", "tk_title_emoji": "🎫",
+               "tk_title": "تـذاكـر الـسـيـرفـر", "tk_desc": ""}
+
+
+def tk(gid: int, key: str) -> str:
+    return get_text(gid, key, TK_DEFAULTS[key]) or TK_DEFAULTS[key]
+
+
+def ticket_panel_embed(guild: discord.Guild, types_, buttons: bool, desc=None, title=None) -> discord.Embed:
+    gid = guild.id
+    if len(types_) == 1 and not desc:  # تذكرة وحدة ولها كلام برا خاص
+        custom = get_text(gid, f"tk_out_{types_[0]['slot']}", "") if "slot" in types_[0].keys() else ""
+        if custom:
+            e = discord.Embed(description=custom[:4000], color=0x006C35)
+            e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
+            return e
+    sep, dot = tk(gid, "tk_sep"), tk(gid, "tk_dot")
+    lines = "\n".join(f"> {t['emoji'] or dot} **{t['name']}**" for t in types_)
+    body = (desc or tk(gid, "tk_desc") or
+            f"**مـرحـبـا بـك فـي قـسـم الـتـذاكـر الـخـاص بـ {config.SERVER_NAME}** 💚\n"
+            f"{dot} اختر التذكرة المناسبة لطلبك وبيتم خدمتك بأسرع وقت .")
+    how = "🔘 اضغط على زر التذكرة اللي تبيها ." if buttons else "📋 اختر نوع التذكرة من القائمة اللي تحت ."
+    e = discord.Embed(title=f"{tk(gid, 'tk_title_emoji')} | {title or tk(gid, 'tk_title')}",
+                      description=f"{body}\n\n{sep}\n{lines}\n{sep}\n\n{how}\n"
+                                  f"⚠️ يمنع فتح تذكرة بدون سبب .", color=0x006C35, timestamp=now())
+    if guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
+        e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url)
+    else:
+        e.set_footer(text=config.SERVER_NAME)
+    return e
+
+
+def ticket_welcome_embed(guild: discord.Guild, ttype, user, num: int) -> discord.Embed:
+    gid = guild.id
+    sep, dot = tk(gid, "tk_sep"), tk(gid, "tk_dot")
+    e = discord.Embed(
+        title=f"{ttype['emoji'] or tk(gid, 'tk_title_emoji')} | {ttype['name']}",
+        description=(f"**مـرحـبـا بـك {user.mention} فـي قـسـم ( {ttype['name']} )** 💚\n\n"
+                     f"{ttype['welcome'] or ''}\n\n{sep}\n"
+                     f"{dot} **صاحب التذكرة :** {user.mention}\n"
+                     f"{dot} **رقم التذكرة :** `#{num}`\n"
+                     f"{dot} **وقت الفتح :** <t:{int(now().timestamp())}:R>\n{sep}\n\n"
+                     f"⏳ انتظر الإدارة تستلم تذكرتك، ولا تمنشن أحد ."),
+        color=0x006C35, timestamp=now())
+    e.set_thumbnail(url=user.display_avatar.url)
+    e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
+    return e
+
+
+@bot.tree.command(name="تصميم_التذاكر", description="تغيّر شكل التذاكر: الفاصل والإيموجيات والعنوان والوصف")
+@app_commands.describe(
+    الفاصل="الخط اللي يفصل (مثل ━━━━━━ أو ⋆⋅☆⋅⋆)", النقطة="الإيموجي قبل كل سطر (مثل ◈ أو إيموجي سيرفرك)",
+    ايموجي_العنوان="الإيموجي اللي جنب العنوان", العنوان="عنوان لوحة التذاكر", الوصف="الكلام اللي فوق في اللوحة",
+    ارجاع="يرجّع التصميم الافتراضي",
+)
+@app_commands.choices(ارجاع=[app_commands.Choice(name="نعم", value=1)])
+async def ticket_design(inter: discord.Interaction, الفاصل: str = None, النقطة: str = None, ايموجي_العنوان: str = None,
+                        العنوان: str = None, الوصف: str = None, ارجاع: app_commands.Choice[int] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    gid = inter.guild.id
+    if ارجاع:
+        for k in TK_DEFAULTS:
+            set_text(gid, k, "")
+    for k, v in (("tk_sep", الفاصل), ("tk_dot", النقطة), ("tk_title_emoji", ايموجي_العنوان),
+                 ("tk_title", العنوان), ("tk_desc", الوصف)):
+        if v:
+            set_text(gid, k, v.replace("\\n", "\n")[:1500])
+    types_ = get_ticket_types(gid)[:5]
+    demo = ticket_panel_embed(inter.guild, types_ or [{"emoji": "🛃", "name": "مثال"}], False)
+    await inter.response.send_message(content="👀 **هذا شكل اللوحة الحين** (أعد إرسالها بـ /ارسال_التذاكر أو /اعادة_اللوحات):",
+                                      embed=demo, ephemeral=True)
+
+
 # ---------- صور التذاكر ----------
 db.execute("CREATE TABLE IF NOT EXISTS ticket_images (guild_id INTEGER, slot INTEGER, data BLOB, filename TEXT, PRIMARY KEY (guild_id, slot))")
 db.commit()
@@ -1999,6 +2083,8 @@ db.commit()
 def ticket_image_file(guild_id: int, slot: int):
     """صورة التذكرة: صورتها الخاصة ← وإلا صورة كل التذاكر (0) ← وإلا صورة الخط الخضراء"""
     row = (db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = ?", (guild_id, slot)).fetchone()
+           or (db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = -1", (guild_id,)).fetchone()
+               if slot == 0 else None)
            or db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = 0", (guild_id,)).fetchone()
            or db.execute("SELECT data, filename FROM line_images WHERE guild_id = ?", (guild_id,)).fetchone())
     if row:
@@ -2013,14 +2099,21 @@ def ticket_image_file(guild_id: int, slot: int):
 @bot.tree.command(name="صورة_التذاكر", description="تحط صورة تطلع داخل التذاكر (لكل التذاكر أو لتذكرة معينة)")
 @app_commands.describe(
     صورة="ارفع الصورة (اتركها فاضية عشان تحذف الصورة)",
-    رقم_التذكرة="رقم التذكرة من 1 إلى 20 (فاضي = كل التذاكر)",
+    المكان="وين تطلع الصورة: برا (لوحة التذاكر) أو داخل التذكرة",
+    رقم_التذكرة="لداخل التذكرة: رقم التذكرة من 1 إلى 20 (فاضي = كل التذاكر)",
 )
+@app_commands.choices(المكان=[app_commands.Choice(name="برا (لوحة التذاكر)", value="out"),
+                              app_commands.Choice(name="داخل التذكرة", value="in")])
 async def set_ticket_image(inter: discord.Interaction, صورة: discord.Attachment = None,
+                           المكان: app_commands.Choice[str] = None,
                            رقم_التذكرة: app_commands.Range[int, 1, 20] = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
-    slot = رقم_التذكرة or 0
-    where = f"التذكرة رقم {slot}" if slot else "كل التذاكر"
+    if المكان and المكان.value == "out":
+        slot, where = -1, "لوحة التذاكر (برا)"
+    else:
+        slot = رقم_التذكرة or 0
+        where = f"داخل التذكرة رقم {slot}" if slot else "داخل كل التذاكر"
     if صورة is None:
         db.execute("DELETE FROM ticket_images WHERE guild_id = ? AND slot = ?", (inter.guild.id, slot))
         db.commit()
@@ -2111,16 +2204,26 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
         (ch.id, guild.id, inter.user.id, slot, now().isoformat()),
     )
     db.commit()
-    e = embed(
-        f"{ttype['emoji'] or '🎫'} - {ttype['name']}",
-        f"**- مرحبا بك عزيزي العضو في قسم ( {ttype['name']} ) .**\n\n📄 - {ttype['welcome']}\n\n"
-        f"مُقدم الطلب : ( {inter.user.mention} )",
-    )
+    custom_in = get_text(guild.id, f"tk_in_{slot}", "")
+    if custom_in:  # كلام داخل التذكرة اللي حطه صاحب السيرفر
+        here = re.search(r"@(here|everyone)", custom_in)
+        body = re.sub(r"^\s*@(here|everyone)\s*", "", custom_in).strip()
+        e = discord.Embed(title=f"{ttype['emoji'] or '🎫'} | {ttype['name']}", description=body[:4000],
+                          color=0x006C35, timestamp=now())
+        e.add_field(name="👤 صاحب التذكرة", value=inter.user.mention)
+        e.add_field(name="🎫 رقم التذكرة", value=f"`#{num}`")
+        e.set_thumbnail(url=inter.user.display_avatar.url)
+        e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
+    else:
+        here = None
+        e = ticket_welcome_embed(guild, ttype, inter.user, num)
     ping = staff.mention if staff and (ttype["ping_staff"] if ttype["ping_staff"] is not None else 1) else ""
     claim_on = bool(ttype["claim_on"] if ttype["claim_on"] is not None else 1)
     f, url = ticket_image_file(guild.id, slot)
     e.set_image(url=url)
-    await ch.send(content=f"{inter.user.mention} {ping}", embed=e, view=ticket_buttons(claim_on), file=f)
+    await ch.send(content=f"{inter.user.mention} {ping} {('@' + here.group(1)) if here else ''}".strip(), embed=e,
+                  view=ticket_buttons(claim_on), file=f,
+                  allowed_mentions=discord.AllowedMentions(everyone=True, roles=True, users=True))
     await inter.followup.send(embed=embed("✅ انفتحت تذكرتك", ch.mention), ephemeral=True)
     await log(f"{inter.user.mention} فتح تذكرة **{ttype['name']}** {ch.mention}", guild)
 
@@ -3693,7 +3796,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من", "فحص", "بنق"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من", "فحص", "بنق", "مساعده", "مساعدة", "دعم"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -4752,32 +4855,35 @@ async def suggestion_check(message: discord.Message) -> bool:
 # فتح وقفل الرومات: كل الرتب اللي في صلاحيات الروم
 # ============================================================
 async def _room_apply(guild: discord.Guild, ch, user, open_: bool):
+    """القفل = ما أحد يكتب بس (الكل يشوف الروم عادي). الفتح = يرجع الكتابة (ويرجّع العرض لو كان مقفول بالغلط)"""
     me = guild.me
     roles = [t for t in ch.overwrites if isinstance(t, discord.Role)
              and t not in me.roles and not t.managed and not t.permissions.administrator]
+    if guild.default_role not in roles:
+        roles.append(guild.default_role)
     changed, failed = [], []
     for role in roles:
-        if role.is_default() and open_:
-            continue  # @everyone ما نفتحه، الروم يبقى للرتب اللي حاطها بس
         ow = ch.overwrites_for(role)
         if open_:
-            ow.update(view_channel=True, send_messages=True, read_message_history=True)
+            if role.is_default():
+                if ow.send_messages is False:
+                    ow.update(send_messages=None, send_messages_in_threads=None)
+                else:
+                    continue
+            else:
+                ow.update(send_messages=True, send_messages_in_threads=None)
+                if ow.view_channel is False:  # لو انقفل عرضه بالقفل القديم نرجعه
+                    ow.update(view_channel=True, read_message_history=True)
         else:
-            ow.update(view_channel=False, send_messages=False)
+            ow.update(send_messages=False, send_messages_in_threads=False)  # ما نلمس العرض أبدًا
         try:
-            await ch.set_permissions(role, overwrite=ow, reason=f"{'فتح' if open_ else 'قفل'} الروم بواسطة {user}")
+            await ch.set_permissions(role, overwrite=None if ow.is_empty() else ow,
+                                     reason=f"{'فتح' if open_ else 'قفل'} الروم بواسطة {user}")
             changed.append(role.mention)
         except discord.HTTPException:
             failed.append(role.name)
         await asyncio.sleep(0.3)
-    if not open_ and guild.default_role not in roles:
-        try:  # نتأكد إن @everyone ما يشوف الروم وهو مقفول
-            ow = ch.overwrites_for(guild.default_role)
-            ow.update(view_channel=False, send_messages=False)
-            await ch.set_permissions(guild.default_role, overwrite=ow)
-        except discord.HTTPException:
-            pass
-    await log(f"{user.mention} {'فتح' if open_ else 'قفل'} الروم {ch.mention}"
+    await log(f"{user.mention} {'فتح' if open_ else 'قفل'} الكتابة في {ch.mention}"
               + (f" ⚠️ ما قدرت أعدّل: {'، '.join(failed)} (خل رتبة البوت فوقها)" if failed else ""), guild)
     return changed, failed
 
@@ -4797,10 +4903,10 @@ async def _toggle_room(inter: discord.Interaction, room, open_: bool):
     await inter.response.defer(ephemeral=True)
     await _room_apply(inter.guild, ch, inter.user, open_)
     try:
-        await ch.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم")
+        await ch.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم (الكتابة)")
     except discord.HTTPException:
         pass
-    await inter.followup.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم", ephemeral=True)
+    await inter.followup.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم (الكتابة)", ephemeral=True)
 
 
 async def room_prefix(message: discord.Message, open_: bool):
@@ -4809,18 +4915,18 @@ async def room_prefix(message: discord.Message, open_: bool):
         return await message.reply(embed=err("هذا الأمر للأدمن والأونر بس."))
     await _room_apply(message.guild, message.channel, message.author, open_)
     try:
-        await message.channel.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم")
+        await message.channel.send("🔓 تم فتح الروم" if open_ else "🔒 تم قفل الروم (الكتابة)")
     except discord.HTTPException:
         pass
 
 
-@bot.tree.command(name="فتح_روم", description="يفتح الروم: يعطي كل الرتب اللي في صلاحياته عرض + كتابة")
+@bot.tree.command(name="فتح_روم", description="يفتح الكتابة في الروم لكل الرتب اللي فيه")
 @app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
 async def open_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
     await _toggle_room(inter, الروم, True)
 
 
-@bot.tree.command(name="قفل_روم", description="يقفل الروم: يشيل العرض والكتابة من كل الرتب اللي في صلاحياته")
+@bot.tree.command(name="قفل_روم", description="يقفل الكتابة في الروم (الكل يشوفه بس ما أحد يكتب)")
 @app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
 async def close_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
     await _toggle_room(inter, الروم, False)
@@ -5199,11 +5305,8 @@ async def post_ticket_panel(guild: discord.Guild, ch, buttons: bool, slots=None,
     if not types_:
         return False
     slots = [t["slot"] for t in types_]
-    lines = "\n".join(f"{t['emoji'] or '🎫'} - {t['name']}" for t in types_)
-    e = embed("🎫 - التذاكر", (desc or f"- مرحبا بك عزيزي العضو في قسم التذاكر الخاص بـ **{config.SERVER_NAME}** .\n\n"
-                               + ("اضغط على الزر حق التذكرة اللي تبيها ." if buttons else "اختر نوع التذكرة من القائمة اللي تحت ."))
-              + f"\n\n{lines}")
-    pfile, _ = ticket_image_file(guild.id, 0)
+    e = ticket_panel_embed(guild, types_, buttons, desc)
+    pfile, _ = ticket_image_file(guild.id, -1)
     pfile.filename = "panel" + os.path.splitext(pfile.filename)[1]
     e.set_image(url=f"attachment://{pfile.filename}")
     await ch.send(embed=e, file=pfile, view=ticket_buttons_panel(guild.id, slots) if buttons else ticket_select(guild.id, slots))
@@ -5222,7 +5325,7 @@ async def post_app_panel(guild: discord.Guild, ch, desc=None):
 
 
 def _norm(name: str) -> str:
-    n = re.sub(r"[ـ\-_\s|┊︙・•.]", "", (name or "").lower())
+    n = re.sub(r"[ـ\-_\s|┊︙・•.\u064B-\u0652\u0670]", "", (name or "").lower())
     return n.translate(str.maketrans({"ة": "ه", "ى": "ي", "أ": "ا", "إ": "ا", "آ": "ا", "ؤ": "و", "ئ": "ي"}))
 
 
@@ -5245,6 +5348,10 @@ async def resend_panels(guild: discord.Guild) -> list:
             continue
         a = json.loads(args or "{}")
         try:
+            if kind == "support":
+                if not await post_support_panel(guild, ch):
+                    done.append(f"🛠️ لوحة الدعم ← {ch.mention}")
+                continue
             ok = (await post_ticket_panel(guild, ch, a.get("buttons", False), a.get("slots"), a.get("desc"))
                   if kind.startswith("tickets") else await post_app_panel(guild, ch, a.get("desc")))
             if ok:
@@ -6663,6 +6770,102 @@ async def handle_enlist(inter: discord.Interaction, cid: str):
             pass
 
 
+# ============================================================
+# لوحة الدعم: المساعدة + الشكاوى في رسالة وحدة بزرين، وكل تذكرة لها كلام برا وداخل
+# ============================================================
+SUPPORT_TEXTS = {
+    "help_out": ("# 🛠️ قسم المساعدة والدعم الفني\n\n"
+                 "> **أهلاً بك يا غالي في سيرفر سعودي تايم! 🌟**\n"
+                 "> تواجه مشكلة؟ عندك استفسار أو تحتاج مساعدة بشي معين؟ \n> \n"
+                 "> لا تشيل هم، اضغط على الزر أدناه لفتح تذكرة مساعدة، وفريق الإدارة راح يكون معك بأسرع وقت لخدمتك! 🚀\n\n"
+                 "👇 **اضغط على الزر أدناه لفتح تذكرة المساعدة**"),
+    "help_in": ("@here\n> **أهلاً بك في تذكرة المساعدة! 🎫**\n"
+                "> نورتنا يا غالي. تفضل اطرح مشكلتك أو استفسارك بالتفصيل، ووضح كل التفاصيل عشان نقدر نساعدك صح.\n> \n"
+                "> ⏳ *يرجى الانتظار، وسيتم الرد عليك من أحد أفراد فريق الإدارة فوراً.*"),
+    "comp_out": ("# ⚠️ قسم الشكاوى والبلاغات\n\n"
+                 "> **مرحباً بك في سيرفر سعودي تايم! 🌟**\n"
+                 "> إذا تعرضت لأي إزعاج، مشكلة مع أحد الاعضاء، أو تبي تقدم شكوى إدارية بحق شخص معين:\n> \n"
+                 "> اضغط على الزر أدناه لفتح تذكرة شكوى خاصة وسرية، وحقك ما راح يضيع أبداً! 🛡️\n\n"
+                 "👇 **اضغط على الزر أدناه لفتح تذكرة الشكوى**"),
+    "comp_in": ("@here\n> **أهلاً بك في تذكرة الشكاوى! 🛡️**\n"
+                "> حرصاً منا على راحتك وعدم التعرض لأي إزعاج، يرجى كتابة تفاصيل الشكوى كاملة مع إرفاق الأدلة "
+                "(صور أو مقاطع فيديو إن وجدت).\n> \n"
+                "> ⏳ *سيتم مراجعة شكواك والرد عليك من قبل الإدارة العليا في أقرب وقت.*"),
+}
+
+
+def find_ticket_slot(gid: int, words) -> int:
+    for t in get_ticket_types(gid):
+        n = _norm(t["name"])
+        if any(w in n for w in words):
+            return t["slot"]
+    return 0
+
+
+def support_slots(gid: int):
+    return find_ticket_slot(gid, ("مساعد",)), find_ticket_slot(gid, ("شكو", "شكاو", "بلاغ"))
+
+
+async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment = None):
+    help_s, comp_s = support_slots(guild.id)
+    if not help_s or not comp_s:
+        return "ما لقيت تذكرة **مساعدة** و تذكرة **شكاوى**. سطّبهم بـ /تسطيب_تذكرة وخل أسماءهم فيها (مساعدة) و (شكاوى)."
+    # الكلام الافتراضي حق داخل التذكرة لو ما انحط قبل
+    for slot, key in ((help_s, "help_in"), (comp_s, "comp_in")):
+        if not get_text(guild.id, f"tk_in_{slot}", ""):
+            set_text(guild.id, f"tk_in_{slot}", SUPPORT_TEXTS[key])
+    e1 = discord.Embed(description=get_text(guild.id, f"tk_out_{help_s}", "") or SUPPORT_TEXTS["help_out"], color=0x006C35)
+    e2 = discord.Embed(description=get_text(guild.id, f"tk_out_{comp_s}", "") or SUPPORT_TEXTS["comp_out"], color=0x006C35)
+    if image is not None and (image.content_type or "").startswith("image/"):
+        f = discord.File(io.BytesIO(await image.read()), filename="support" + (os.path.splitext(image.filename)[1] or ".png"))
+    else:
+        f, _ = ticket_image_file(guild.id, -1)
+        f.filename = "support" + os.path.splitext(f.filename)[1]
+    e2.set_image(url=f"attachment://{f.filename}")
+    e2.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
+    await ch.send(embeds=[e1, e2], file=f, view=ticket_buttons_panel(guild.id, [help_s, comp_s]))
+    register_panel(guild.id, "support", ch.id, {})
+    return None
+
+
+@bot.tree.command(name="ارسال_الدعم", description="لوحة وحدة فيها تذكرة المساعدة وتذكرة الشكاوى بزرين")
+@app_commands.describe(الروم="الروم (فاضي = هنا)", الصورة="صورة تحت اللوحة (اختياري)")
+async def send_support_panel(inter: discord.Interaction, الروم: discord.TextChannel = None, الصورة: discord.Attachment = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    problem = await post_support_panel(inter.guild, الروم or inter.channel, الصورة)
+    await inter.followup.send(embed=err(problem) if problem else embed("✅ انرسلت لوحة الدعم", (الروم or inter.channel).mention),
+                              ephemeral=True)
+
+
+class TicketTextModal(discord.ui.Modal):
+    def __init__(self, gid: int, slot: int, where: str, current: str):
+        super().__init__(title=("كلام برا التذكرة" if where == "out" else "كلام داخل التذكرة"))
+        self.gid, self.slot, self.where = gid, slot, where
+        self.text = discord.ui.TextInput(label="الكلام (تقدر تحط إيموجيات و @here)", style=discord.TextStyle.paragraph,
+                                         default=current[:4000] if current else None, max_length=4000, required=False)
+        self.add_item(self.text)
+
+    async def on_submit(self, inter: discord.Interaction):
+        set_text(self.gid, f"tk_{self.where}_{self.slot}", self.text.value or "")
+        await inter.response.send_message(embed=embed("✅ انحفظ الكلام", (
+            f"التذكرة رقم **{self.slot}** ({'برا' if self.where == 'out' else 'داخل'})\n"
+            + ("رجع الكلام الافتراضي." if not self.text.value else
+               "يطلع في التذاكر الجديدة." if self.where == "in" else "أعد إرسال اللوحة عشان يطلع."))), ephemeral=True)
+
+
+@bot.tree.command(name="كلام_التذكرة", description="تكتب الكلام اللي يطلع برا التذكرة (اللوحة) أو داخلها")
+@app_commands.describe(رقم_التذكرة="رقم التذكرة (شوف /قائمة_التذاكر)", المكان="برا (اللوحة) أو داخل التذكرة")
+@app_commands.choices(المكان=[app_commands.Choice(name="برا (اللوحة)", value="out"),
+                              app_commands.Choice(name="داخل التذكرة", value="in")])
+async def ticket_text_cmd(inter: discord.Interaction, رقم_التذكرة: app_commands.Range[int, 1, 20], المكان: app_commands.Choice[str]):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    cur = get_text(inter.guild.id, f"tk_{المكان.value}_{رقم_التذكرة}", "")
+    await inter.response.send_modal(TicketTextModal(inter.guild.id, رقم_التذكرة, المكان.value, cur))
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type == discord.InteractionType.modal_submit and inter.guild \
@@ -6673,11 +6876,16 @@ async def on_interaction(inter: discord.Interaction):
     cid = (inter.data or {}).get("custom_id", "")
     if cid == "ticket:open":
         values = inter.data.get("values") or []
+        keep = [int(o.value) for row in inter.message.components for c in getattr(row, "children", [])
+                for o in getattr(c, "options", []) if str(o.value).isdigit()]
+        if values and values[0] == "reset":  # إعادة الاختيار
+            try:
+                return await inter.response.edit_message(view=ticket_select(inter.guild.id, keep or None))
+            except discord.HTTPException:
+                return
         if values:
             await open_ticket(inter, int(values[0]))
         try:  # نرجّع المنيو فاضي بنفس التذاكر اللي كانت فيه
-            keep = [int(o.value) for row in inter.message.components for c in getattr(row, "children", [])
-                    for o in getattr(c, "options", [])]
             await inter.message.edit(view=ticket_select(inter.guild.id, keep or None))
         except discord.HTTPException:
             pass

@@ -5087,7 +5087,7 @@ async def restore_media(target: discord.Guild, media: dict, ids: dict, say):
     if not total:
         return
     await say(f"💬 أرجّع الكلام ({total} رسالة)... هذا ياخذ وقت شوي.")
-    sent = 0
+    sent, failed, first_err = 0, 0, ""
     for old_id, msgs in media["messages"].items():
         ch = target.get_channel(ids.get(int(old_id), 0))
         if not isinstance(ch, discord.TextChannel):
@@ -5111,15 +5111,16 @@ async def restore_media(target: discord.Guild, media: dict, ids: dict, say):
                                     username=(m["author"] or "عضو")[:80], avatar_url=m["avatar"],
                                     allowed_mentions=discord.AllowedMentions.none())
                 sent += 1
-            except discord.HTTPException:
-                pass
+            except Exception as ex:  # نكمل الباقي ونعرض أول خطأ
+                failed += 1
+                first_err = first_err or f"{type(ex).__name__}: {str(ex)[:200]}"
             await asyncio.sleep(0.7)
         if hook:
             try:
                 await hook.delete()
             except discord.HTTPException:
                 pass
-    await say(f"💬 رجّعت **{sent}** رسالة")
+    await say(f"💬 رجّعت **{sent}** رسالة" + (f"\n⚠️ {failed} ما رجعت، أول خطأ: `{first_err}`" if failed else ""))
 
 
 @bot.tree.command(name="نسخ_السيرفر", description="ياخذ نسخة كاملة من السيرفر (رتب، رومات، صلاحيات، إعدادات البوت)")
@@ -5655,6 +5656,132 @@ async def clone_from_cmd(inter: discord.Interaction, ايدي_السيرفر: st
         return await ch.send(f"⚠️ صار خطأ وأنا أنسخ: `{type(ex).__name__}: {str(ex)[:300]}`")
     await ch.send("🛡️ خلصت النسخ، أبدأ أحطه هنا...")
     asyncio.create_task(_restore_server(g, snap, ch, bool(حذف_الموجود)))
+
+
+@bot.tree.command(name="نسخ_الكلام", description="ينسخ الكلام بس من سيرفر ثاني لهذا السيرفر (الرومات بنفس الأسماء)")
+@app_commands.describe(ايدي_السيرفر="ايدي السيرفر اللي فيه الكلام", الرسايل="كم رسالة من كل روم (الافتراضي 50)")
+async def copy_messages_cmd(inter: discord.Interaction, ايدي_السيرفر: str, الرسايل: app_commands.Range[int, 1, 100] = 50):
+    g = inter.guild
+    src = bot.get_guild(int(ايدي_السيرفر)) if ايدي_السيرفر.strip().isdigit() else None
+    if src is None:
+        return await inter.response.send_message(embed=err("البوت مو موجود في ذاك السيرفر، أو الايدي غلط."), ephemeral=True)
+    if inter.user.id != g.owner_id and not await bot.is_owner(inter.user):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
+    await inter.response.send_message(f"⏳ أجمع الكلام من **{src.name}**...")
+    ch_out = inter.channel
+    try:
+        media = await collect_media(src, الرسايل)
+    except Exception as ex:
+        return await ch_out.send(f"⚠️ خطأ وأنا أجمع: `{type(ex).__name__}: {str(ex)[:300]}`")
+    media["emojis"], media["stickers"] = [], []
+    total = sum(len(v) for v in media["messages"].values())
+    if not total:
+        return await ch_out.send(
+            "⚠️ ما لقيت ولا رسالة في السيرفر الأساسي.\nتأكد إن البوت عنده **Administrator** هناك، "
+            "وإن **Message Content Intent** مفعّل في discord.com/developers ← Bot.")
+    # نربط الرومات والرتب والإيموجيات بالاسم
+    ids = {}
+    tgt_by_name = {}
+    for c in g.text_channels:
+        tgt_by_name.setdefault(_norm(c.name), c)
+    missing = []
+    for c in src.text_channels:
+        t = tgt_by_name.get(_norm(c.name))
+        if t:
+            ids[c.id] = t.id
+        elif str(c.id) in media["messages"]:
+            missing.append(c.name)
+    for r in src.roles:
+        t = discord.utils.get(g.roles, name=r.name)
+        if t:
+            ids[r.id] = t.id
+    for e in src.emojis:
+        t = discord.utils.get(g.emojis, name=e.name)
+        if t:
+            ids[e.id] = t.id
+    await ch_out.send(f"📦 لقيت **{total}** رسالة في **{len(media['messages'])}** روم. أبدأ أحطها...")
+
+    async def say(t):
+        try:
+            await ch_out.send(t)
+        except discord.HTTPException:
+            pass
+    try:
+        await restore_media(g, media, ids, say)
+    except Exception as ex:
+        import traceback; traceback.print_exc()
+        return await say(f"⚠️ خطأ وأنا أحط الكلام: `{type(ex).__name__}: {str(ex)[:300]}`")
+    if missing:
+        await say("ℹ️ رومات ما لقيت لها روم بنفس الاسم هنا: " + "، ".join(missing[:20]))
+    await say("✅ خلص نسخ الكلام")
+
+
+OLD_TS_PREFIX = re.compile(r"^\s*(ts|ᴛꜱ|TS)\s*[┊|︙:・•\-]*\s*", re.I)
+
+
+def decorated_name(name: str, suffix: str, sep: str, strip_old: bool) -> str:
+    base = OLD_TS_PREFIX.sub("", name) if strip_old else name
+    base = base.strip("-_ ") or name
+    return f"{base}{sep}{suffix}"[:100]
+
+
+@bot.tree.command(name="تزيين_الرومات", description="يضيف ┊ᴛꜱ لآخر اسم كل روم ما فيه (مثل: تذكرة-شكاوى-┊ᴛꜱ)")
+@app_commands.describe(
+    الزخرفة="اللي ينضاف آخر الاسم (الافتراضي: ┊ ᴛꜱ)",
+    الصوتية="تشمل الرومات الصوتية؟",
+    الكاتيجوري="تشمل الكاتيجوري؟",
+    تجربة="يعرض لك وش بيتغير بدون ما يغيّر شي",
+)
+@app_commands.choices(
+    الصوتية=[app_commands.Choice(name="نعم", value=1), app_commands.Choice(name="لا", value=0)],
+    الكاتيجوري=[app_commands.Choice(name="نعم", value=1), app_commands.Choice(name="لا", value=0)],
+    تجربة=[app_commands.Choice(name="نعم، وريني بس", value=1)],
+)
+async def decorate_channels(inter: discord.Interaction, الزخرفة: str = "┊ ᴛꜱ",
+                            الصوتية: app_commands.Choice[int] = None, الكاتيجوري: app_commands.Choice[int] = None,
+                            تجربة: app_commands.Choice[int] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    suffix = الزخرفة.strip() or "┊ ᴛꜱ"
+    voice = الصوتية is None or الصوتية.value == 1
+    cats = bool(الكاتيجوري and الكاتيجوري.value == 1)
+    targets = []
+    for ch in inter.guild.channels:
+        if isinstance(ch, discord.CategoryChannel) and not cats:
+            continue
+        if isinstance(ch, (discord.VoiceChannel, discord.StageChannel)) and not voice:
+            continue
+        # أي روم مزخرف من قبل (فيه ┊ أو ᴛꜱ) نخليه بشكله ولا نلمسه
+        if ch.name == BACKUP_CH_NAME or suffix in ch.name or "┊" in ch.name or "ᴛꜱ" in ch.name:
+            continue
+        text_like = isinstance(ch, (discord.TextChannel, discord.ForumChannel))
+        # الرومات الكتابية ما تقبل مسافة عادية، فنحط مسافة خاصة تبين مثل المسافة
+        suf = suffix.replace(" ", "\u2005") if text_like else suffix
+        new = decorated_name(ch.name, suf, "-" if text_like else " ", False)
+        if new != ch.name:
+            targets.append((ch, new))
+    if not targets:
+        return await inter.response.send_message(embed=embed("✨ تزيين الرومات", "كل الرومات فيها الزخرفة من قبل ✅"), ephemeral=True)
+    preview = "\n".join(f"• {c.name} ← **{n}**" for c, n in targets[:25]) + (f"\n… و {len(targets) - 25} غيرها" if len(targets) > 25 else "")
+    if تجربة:
+        return await inter.response.send_message(embed=embed(f"👀 تجربة ({len(targets)} روم)", preview[:4000]), ephemeral=True)
+    await inter.response.send_message(f"✨ أزيّن **{len(targets)}** روم... (تقريبًا {max(1, len(targets) * 2 // 60)} دقيقة)")
+    status = await inter.original_response()
+
+    async def run():
+        done, failed = 0, 0
+        for c, n in targets:
+            try:
+                await c.edit(name=n, reason=f"تزيين الرومات بواسطة {inter.user}")
+                done += 1
+            except discord.HTTPException:
+                failed += 1
+            await asyncio.sleep(1.5)
+        try:
+            await status.edit(content=f"✅ تم تزيين **{done}** روم" + (f" · ❌ {failed} ما قدرت" if failed else ""))
+        except discord.HTTPException:
+            pass
+    asyncio.create_task(run())
 
 
 async def auto_server_snapshot():

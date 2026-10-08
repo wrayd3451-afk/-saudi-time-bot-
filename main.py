@@ -1386,9 +1386,26 @@ async def on_message(message: discord.Message):
     if first == ["-ر"]:
         return await role_prefix(message)
     if first == ["-نسخ_من"]:
-        return await clone_from_prefix(message)
+        try:
+            return await clone_from_prefix(message)
+        except Exception as ex:
+            import traceback; traceback.print_exc()
+            return await message.reply(f"⚠️ صار خطأ في النسخ: `{type(ex).__name__}: {str(ex)[:300]}`")
+    if first in (["-فحص"], ["-بنق"]):
+        me = message.guild.me
+        p = message.channel.permissions_for(me)
+        return await message.reply(
+            f"✅ البوت شغال ويشوف رسايلك\n"
+            f"**Administrator:** {'✅' if me.guild_permissions.administrator else '❌'} · "
+            f"**يكتب هنا:** {'✅' if p.send_messages else '❌'}\n"
+            f"**أنت صاحب السيرفر:** {'✅' if message.author.id == message.guild.owner_id else '❌'}\n"
+            "**النسخ المحفوظة:** " + str(db.execute("SELECT COUNT(*) FROM assets WHERE key = 'server_clone'").fetchone()[0]))
     if first == ["-استرجاع"]:
-        return await restore_prefix(message)
+        try:
+            return await restore_prefix(message)
+        except Exception as ex:  # نعرض الخطأ بدل ما يسكت
+            import traceback; traceback.print_exc()
+            return await message.reply(f"⚠️ صار خطأ في الاسترجاع: `{type(ex).__name__}: {str(ex)[:300]}`\nصوّره وأرسله.")
     if first == ["-خط"]:
         return await line_command(message)
     if first in (["-فت"], ["-فتح"]):
@@ -3676,7 +3693,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من", "فحص", "بنق"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -5605,6 +5622,39 @@ async def clone_from_prefix(message: discord.Message):
     except discord.HTTPException:
         pass
     asyncio.create_task(_restore_server(g, snap, message.channel, len(g.channels) <= 10))
+
+
+@bot.tree.command(name="نسخ_من_سيرفر", description="ينسخ سيرفر ثاني (البوت فيه) لهذا السيرفر بكل شي: رتب، رومات، كلام، إيموجيات")
+@app_commands.describe(ايدي_السيرفر="ايدي السيرفر اللي تبي تنسخه (الأساسي)",
+                       حذف_الموجود="يحذف رومات ورتب هذا السيرفر قبل النسخ")
+@app_commands.choices(حذف_الموجود=[app_commands.Choice(name="نعم، احذف الموجود", value=1)])
+async def clone_from_cmd(inter: discord.Interaction, ايدي_السيرفر: str, حذف_الموجود: app_commands.Choice[int] = None):
+    g = inter.guild
+    if not ايدي_السيرفر.strip().isdigit():
+        return await inter.response.send_message(embed=err("حط ايدي السيرفر أرقام بس."), ephemeral=True)
+    src = bot.get_guild(int(ايدي_السيرفر.strip()))
+    if src is None:
+        return await inter.response.send_message(embed=err("البوت مو موجود في ذاك السيرفر."), ephemeral=True)
+    if src.id == g.id:
+        return await inter.response.send_message(embed=err("هذا نفس السيرفر."), ephemeral=True)
+    if inter.user.id != g.owner_id or (src.owner_id != inter.user.id and not await bot.is_owner(inter.user)):
+        return await inter.response.send_message(embed=err("لازم تكون صاحب السيرفرين."), ephemeral=True)
+    if not g.me.guild_permissions.administrator:
+        return await inter.response.send_message(embed=err("عطني **Administrator** هنا أول، وارفع رتبتي فوق الكل."), ephemeral=True)
+    await inter.response.send_message(f"⏳ أنسخ **{src.name}** بكل شي... تابع هنا.")
+    ch = inter.channel
+    try:
+        if not src.chunked:
+            await src.chunk()
+        snap = make_server_snapshot(src)
+        save_snapshot(src.id, snap)
+        snap["media"] = await collect_media(src, 50)
+        save_full(src.id, snap)
+    except Exception as ex:
+        import traceback; traceback.print_exc()
+        return await ch.send(f"⚠️ صار خطأ وأنا أنسخ: `{type(ex).__name__}: {str(ex)[:300]}`")
+    await ch.send("🛡️ خلصت النسخ، أبدأ أحطه هنا...")
+    asyncio.create_task(_restore_server(g, snap, ch, bool(حذف_الموجود)))
 
 
 async def auto_server_snapshot():

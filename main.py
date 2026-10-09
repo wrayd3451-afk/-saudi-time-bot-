@@ -6803,13 +6803,17 @@ def find_ticket_slot(gid: int, words) -> int:
 
 
 def support_slots(gid: int):
+    h, c = get_setting(gid, "support_help_slot"), get_setting(gid, "support_comp_slot")
+    types_ = {t["slot"] for t in get_ticket_types(gid)}
+    if h in types_ and c in types_:  # اللي انسطب بـ /تسطيب_الدعم
+        return h, c
     return find_ticket_slot(gid, ("مساعد",)), find_ticket_slot(gid, ("شكو", "شكاو", "بلاغ"))
 
 
 async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment = None):
     help_s, comp_s = support_slots(guild.id)
     if not help_s or not comp_s:
-        return "ما لقيت تذكرة **مساعدة** و تذكرة **شكاوى**. سطّبهم بـ /تسطيب_تذكرة وخل أسماءهم فيها (مساعدة) و (شكاوى)."
+        return "لوحة الدعم ما انسطبت. استخدم **/تسطيب_الدعم** أول."
     # الكلام الافتراضي حق داخل التذكرة لو ما انحط قبل
     for slot, key in ((help_s, "help_in"), (comp_s, "comp_in")):
         if not get_text(guild.id, f"tk_in_{slot}", ""):
@@ -6821,9 +6825,25 @@ async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment
     else:
         f, _ = ticket_image_file(guild.id, -1)
         f.filename = "support" + os.path.splitext(f.filename)[1]
-    e2.set_image(url=f"attachment://{f.filename}")
+    fname, fbytes = f.filename, f.fp.read()
+    f = discord.File(io.BytesIO(fbytes), filename=fname)
+    e2.set_image(url=f"attachment://{fname}")
     e2.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
-    await ch.send(embeds=[e1, e2], file=f, view=ticket_buttons_panel(guild.id, [help_s, comp_s]))
+    try:
+        await ch.send(embeds=[e1, e2], file=f, view=ticket_buttons_panel(guild.id, [help_s, comp_s]))
+    except discord.Forbidden:
+        return f"ما عندي صلاحية أرسل في {ch.mention}."
+    except discord.HTTPException as ex:
+        # غالبًا إيموجي غلط في زر التذكرة: نرسلها بدون إيموجي
+        v = discord.ui.View(timeout=None)
+        for t in [t for t in get_ticket_types(guild.id) if t["slot"] in (help_s, comp_s)]:
+            v.add_item(discord.ui.Button(label=t["name"][:80], style=discord.ButtonStyle.secondary,
+                                         custom_id=f"ticket:btn:{t['slot']}"))
+        f = discord.File(io.BytesIO(fbytes), filename=fname)
+        try:
+            await ch.send(embeds=[e1, e2], file=f, view=v)
+        except discord.HTTPException as ex2:
+            return f"ديسكورد رفض الرسالة: `{str(ex2)[:250]}` (قبلها: `{str(ex)[:150]}`)"
     register_panel(guild.id, "support", ch.id, {})
     return None
 
@@ -6834,7 +6854,11 @@ async def send_support_panel(inter: discord.Interaction, الروم: discord.Tex
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
-    problem = await post_support_panel(inter.guild, الروم or inter.channel, الصورة)
+    try:
+        problem = await post_support_panel(inter.guild, الروم or inter.channel, الصورة)
+    except Exception as ex:  # ما نخليه يعلّق على "thinking"
+        import traceback; traceback.print_exc()
+        problem = f"صار خطأ: `{type(ex).__name__}: {str(ex)[:300]}`"
     await inter.followup.send(embed=err(problem) if problem else embed("✅ انرسلت لوحة الدعم", (الروم or inter.channel).mention),
                               ephemeral=True)
 
@@ -6864,6 +6888,108 @@ async def ticket_text_cmd(inter: discord.Interaction, رقم_التذكرة: app
         return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
     cur = get_text(inter.guild.id, f"tk_{المكان.value}_{رقم_التذكرة}", "")
     await inter.response.send_modal(TicketTextModal(inter.guild.id, رقم_التذكرة, المكان.value, cur))
+
+
+# ---------- تسطيب لوحة الدعم (مساعدة + شكاوى) كاملة بأمر واحد ----------
+def _free_slots(gid: int, n: int):
+    used = {t["slot"] for t in get_ticket_types(gid)}
+    return [s_ for s_ in range(20, 0, -1) if s_ not in used][:n]
+
+
+class SupportTextModal(discord.ui.Modal, title="🛠️ كلام لوحة الدعم"):
+    def __init__(self, gid, help_s, comp_s, out_img, in_img):
+        super().__init__(timeout=None)
+        self.gid, self.help_s, self.comp_s, self.out_img, self.in_img = gid, help_s, comp_s, out_img, in_img
+
+        def field(label, key, default):
+            cur = get_text(gid, key, "") or default
+            return discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, default=cur[:4000],
+                                        max_length=4000, required=False)
+        self.h_out = field("المساعدة: الكلام برا (اللوحة)", f"tk_out_{help_s}", SUPPORT_TEXTS["help_out"])
+        self.h_in = field("المساعدة: الكلام داخل التذكرة", f"tk_in_{help_s}", SUPPORT_TEXTS["help_in"])
+        self.c_out = field("الشكاوى: الكلام برا (اللوحة)", f"tk_out_{comp_s}", SUPPORT_TEXTS["comp_out"])
+        self.c_in = field("الشكاوى: الكلام داخل التذكرة", f"tk_in_{comp_s}", SUPPORT_TEXTS["comp_in"])
+        for f_ in (self.h_out, self.h_in, self.c_out, self.c_in):
+            self.add_item(f_)
+
+    async def on_submit(self, inter: discord.Interaction):
+        g = self.gid
+        set_text(g, f"tk_out_{self.help_s}", self.h_out.value or SUPPORT_TEXTS["help_out"])
+        set_text(g, f"tk_in_{self.help_s}", self.h_in.value or SUPPORT_TEXTS["help_in"])
+        set_text(g, f"tk_out_{self.comp_s}", self.c_out.value or SUPPORT_TEXTS["comp_out"])
+        set_text(g, f"tk_in_{self.comp_s}", self.c_in.value or SUPPORT_TEXTS["comp_in"])
+        notes = []
+        for att, slots in ((self.out_img, [-1]), (self.in_img, [self.help_s, self.comp_s])):
+            if att is not None and (att.content_type or "").startswith("image/"):
+                try:
+                    data = await att.read()
+                    for sl in slots:
+                        db.execute("INSERT OR REPLACE INTO ticket_images (guild_id, slot, data, filename) VALUES (?, ?, ?, ?)",
+                                   (g, sl, data, att.filename))
+                    notes.append("🖼️ صورة " + ("برا" if slots == [-1] else "داخل التذاكر") + " ✅")
+                except discord.HTTPException:
+                    notes.append("⚠️ ما قدرت أحفظ وحدة من الصور")
+        db.commit()
+        await inter.response.send_message(embed=embed("✅ تم تسطيب لوحة الدعم", (
+            "انحفظ كل شي 👌\n" + ("\n".join(notes) + "\n" if notes else "") +
+            "\nالحين اكتب **`-مساعده`** في الروم اللي تبيه، أو **`/ارسال_الدعم`**.\n"
+            "وتقدر تعدّل أي شي بنفس الأمر مرة ثانية.")), ephemeral=True)
+
+
+@bot.tree.command(name="تسطيب_الدعم", description="تسطيب لوحة المساعدة والشكاوى كاملة: الأسماء والإيموجي والرتب والصور والكلام")
+@app_commands.describe(
+    الكاتيجوري="وين تنفتح التذاكر", مسؤول_المساعدة="رتبة اللي يستلمون تذاكر المساعدة",
+    مسؤول_الشكاوى="رتبة اللي يستلمون تذاكر الشكاوى (فاضي = نفس المساعدة)",
+    اسم_المساعدة="اسم زر المساعدة", ايموجي_المساعدة="إيموجي زر المساعدة",
+    اسم_الشكاوى="اسم زر الشكاوى", ايموجي_الشكاوى="إيموجي زر الشكاوى",
+    لون_الأزرار="لون الزرين", صورة_برا="الصورة اللي تحت اللوحة", صورة_داخل="الصورة اللي داخل التذاكر",
+    الاستلام="فيها زر استلام؟", منشن_المسؤول="يمنشن رتبة المسؤول لما تنفتح؟",
+)
+@app_commands.choices(
+    لون_الأزرار=[app_commands.Choice(name="رمادي", value="secondary"), app_commands.Choice(name="أخضر", value="success"),
+                 app_commands.Choice(name="أزرق", value="primary"), app_commands.Choice(name="أحمر", value="danger")],
+    الاستلام=[app_commands.Choice(name="نعم", value=1), app_commands.Choice(name="لا", value=0)],
+    منشن_المسؤول=[app_commands.Choice(name="نعم", value=1), app_commands.Choice(name="لا", value=0)],
+)
+async def setup_support(inter: discord.Interaction, الكاتيجوري: discord.CategoryChannel = None,
+                        مسؤول_المساعدة: discord.Role = None, مسؤول_الشكاوى: discord.Role = None,
+                        اسم_المساعدة: str = None, ايموجي_المساعدة: str = None,
+                        اسم_الشكاوى: str = None, ايموجي_الشكاوى: str = None,
+                        لون_الأزرار: app_commands.Choice[str] = None,
+                        صورة_برا: discord.Attachment = None, صورة_داخل: discord.Attachment = None,
+                        الاستلام: app_commands.Choice[int] = None, منشن_المسؤول: app_commands.Choice[int] = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    gid = inter.guild.id
+    help_s, comp_s = get_setting(gid, "support_help_slot"), get_setting(gid, "support_comp_slot")
+    if not help_s or not comp_s:
+        free = _free_slots(gid, 2)
+        if len(free) < 2:
+            return await inter.response.send_message(embed=err("كل أرقام التذاكر (1-20) مستخدمة. احذف تذكرة أول."), ephemeral=True)
+        help_s, comp_s = sorted(free)  # المساعدة أول زر
+        set_setting(gid, "support_help_slot", help_s)
+        set_setting(gid, "support_comp_slot", comp_s)
+    old = {t["slot"]: t for t in get_ticket_types(gid)}
+    for slot, name, emo, role, dname, demo in (
+            (help_s, اسم_المساعدة, ايموجي_المساعدة, مسؤول_المساعدة, "تذكرة المُساعدة", "🛠️"),
+            (comp_s, اسم_الشكاوى, ايموجي_الشكاوى, مسؤول_الشكاوى or مسؤول_المساعدة, "تذكرة الشكاوي", "⚠️")):
+        o = old.get(slot)
+        cat_id = الكاتيجوري.id if الكاتيجوري else (o["category_id"] if o else 0)
+        role_id = role.id if role else (o["staff_role"] if o else 0)
+        if not cat_id or not role_id:
+            return await inter.response.send_message(embed=err(
+                "أول مرة لازم تحدد **الكاتيجوري** و **مسؤول_المساعدة**."), ephemeral=True)
+        db.execute(
+            "INSERT INTO ticket_types (guild_id, slot, name, emoji, category_id, staff_role, welcome, btn_color, claim_on, ping_staff) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, slot) DO UPDATE SET name = excluded.name, "
+            "emoji = excluded.emoji, category_id = excluded.category_id, staff_role = excluded.staff_role, "
+            "btn_color = excluded.btn_color, claim_on = excluded.claim_on, ping_staff = excluded.ping_staff",
+            (gid, slot, (name or (o["name"] if o else dname))[:80], (emo or (o["emoji"] if o else demo)).strip(),
+             cat_id, role_id, o["welcome"] if o else "", لون_الأزرار.value if لون_الأزرار else (o["btn_color"] if o else "secondary"),
+             الاستلام.value if الاستلام else (o["claim_on"] if o else 1),
+             منشن_المسؤول.value if منشن_المسؤول else (o["ping_staff"] if o else 1)))
+    db.commit()
+    await inter.response.send_modal(SupportTextModal(gid, help_s, comp_s, صورة_برا, صورة_داخل))
 
 
 @bot.event

@@ -375,6 +375,10 @@ try:  # الرد التلقائي لرتبة معينة بس
     db.execute("ALTER TABLE auto_replies ADD COLUMN role_id INTEGER DEFAULT 0")
 except sqlite3.OperationalError:
     pass
+try:  # التذكرة المقفولة تبقى عند المشرفين لين القفل النهائي
+    db.execute("ALTER TABLE tickets ADD COLUMN closed INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+    pass
 try:  # T1 مرة وحدة بس في كل تذكرة
     db.execute("ALTER TABLE tickets ADD COLUMN quiz_used INTEGER DEFAULT 0")
 except sqlite3.OperationalError:
@@ -1133,6 +1137,7 @@ def admin_only(inter: discord.Interaction) -> bool:
     شراء_تذكرة="الروم اللي ينرسل فيه إعلان الرحلة",
     التفتيش="الروم اللي يكتبون فيه -تفتيش",
     تحديث_الادوار="الروم اللي ينرسل فيه التوظيف والاستقالات",
+    تحديث_المعرف="الروم اللي الإدارة تغيّر فيه الأسماء بـ -اسم (الأونر في كل مكان)",
     القروض="الروم اللي توصل فيه طلبات القروض",
     الصوتي="الروم الصوتي اللي يقعد فيه البوت 24 ساعة",
     ايدي_الصوتي="أو حط ايدي الروم الصوتي هنا (إذا ما لقيته في القائمة)",
@@ -1144,6 +1149,7 @@ async def setup_channels(
     شراء_تذكرة: discord.TextChannel = None,
     التفتيش: discord.TextChannel = None,
     تحديث_الادوار: discord.TextChannel = None,
+    تحديث_المعرف: discord.TextChannel = None,
     القروض: discord.TextChannel = None,
     الصوتي: discord.VoiceChannel = None,
     ايدي_الصوتي: str = None,
@@ -1163,6 +1169,9 @@ async def setup_channels(
         except discord.Forbidden:
             problems.append(f"⚠️ ما أقدر أرسل في {ch.mention}. عطني صلاحية الإرسال فيه.")
 
+    if تحديث_المعرف:
+        set_setting(gid, "ch_names", تحديث_المعرف.id)
+        done.append(f"✅ تحديث المعرف: {تحديث_المعرف.mention} (الإدارة تغيّر الأسماء هنا بس)")
     if انشاء_قيم:
         set_setting(gid, "ch_game", انشاء_قيم.id)
         done.append(f"✅ إنشاء القيم: {انشاء_قيم.mention}")
@@ -1381,8 +1390,10 @@ async def on_message(message: discord.Message):
     first = message.content.strip().split()[:1]
     if message.content.strip().split()[:1] in (["-ايموجي"], ["-إيموجي"], ["-ايموجيات"]):
         return await emoji_prefix(message)
-    if first == ["-اسم"]:
+    if first in (["-اسم"], ["-معرف"], ["-تحديث_المعرف"]):
         return await rename_prefix(message)
+    if first in (["-ايدي"], ["-آيدي"], ["-id"]):
+        return await id_prefix(message)
     if first == ["-ر"]:
         return await role_prefix(message)
     if first == ["-نسخ_من"]:
@@ -2150,7 +2161,7 @@ async def open_ticket(inter: discord.Interaction, slot: int):
     if not ttype:
         return await inter.response.send_message(embed=err("التذكرة هذي انحذفت."), ephemeral=True)
     # تذكرة وحدة بس لكل عضو (أي نوع)، عشان ما يسوي سبام
-    for row in db.execute("SELECT channel_id FROM tickets WHERE guild_id = ? AND owner_id = ?",
+    for row in db.execute("SELECT channel_id FROM tickets WHERE guild_id = ? AND owner_id = ? AND COALESCE(closed, 0) = 0",
                           (guild.id, inter.user.id)).fetchall():
         if guild.get_channel(row["channel_id"]):
             return await inter.response.send_message(
@@ -2228,6 +2239,36 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
     await log(f"{inter.user.mention} فتح تذكرة **{ttype['name']}** {ch.mention}", guild)
 
 
+async def soft_close_ticket(ch, t, closer, sups):
+    """تنقفل عند صاحبها والإدارة، وتبقى عند مشرفين نوعها بس"""
+    guild = ch.guild
+    db.execute("UPDATE tickets SET closed = 1 WHERE channel_id = ?", (ch.id,))
+    db.commit()
+    keep = {r.id for r in sups} | {guild.me.id}
+    for target in list(ch.overwrites):
+        if target.id in keep or target == guild.default_role:
+            continue
+        try:
+            await ch.set_permissions(target, overwrite=discord.PermissionOverwrite(view_channel=False))
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(0.3)
+    try:
+        if not ch.name.startswith("مغلق-"):
+            await ch.edit(name=f"مغلق-{ch.name}"[:100])
+    except discord.HTTPException:
+        pass
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="قفل نهائي", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="ticket:final"))
+    v.add_item(discord.ui.Button(label="إعادة فتح", emoji="🔓", style=discord.ButtonStyle.secondary, custom_id="ticket:reopen"))
+    await ch.send(content=" ".join(r.mention for r in sups), embed=embed("🔒 التذكرة انقفلت ـ بانتظار المشرف", (
+        f"**قفلها :** {closer.mention}\n**صاحبها :** <@{t['owner_id']}>\n\n"
+        "التذكرة الحين **ما يشوفها إلا المشرفين** 👀\n"
+        "راجعها، وإذا كل الأمور تمام اضغط **قفل نهائي**، أو **إعادة فتح** لو تحتاج.")), view=v,
+        allowed_mentions=discord.AllowedMentions(roles=True))
+    await log(f"🔒 {closer.mention} قفل التذكرة **{ch.name}** وراحت للمشرفين (صاحبها <@{t['owner_id']}>)", guild)
+
+
 async def handle_ticket_button(inter: discord.Interaction, action: str):
     t = db.execute("SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)).fetchone()
     if not t:
@@ -2271,6 +2312,38 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
         except discord.HTTPException:
             pass
 
+    elif action in ("final", "reopen"):
+        if not (is_supervisor(inter.user, t["slot"]) or is_power(inter.user)):
+            return await inter.response.send_message(embed=err("هذا للمشرفين بس."), ephemeral=True)
+        if action == "final":
+            await inter.response.edit_message(embed=embed("🗑️ قفل نهائي", f"بواسطة {inter.user.mention} • تنحذف بعد 5 ثواني"), view=None)
+            db.execute("DELETE FROM tickets WHERE channel_id = ?", (inter.channel.id,))
+            db.commit()
+            await log(f"🗑️ {inter.user.mention} قفل التذكرة **{inter.channel.name}** نهائي (صاحبها <@{t['owner_id']}>)", inter.guild)
+            await asyncio.sleep(5)
+            try:
+                await inter.channel.delete()
+            except discord.HTTPException:
+                pass
+            return
+        # إعادة فتح: ترجع لصاحبها والإدارة
+        await inter.response.edit_message(embed=embed("🔓 انفتحت التذكرة من جديد", f"بواسطة {inter.user.mention}"), view=None)
+        try:
+            owner = inter.guild.get_member(t["owner_id"])
+            if owner:
+                await inter.channel.set_permissions(owner, overwrite=discord.PermissionOverwrite(**STAFF_PERMS))
+            srole = inter.guild.get_role(ttype["staff_role"]) if ttype else None
+            if srole:
+                await inter.channel.set_permissions(srole, overwrite=discord.PermissionOverwrite(**STAFF_PERMS))
+            if inter.channel.name.startswith("مغلق-"):
+                await inter.channel.edit(name=inter.channel.name[5:])
+        except discord.HTTPException:
+            pass
+        db.execute("UPDATE tickets SET closed = 0, claimed_by = 0 WHERE channel_id = ?", (inter.channel.id,))
+        db.commit()
+        claim_on = bool(ttype["claim_on"] if ttype and ttype["claim_on"] is not None else 1)
+        await inter.channel.send(f"<@{t['owner_id']}> تذكرتك انفتحت من جديد 🔓", view=ticket_buttons(claim_on))
+
     elif action in ("close", "closeyes", "closeno"):
         # مين يقدر يقفل: اللي مستلم التذكرة بس (وإذا التذكرة بدون استلام: الإدارة المسؤولة). صاحب التذكرة ما يقفل.
         claim_on = ttype is None or ttype["claim_on"] != 0
@@ -2296,6 +2369,11 @@ async def handle_ticket_button(inter: discord.Interaction, action: str):
                 return
 
         # closeyes
+        sups = supervisor_roles(inter.guild, t["slot"])
+        if sups:  # فيه مشرفين: تنقفل عند الكل وتبقى عند المشرفين لين يقفلونها نهائي
+            await inter.response.edit_message(embed=embed("🔒 تم خدمة العضو", "التذكرة انقفلت وراحت للمشرف يراجعها ."), view=None)
+            await soft_close_ticket(inter.channel, t, inter.user, sups)
+            return
         await inter.response.edit_message(embed=embed("🔒 تم خدمة العضو", "التذكرة بتنقفل بعد 5 ثواني."), view=None)
         db.execute("DELETE FROM tickets WHERE channel_id = ?", (inter.channel.id,))
         db.commit()
@@ -3796,7 +3874,7 @@ async def setup_job(inter: discord.Interaction, الاسم: app_commands.Range[s
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     name = الاسم.strip().lstrip("-").strip()
-    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من", "فحص", "بنق", "مساعده", "مساعدة", "دعم"):
+    if name in ("قيم", "تفعيل", "تفتيش", "استقالة", "استقاله", "خط", "فت", "فتح", "قف", "قفل", "استرجاع", "ايموجي", "إيموجي", "ايموجيات", "اسم", "ر", "نسخ_من", "فحص", "بنق", "مساعده", "مساعدة", "دعم", "معرف", "تحديث_المعرف", "ايدي", "آيدي", "id"):
         return await inter.response.send_message(embed=err("هالاسم محجوز لأمر ثاني."), ephemeral=True)
     if len(get_jobs(inter.guild.id)) >= 50 and not db.execute(
             "SELECT 1 FROM job_roles WHERE guild_id = ? AND name = ?", (inter.guild.id, name)).fetchone():
@@ -6557,6 +6635,9 @@ def _staff_room_check(message: discord.Message, key: str):
     if not has_role(a, get_setting(message.guild.id, "role_admin")):
         return "هذا الأمر للإدارة بس."
     ch = get_setting(message.guild.id, key)
+    if not ch and key == "ch_names":  # ما انحدد: ندوّر على روم "تحديث المعرف"
+        found = next((c for c in message.guild.text_channels if "معرف" in _norm(c.name)), None)
+        ch = found.id if found else 0
     if ch and message.channel.id != ch:
         return f"هذا الأمر في <#{ch}> بس."
     return None
@@ -6568,7 +6649,7 @@ async def rename_prefix(message: discord.Message):
         return await message.reply(f"❌ {bad}")
     parts = message.content.split(maxsplit=2)
     if len(parts) < 3:
-        return await message.reply("❌ الاستخدام: `-اسم ايدي_الشخص الاسم الجديد`")
+        return await message.reply("❌ الاستخدام: `-اسم ايدي_العضو الاسم الجديد`")
     member = await _resolve_member(message.guild, parts[1])
     if not member:
         return await message.reply("❌ ما لقيت الشخص. تأكد من الايدي.")
@@ -6581,8 +6662,32 @@ async def rename_prefix(message: discord.Message):
         await member.edit(nick=new, reason=f"تغيير اسم بواسطة {message.author}")
     except discord.HTTPException:
         return await message.reply("❌ ما قدرت أغيّر اسمه. خل رتبة البوت فوق رتبته (وصاحب السيرفر ما يتغيّر اسمه).")
-    await message.reply(f"✅ تم تغيير اسم {member.mention}\n**من:** {old}\n**إلى:** {new}")
+    e = discord.Embed(title="🪪 | تـحـديـث الـمـعـرف", color=0x006C35, timestamp=now(),
+                      description=(f"**الـعـضـو :** {member.mention}\n"
+                                   f"**الـمـعـرف الـقـديـم :** {old}\n"
+                                   f"**الـمـعـرف الـجـديـد :** {new}\n\n"
+                                   f"**بـواسـطـة :** {message.author.mention}"))
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=config.SERVER_NAME, icon_url=message.guild.icon.url if message.guild.icon else None)
+    await message.reply(embed=e)
     await log(f"✏️ {message.author.mention} غيّر اسم {member.mention} من **{old}** إلى **{new}**", message.guild)
+
+
+async def id_prefix(message: discord.Message):
+    """-ايدي @رتبة (أو @شخص أو #روم) ← يرد بالايدي بس كتابة عادية عشان ينسخ"""
+    bad = _staff_room_check(message, "ch_roles_cmd")
+    if bad:
+        return await message.reply(f"❌ {bad}")
+    ids = [str(r.id) for r in message.role_mentions] + [str(m.id) for m in message.mentions] \
+        + [str(c.id) for c in message.channel_mentions]
+    if not ids:  # كتب اسم الرتبة بدل المنشن
+        name = message.content.split(maxsplit=1)[1].strip() if len(message.content.split(maxsplit=1)) > 1 else ""
+        r = discord.utils.find(lambda x: x.name == name or _norm(x.name) == _norm(name), message.guild.roles) if name else None
+        if r:
+            ids = [str(r.id)]
+    if not ids:
+        return await message.reply("❌ الاستخدام: `-ايدي @الرتبة`")
+    await message.reply("\n".join(ids), mention_author=False)
 
 
 async def role_prefix(message: discord.Message):

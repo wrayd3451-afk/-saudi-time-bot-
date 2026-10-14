@@ -6948,6 +6948,51 @@ async def emoji_prefix(message: discord.Message):
     asyncio.create_task(add_emojis(message.guild, items, status))
 
 
+@bot.tree.command(name="ترقيم_الايموجيات", description="يغيّر أسماء كل إيموجيات السيرفر بالترتيب: SAUDI_TIME_1 , SAUDI_TIME_2 ...")
+@app_commands.describe(الاسم="بداية الاسم (افتراضي SAUDI_TIME) — حروف إنجليزي وأرقام و _ بس",
+                       البداية="يبدأ العد من كم (افتراضي 1)")
+async def number_emojis(inter: discord.Interaction, الاسم: str = "SAUDI_TIME", البداية: app_commands.Range[int, 0, 100000] = 1):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    base = re.sub(r"[^A-Za-z0-9_]", "_", (الاسم or "SAUDI_TIME").strip().replace(" ", "_")).strip("_")[:24] or "SAUDI_TIME"
+    emojis = sorted(inter.guild.emojis, key=lambda e: e.id)  # الأقدم أول
+    if not emojis:
+        return await inter.response.send_message(embed=err("ما فيه إيموجيات في السيرفر."), ephemeral=True)
+    await inter.response.send_message(embed=embed("⏳ جاري ترقيم الإيموجيات",
+        f"العدد: **{len(emojis)}**\nالشكل: `{base}_{البداية}` , `{base}_{البداية + 1}` ...\n"
+        "ديسكورد يبطّئ تغيير الأسماء، فممكن ياخذ وقت. لا تعيد الأمر."), ephemeral=True)
+    done = skip = fail = 0
+    for i, em in enumerate(emojis):
+        new = f"{base}_{البداية + i}"
+        if em.name == new:
+            skip += 1
+            continue
+        try:
+            await em.edit(name=new, reason=f"ترقيم الإيموجيات بواسطة {inter.user}")
+            done += 1
+        except discord.HTTPException:
+            fail += 1
+        if (done + fail) % 10 == 0:
+            try:
+                await inter.edit_original_response(embed=embed("⏳ جاري ترقيم الإيموجيات",
+                    f"خلص **{done + skip + fail}** من **{len(emojis)}** ..."))
+            except discord.HTTPException:
+                pass
+    e = embed("✅ تم ترقيم الإيموجيات",
+              f"تغيّر اسم: **{done}**" + (f"\nكانت مرقمة من قبل: **{skip}**" if skip else "")
+              + (f"\nما قدرت أغيّر: **{fail}**" if fail else "")
+              + f"\n\nمن `{base}_{البداية}` إلى `{base}_{البداية + len(emojis) - 1}`"
+              + "\n\n💡 إذا حاط إيموجيات بأسمائها القديمة في لوحة الدعم، عدّلها بالأسماء الجديدة.")
+    try:
+        await inter.edit_original_response(embed=e)
+    except discord.HTTPException:
+        try:
+            await inter.channel.send(content=inter.user.mention, embed=e)
+        except discord.HTTPException:
+            pass
+    await log(f"{inter.user.mention} رقّم الإيموجيات ({done}) باسم {base}", inter.guild)
+
+
 @bot.tree.command(name="اضافة_ايموجيات", description="تضيف إيموجيات كثيرة مرة وحدة من سيرفرات ثانية (متحركة وعادية)")
 @app_commands.describe(الإيموجيات="حط الإيموجيات أو روابطها هنا، كثير مرة وحدة")
 async def add_emojis_cmd(inter: discord.Interaction, الإيموجيات: str):

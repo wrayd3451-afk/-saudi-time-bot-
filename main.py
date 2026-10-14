@@ -589,6 +589,8 @@ async def balance(inter: discord.Interaction):
 
 @bot.tree.command(name="ايداع", description="إيداع كاش في البنك")
 async def deposit(inter: discord.Interaction, المبلغ: app_commands.Range[int, 1]):
+    if not await bank_gate(inter):
+        return
     p = await require_player(inter)
     if not p:
         return
@@ -601,6 +603,8 @@ async def deposit(inter: discord.Interaction, المبلغ: app_commands.Range[i
 
 @bot.tree.command(name="سحب", description="سحب فلوس من البنك كاش")
 async def withdraw(inter: discord.Interaction, المبلغ: app_commands.Range[int, 1]):
+    if not await bank_gate(inter):
+        return
     p = await require_player(inter)
     if not p:
         return
@@ -615,11 +619,14 @@ async def withdraw(inter: discord.Interaction, المبلغ: app_commands.Range[
 async def transfer(inter: discord.Interaction, اللاعب: discord.Member, المبلغ: app_commands.Range[int, 1]):
     if اللاعب.id == inter.user.id:
         return await inter.response.send_message(embed=err("ما تقدر تحول لنفسك."), ephemeral=True)
+    if not await bank_gate(inter):
+        return
     p = await require_player(inter)
     if not p:
         return
-    if not get_player(اللاعب.id):
-        return await inter.response.send_message(embed=err(f"{اللاعب.mention} ما عنده حساب."), ephemeral=True)
+    if not get_account(اللاعب.id) or bank_frozen(اللاعب):
+        return await inter.response.send_message(embed=err(f"{اللاعب.mention} ما عنده حساب بنكي أو حسابه موقوف."), ephemeral=True)
+    get_player(اللاعب.id)
     if p["bank"] < المبلغ:
         return await inter.response.send_message(embed=err(f"رصيدك ما يكفي. عندك {money(p['bank'])}"), ephemeral=True)
     db.execute("UPDATE players SET bank = bank - ? WHERE user_id = ?", (المبلغ, inter.user.id))
@@ -1138,6 +1145,7 @@ def admin_only(inter: discord.Interaction) -> bool:
     التفتيش="الروم اللي يكتبون فيه -تفتيش",
     تحديث_الادوار="الروم اللي ينرسل فيه التوظيف والاستقالات",
     تحديث_المعرف="الروم اللي الإدارة تغيّر فيه الأسماء بـ -اسم (الأونر في كل مكان)",
+    النشر="روم النشر: الأونرية يعطون ويخصمون نقاط النشر فيه بـ -اعطاء و -خصم",
     القروض="الروم اللي توصل فيه طلبات القروض",
     الصوتي="الروم الصوتي اللي يقعد فيه البوت 24 ساعة",
     ايدي_الصوتي="أو حط ايدي الروم الصوتي هنا (إذا ما لقيته في القائمة)",
@@ -1150,6 +1158,7 @@ async def setup_channels(
     التفتيش: discord.TextChannel = None,
     تحديث_الادوار: discord.TextChannel = None,
     تحديث_المعرف: discord.TextChannel = None,
+    النشر: discord.TextChannel = None,
     القروض: discord.TextChannel = None,
     الصوتي: discord.VoiceChannel = None,
     ايدي_الصوتي: str = None,
@@ -1172,6 +1181,9 @@ async def setup_channels(
     if تحديث_المعرف:
         set_setting(gid, "ch_names", تحديث_المعرف.id)
         done.append(f"✅ تحديث المعرف: {تحديث_المعرف.mention} (الإدارة تغيّر الأسماء هنا بس)")
+    if النشر:
+        set_setting(gid, "ch_points", النشر.id)
+        done.append(f"✅ النشر: {النشر.mention} (إعطاء وخصم نقاط النشر هنا بس)")
     if انشاء_قيم:
         set_setting(gid, "ch_game", انشاء_قيم.id)
         done.append(f"✅ إنشاء القيم: {انشاء_قيم.mention}")
@@ -1396,6 +1408,10 @@ async def on_message(message: discord.Message):
         return await id_prefix(message)
     if first == ["-ر"]:
         return await role_prefix(message)
+    if first in (["-اعطاء"], ["-إعطاء"], ["-اعطاء_نقاط"]):
+        return await points_prefix(message, True)
+    if first in (["-خصم"], ["-خصم_نقاط"]):
+        return await points_prefix(message, False)
     if first == ["-نسخ_من"]:
         try:
             return await clone_from_prefix(message)
@@ -1501,7 +1517,7 @@ async def on_message(message: discord.Message):
             await ticket_ch.send(embed=flight_embed(message.guild, message.author, answers))
         except discord.Forbidden:
             return await message.channel.send(embed=err(f"ما أقدر أرسل في {ticket_ch.mention}. عطني صلاحية."))
-        add_points(gid, message.author.id, "admin", "publish", pts_value(gid, "pts_publish"))
+        pass  # نقاط النشر ما تنعطى تلقائي، الأونر يعطيها بـ -اعطاء
         await message.channel.send(embed=embed("✅ تم نشر الرحلة", f"انرسل الإعلان في {ticket_ch.mention}"))
         await log(f"{message.author.mention} نشر رحلة في {ticket_ch.mention}", message.guild)
     finally:
@@ -1642,7 +1658,7 @@ class EmbedModal(discord.ui.Modal, title="📝 رسالة ايمبد"):
             await self.channel.send(**kwargs)
         except discord.Forbidden:
             return await inter.followup.send(embed=err(f"ما أقدر أرسل في {self.channel.mention}."), ephemeral=True)
-        add_points(inter.guild.id, inter.user.id, "admin", "publish", pts_value(inter.guild.id, "pts_publish"))
+        pass  # نقاط النشر ما تنعطى تلقائي، الأونر يعطيها بـ -اعطاء
         await inter.followup.send(embed=embed("✅ انرسل الايمبد", self.channel.mention), ephemeral=True)
         await log(f"{inter.user.mention} أرسل ايمبد في {self.channel.mention}", inter.guild)
 
@@ -2218,7 +2234,7 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
     custom_in = get_text(guild.id, f"tk_in_{slot}", "")
     if custom_in:  # كلام داخل التذكرة اللي حطه صاحب السيرفر
         here = re.search(r"@(here|everyone)", custom_in)
-        body = re.sub(r"^\s*@(here|everyone)\s*", "", custom_in).strip()
+        body = guild_emojis(guild, re.sub(r"^\s*@(here|everyone)\s*", "", custom_in).strip())
         e = discord.Embed(title=f"{ttype['emoji'] or '🎫'} | {ttype['name']}", description=body[:4000],
                           color=0x006C35, timestamp=now())
         e.add_field(name="👤 صاحب التذكرة", value=inter.user.mention)
@@ -2963,7 +2979,7 @@ ADMIN_PTS_KEY = {"publish": "pts_publish", "activate": "pts_activate", "hire": "
 def admin_label(gid: int, cat: str, with_emoji: bool = True) -> str:
     row = db.execute("SELECT label FROM point_labels WHERE guild_id = ? AND category = ?", (gid, cat)).fetchone()
     name = row["label"] if row else ADMIN_CAT_DEFAULT.get(cat, cat)
-    return f"{ADMIN_CAT_EMOJI.get(cat, '')} {name}".strip() if with_emoji else name
+    return name  # نقاط الإدارة بدون إيموجيات
 
 
 def cat_label(gid: int, kind: str, cat: str) -> str:
@@ -3080,14 +3096,15 @@ def points_card(guild: discord.Guild, member: discord.Member, kind: str):
     b = points_breakdown(guild.id, member.id, kind)
     total = sum(b.values())
     rank = points_rank(guild.id, member.id, kind)
-    title = "📊 نقاط الإدارة" if kind == "admin" else "🚓 نقاط الشرطة"
-    e = discord.Embed(title=title, color=0x006C35 if kind == "admin" else 0x006C35, timestamp=now())
+    A = kind == "admin"  # نقاط الإدارة بدون إيموجيات
+    title = "نقاط الإدارة" if A else "🚓 نقاط الشرطة"
+    e = discord.Embed(title=title, color=0x006C35, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
     e.set_thumbnail(url=member.display_avatar.url)
-    e.add_field(name="👤 العضو", value=member.mention, inline=True)
-    if kind == "admin":
-        e.add_field(name="🎖️ الرتبة الإدارية", value=admin_rank_name(member), inline=True)
+    e.add_field(name="العضو" if A else "👤 العضو", value=member.mention, inline=True)
+    if A:
+        e.add_field(name="الرتبة الإدارية", value=admin_rank_name(member), inline=True)
     else:
         mins = db.execute(
             "SELECT COALESCE(SUM(minutes), 0) AS m FROM duty_sessions WHERE guild_id = ? AND user_id = ?",
@@ -3098,8 +3115,8 @@ def points_card(guild: discord.Guild, member: discord.Member, kind: str):
         if key == "manual" and not b.get("manual"):
             continue
         e.add_field(name=label, value=f"**{b.get(key, 0)}**", inline=True)
-    e.add_field(name="⭐ المجموع", value=f"**{total}**", inline=True)
-    e.add_field(name="🏆 الترتيب", value=f"#{rank}" if rank else "—", inline=True)
+    e.add_field(name="المجموع" if A else "⭐ المجموع", value=f"**{total}**", inline=True)
+    e.add_field(name="الترتيب" if A else "🏆 الترتيب", value=f"#{rank}" if rank else "—", inline=True)
     e.set_footer(text=config.SERVER_NAME)
     f = frame_file(guild.id, kind)
     if f:
@@ -3109,11 +3126,12 @@ def points_card(guild: discord.Guild, member: discord.Member, kind: str):
 
 def top_embed(guild: discord.Guild, kind: str, category: str = None):
     rows = points_top(guild.id, kind, category=category)
+    A = kind == "admin"
     medals = ["🥇", "🥈", "🥉"]
-    lines = [f"{medals[i] if i < 3 else f'**{i + 1}.**'} <@{r['user_id']}> : **{r['s']}** نقطة" for i, r in enumerate(rows)]
-    title = "🏆 أفضل 10 في الإدارة" if kind == "admin" else "🏆 أفضل 10 في الشرطة"
+    lines = [f"{medals[i] if (i < 3 and not A) else f'**{i + 1}.**'} <@{r['user_id']}> : **{r['s']}** نقطة" for i, r in enumerate(rows)]
+    title = "أفضل 10 في الإدارة" if A else "🏆 أفضل 10 في الشرطة"
     if category:
-        title = f"🏆 أفضل 10 | {cat_label(guild.id, kind, category)}"
+        title = ("" if A else "🏆 ") + f"أفضل 10 | {cat_label(guild.id, kind, category)}"
     e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0x006C35, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
@@ -3126,16 +3144,17 @@ def top_embed(guild: discord.Guild, kind: str, category: str = None):
 
 def again_view(kind: str) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
-    v.add_item(discord.ui.Button(label="إعادة الاختيار", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=f"pts:again:{kind}"))
+    v.add_item(discord.ui.Button(label="إعادة الاختيار", emoji=None if kind == "admin" else "🔄",
+                                 style=discord.ButtonStyle.secondary, custom_id=f"pts:again:{kind}"))
     return v
 
 
 def admin_menu_view(gid: int = 0) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
     options = [
-        discord.SelectOption(label="نقاطي", value="me", emoji="📊"),
-        discord.SelectOption(label="نقاط شخص معين", value="user", emoji="🔎"),
-        discord.SelectOption(label="توب أفضل عشرة", value="top", emoji="🏆"),
+        discord.SelectOption(label="نقاطي", value="me"),
+        discord.SelectOption(label="نقاط شخص معين", value="user"),
+        discord.SelectOption(label="توب أفضل عشرة", value="top"),
     ]
     v.add_item(discord.ui.Select(custom_id="pts:admin", placeholder="- اختر من القائمة .", options=options))
     return v
@@ -3304,7 +3323,7 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
             e, f = points_card(guild, inter.user, "admin")
             await send_card(inter, e, f, "admin")
         elif choice == "user":
-            await inter.response.send_message(embed=embed("🔎 اختر الشخص"), view=PickUserView("admin"), ephemeral=True)
+            await inter.response.send_message(embed=embed("اختر الشخص"), view=PickUserView("admin"), ephemeral=True)
         else:
             cat = choice.split(":")[1] if ":" in choice else None
             e, f = top_embed(guild, "admin", cat)
@@ -3318,7 +3337,7 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
     if cid.startswith("pts:again:"):
         kind = cid.split(":")[2]
         if kind == "admin":
-            return await inter.response.send_message(embed=embed("📊 نقاط الإدارة", "اختر من القائمة ."), view=admin_menu_view(inter.guild.id), ephemeral=True)
+            return await inter.response.send_message(embed=embed("نقاط الإدارة", "اختر من القائمة ."), view=admin_menu_view(inter.guild.id), ephemeral=True)
         return await inter.response.send_message(embed=embed("💻 MDT الشرطة", "اختر من الأزرار ."), view=mdt_view(), ephemeral=True)
 
     # ---- MDT ----
@@ -3386,7 +3405,7 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     if النوع.value == "admin":
-        e = embed("📊 - نقاط الإدارة", f"**- مرحبا بك عزيزي الإداري في نظام نقاط {config.SERVER_NAME} .**\n\nاختر من القائمة اللي تحت .")
+        e = embed("- نقاط الإدارة", f"**- مرحبا بك عزيزي الإداري في نظام نقاط {config.SERVER_NAME} .**\n\nاختر من القائمة اللي تحت .")
         view = admin_menu_view(inter.guild.id)
     elif النوع.value == "bank":
         e = embed("🏦 - بنك سعودي تايم", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
@@ -3517,7 +3536,7 @@ async def setup_admin_points(inter: discord.Interaction, النوع: app_command
     if النوع and العدد is not None:
         set_setting(gid, ADMIN_PTS_KEY[النوع.value], العدد)
     await inter.response.send_message(embed=embed(
-        "📊 نقاط الإدارة", admin_points_text(gid) + "\n\nبعد ما تغيّر الأسماء، أرسل لوحة النقاط من جديد بـ /ارسال_لوحة ."), ephemeral=True)
+        "نقاط الإدارة", admin_points_text(gid) + "\n\nبعد ما تغيّر الأسماء، أرسل لوحة النقاط من جديد بـ /ارسال_لوحة ."), ephemeral=True)
 
 
 @bot.tree.command(name="تسطيب_نقاط_الشرطة", description="كم نقطة ياخذ العسكري على كل شي")
@@ -3544,7 +3563,7 @@ async def _edit_points(inter: discord.Interaction, kind: str, member: discord.Me
     total = sum(points_breakdown(inter.guild.id, member.id, kind).values())
     name = "نقاط الإدارة" if kind == "admin" else "نقاط الشرطة"
     await inter.response.send_message(
-        embed=embed(f"✏️ تم تعديل {name}", f"{member.mention}: {'+' if amount > 0 else ''}{amount}\nالمجموع الحين: **{total}**"),
+        embed=embed(("" if kind == "admin" else "✏️ ") + f"تم تعديل {name}", f"{member.mention}: {'+' if amount > 0 else ''}{amount}\nالمجموع الحين: **{total}**"),
         ephemeral=True)
     await log(f"{inter.user.mention} عدّل {name} لـ {member.mention}: {amount}", inter.guild)
 
@@ -4197,7 +4216,60 @@ def active_loan(uid: int):
                       (uid,)).fetchone()
 
 
+def freeze_role(guild):
+    """رتبة إيقاف الخدمات (من التسطيب، أو بالاسم)"""
+    r = guild.get_role(get_setting(guild.id, "bank_freeze_role") or 0)
+    if r:
+        return r
+    for r in guild.roles:
+        if "ايقافخدمات" in _norm(r.name):
+            return r
+    return None
+
+
+def bank_frozen(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    r = freeze_role(member.guild)
+    return bool(r and r in member.roles)
+
+
+def bank_admin(member) -> bool:
+    """صاحب السيرفر / الأدمن / الأونر / مسؤول البنك"""
+    if not isinstance(member, discord.Member):
+        return False
+    if member.id == member.guild.owner_id or is_power(member):
+        return True
+    rid = get_setting(member.guild.id, "bank_admin_role")
+    return bool(rid and any(r.id == rid for r in member.roles))
+
+
+def find_account(raw: str):
+    """يلقى الحساب بالآيبان أو ايدي اللاعب أو المنشن"""
+    raw = (raw or "").strip().replace(" ", "").upper().strip("<@!>")
+    raw = raw[2:] if raw.startswith("SA") else raw
+    raw = raw.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    if not raw.isdigit():
+        return None
+    if len(raw) <= 6:
+        return db.execute("SELECT * FROM bank_accounts WHERE iban = ?", (raw,)).fetchone()
+    return get_account(int(raw))
+
+
+async def bank_gate(inter: discord.Interaction) -> bool:
+    """يتأكد إن العضو عنده حساب بنكي وخدماته مو موقوفة (للأوامر السلاش)"""
+    if bank_frozen(inter.user):
+        await inter.response.send_message(embed=err("⛔ خدماتك البنكية **موقوفة**. راجع الإدارة."), ephemeral=True)
+        return False
+    if not get_account(inter.user.id):
+        await inter.response.send_message(embed=err(
+            "ما عندك حساب بنكي 🏦\nروح للبنك واختار **🆕 إنشاء حساب بنكي** أول."), ephemeral=True)
+        return False
+    return True
+
+
 BANK_MENU = [
+    ("إنشاء حساب بنكي", "create", "🆕"),
     ("الكاش", "cash", "💵"),
     ("حسابي البنكي", "me", "💳"),
     ("تحويل مبلغ", "transfer", "🔁"),
@@ -4265,13 +4337,11 @@ class TransferModal(discord.ui.Modal, title="🔁 تحويل"):
         raw = self.target.value.strip().replace(" ", "").upper().strip("<@!>")
         raw = raw[2:] if raw.startswith("SA") else raw
         raw = raw.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-        acc = None
-        if raw.isdigit() and len(raw) <= 6:
-            acc = db.execute("SELECT * FROM bank_accounts WHERE iban = ?", (raw,)).fetchone()
-        elif raw.isdigit():
-            acc = get_account(int(raw)) or (ensure_account(int(raw)) if inter.guild.get_member(int(raw)) else None)
+        acc = find_account(raw)
         if not acc:
-            return await inter.response.send_message(embed=err("ما لقيت حساب بهالآيبان أو الايدي."), ephemeral=True)
+            return await inter.response.send_message(embed=err("ما لقيت حساب بنكي بهالآيبان أو الايدي."), ephemeral=True)
+        if bank_frozen(inter.guild.get_member(acc["user_id"])):
+            return await inter.response.send_message(embed=err("حساب المستلم موقوف ⛔"), ephemeral=True)
         if acc["user_id"] == inter.user.id:
             return await inter.response.send_message(embed=err("ما تقدر تحول لنفسك."), ephemeral=True)
         p = get_player(inter.user.id)
@@ -4358,9 +4428,23 @@ async def handle_bank(inter: discord.Interaction, action: str):
     p = get_player(uid)
     if not p:
         return await inter.response.send_message(embed=err("صار خطأ، جرّب مرة ثانية."), ephemeral=True)
-    acc = ensure_account(uid)
-    if action == "create":  # الحساب ينفتح تلقائي، فزر إنشاء حساب القديم يعرض الحساب
-        action = "me"
+    if bank_frozen(inter.user):
+        return await inter.response.send_message(embed=err("⛔ خدماتك البنكية **موقوفة**. راجع الإدارة."), ephemeral=True)
+    acc = get_account(uid)
+    if action == "create":
+        if acc:
+            return await inter.response.send_message(embed=err(
+                f"عندك حساب بنكي من قبل 💳\nرقم الآيبان: `{fmt_iban(acc['iban'])}`"), ephemeral=True)
+        acc = ensure_account(uid)
+        e = embed("🆕 تم إنشاء حسابك البنكي", f"مبروك {inter.user.mention} 🎉\nصار عندك حساب في بنك {config.SERVER_NAME} .")
+        e.add_field(name="رقم الآيبان", value=f"`{fmt_iban(acc['iban'])}`", inline=False)
+        e.add_field(name="🏦 الرصيد", value=money(p["bank"]))
+        e.set_thumbnail(url=inter.user.display_avatar.url)
+        await log(f"🆕 {inter.user.mention} فتح حساب بنكي (آيبان {acc['iban']})", inter.guild)
+        return await inter.response.send_message(embed=e, ephemeral=True)
+    if not acc:
+        return await inter.response.send_message(embed=err(
+            "ما عندك حساب بنكي 🏦\nاختار **🆕 إنشاء حساب بنكي** من القائمة أول."), ephemeral=True)
     if action == "me":
         loan = active_loan(uid)
         e = embed("💳 حسابي البنكي")
@@ -4424,6 +4508,342 @@ async def handle_loan_decision(inter: discord.Interaction, cid: str):
         except discord.HTTPException:
             pass
     await log(f"{inter.user.mention} {'قبل' if accepted else 'رفض'} قرض <@{loan['user_id']}> ({money(loan['amount'])})", inter.guild)
+
+
+# ============================================================
+# لوحة تحكم البنك (للإدارة)
+# ============================================================
+BANK_ADMIN_MENU = [
+    ("إضافة أموال", "add", "➕", "تضيف فلوس لحساب لاعب بالآيبان أو الايدي"),
+    ("سحب أموال", "take", "➖", "تسحب فلوس من حساب لاعب"),
+    ("كشف الحسابات", "list", "📊", "الحسابات مرتبة من الأغنى"),
+    ("توزيع راتب", "salary", "💼", "راتب لكل اللي معهم رتبة معينة"),
+    ("إعطاء قرض", "loan_give", "📝", "تعطي لاعب قرض مباشرة"),
+    ("سجل القروض", "loans", "📋", "مين عليه قرض وكم باقي"),
+    ("إيقاف خدمات", "freeze", "⛔", "توقف الخدمات البنكية للاعب"),
+    ("فتح خدمات", "unfreeze", "✅", "ترجع الخدمات البنكية للاعب"),
+    ("إعادة الاختيار", "reset", "🔄", None),
+]
+
+
+def bank_admin_view() -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Select(custom_id="bankadm:menu", placeholder="🏦 اختار من لوحة التحكم", options=[
+        discord.SelectOption(label=l, value=val, emoji=em, description=d) for l, val, em, d in BANK_ADMIN_MENU]))
+    return v
+
+
+def bank_admin_embed(guild) -> discord.Embed:
+    e = discord.Embed(title="🏦 - لوحة تحكم البنك", color=0x006C35, description=(
+        "➕ - __إضافة أموال لحساب لاعب بالآيبان أو الايدي .__\n\n"
+        "➖ - __سحب أموال من حساب لاعب .__\n\n"
+        "📊 - __كشف الحسابات مرتبة من الأغنى .__\n\n"
+        "💼 - __توزيع راتب لكل أصحاب رتبة معينة .__\n\n"
+        "📝 - __إعطاء قرض وسجل القروض .__\n\n"
+        "⛔ - __إيقاف وفتح الخدمات البنكية .__"))
+    e.set_footer(text=f"{config.SERVER_NAME} | للإدارة فقط", icon_url=guild.icon.url if guild.icon else None)
+    return e
+
+
+async def _notify(guild, uid, title, text):
+    m = guild.get_member(uid)
+    if m:
+        try:
+            await m.send(embed=embed(title, text))
+        except discord.HTTPException:
+            pass
+
+
+class BankAdminMoneyModal(discord.ui.Modal):
+    def __init__(self, mode):
+        super().__init__(title="➕ إضافة أموال" if mode == "add" else "➖ سحب أموال", timeout=None)
+        self.mode = mode
+        self.target = discord.ui.TextInput(label="الآيبان أو ايدي اللاعب", placeholder="مثال: 4821 أو 123456789012345678", max_length=40)
+        self.amount = discord.ui.TextInput(label="المبلغ", placeholder="مثال: 50000", max_length=15)
+        self.reason = discord.ui.TextInput(label="السبب (اختياري)", required=False, max_length=200)
+        for f_ in (self.target, self.amount, self.reason):
+            self.add_item(f_)
+
+    async def on_submit(self, inter: discord.Interaction):
+        acc = find_account(self.target.value)
+        amt = parse_amount(self.amount.value)
+        if not acc:
+            return await inter.response.send_message(embed=err("ما لقيت حساب بنكي بهالآيبان أو الايدي."), ephemeral=True)
+        if not amt:
+            return await inter.response.send_message(embed=err("اكتب المبلغ رقم صحيح."), ephemeral=True)
+        uid = acc["user_id"]
+        p = get_player(uid)
+        why = self.reason.value.strip()
+        if self.mode == "add":
+            db.execute("UPDATE players SET bank = bank + ? WHERE user_id = ?", (amt, uid))
+        else:
+            if p["bank"] < amt:
+                return await inter.response.send_message(embed=err(
+                    f"رصيده ما يكفي. عنده **{money(p['bank'])}** بس."), ephemeral=True)
+            db.execute("UPDATE players SET bank = bank - ? WHERE user_id = ?", (amt, uid))
+        db.commit()
+        p = get_player(uid)
+        word = "انضاف" if self.mode == "add" else "انسحب"
+        e = embed(("➕ تمت إضافة الأموال" if self.mode == "add" else "➖ تم سحب الأموال"),
+                  f"{word} **{money(amt)}** {'إلى' if self.mode == 'add' else 'من'} <@{uid}>\n"
+                  f"الآيبان: `{acc['iban']}`\nرصيده الحين: **{money(p['bank'])}**" + (f"\nالسبب: {why}" if why else ""))
+        await inter.response.send_message(embed=e, ephemeral=True)
+        await _notify(inter.guild, uid, "🏦 " + ("إيداع من الإدارة" if self.mode == "add" else "سحب من الإدارة"),
+                      f"{word} **{money(amt)}** {'في' if self.mode == 'add' else 'من'} حسابك." + (f"\nالسبب: {why}" if why else ""))
+        await log(f"🏦 {inter.user.mention} {'أضاف' if self.mode == 'add' else 'سحب'} {money(amt)} "
+                  f"{'لـ' if self.mode == 'add' else 'من'} <@{uid}>" + (f" ({why})" if why else ""), inter.guild)
+
+
+class BankAdminLoanModal(discord.ui.Modal, title="📝 إعطاء قرض"):
+    target = discord.ui.TextInput(label="الآيبان أو ايدي اللاعب", max_length=40)
+    amount = discord.ui.TextInput(label="مبلغ القرض", placeholder="مثال: 100000", max_length=15)
+    reason = discord.ui.TextInput(label="السبب (اختياري)", required=False, max_length=200)
+
+    async def on_submit(self, inter: discord.Interaction):
+        acc = find_account(self.target.value)
+        amt = parse_amount(self.amount.value)
+        if not acc:
+            return await inter.response.send_message(embed=err("ما لقيت حساب بنكي بهالآيبان أو الايدي."), ephemeral=True)
+        if not amt:
+            return await inter.response.send_message(embed=err("اكتب المبلغ رقم صحيح."), ephemeral=True)
+        uid = acc["user_id"]
+        old = active_loan(uid)
+        if old and old["status"] == "active":
+            return await inter.response.send_message(embed=err(
+                f"<@{uid}> عليه قرض من قبل، باقي عليه **{money(old['remaining'])}**."), ephemeral=True)
+        if old:  # طلب معلّق: نلغيه ونعطيه القرض مباشرة
+            db.execute("UPDATE loans SET status = 'rejected' WHERE id = ?", (old["id"],))
+        get_player(uid)
+        db.execute("INSERT INTO loans (guild_id, user_id, amount, remaining, reason, status, created_at) "
+                   "VALUES (?, ?, ?, ?, ?, 'active', ?)",
+                   (inter.guild.id, uid, amt, amt, self.reason.value.strip() or f"من الإدارة ({inter.user.display_name})",
+                    now().isoformat()))
+        db.execute("UPDATE players SET bank = bank + ? WHERE user_id = ?", (amt, uid))
+        db.commit()
+        await inter.response.send_message(embed=embed("📝 تم إعطاء القرض",
+            f"انضاف **{money(amt)}** لحساب <@{uid}> كقرض.\nيسدده من البنك بخيار **💸 دفع القروض** ."), ephemeral=True)
+        await _notify(inter.guild, uid, "📝 انعطيت قرض", f"انضاف لحسابك **{money(amt)}** كقرض.\nسدده من البنك بخيار **دفع القروض** .")
+        await log(f"📝 {inter.user.mention} أعطى <@{uid}> قرض {money(amt)}", inter.guild)
+
+
+class BankFreezeModal(discord.ui.Modal):
+    def __init__(self, freeze: bool):
+        super().__init__(title="⛔ إيقاف خدمات" if freeze else "✅ فتح خدمات", timeout=None)
+        self.freeze = freeze
+        self.target = discord.ui.TextInput(label="الآيبان أو ايدي اللاعب", max_length=40)
+        self.reason = discord.ui.TextInput(label="السبب (اختياري)", required=False, max_length=200)
+        self.add_item(self.target)
+        self.add_item(self.reason)
+
+    async def on_submit(self, inter: discord.Interaction):
+        raw = self.target.value
+        acc = find_account(raw)
+        uid = acc["user_id"] if acc else None
+        if uid is None:
+            d = re.sub(r"\D", "", raw.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+            uid = int(d) if len(d) >= 15 else None
+        m = inter.guild.get_member(uid) if uid else None
+        if not m:
+            return await inter.response.send_message(embed=err("ما لقيت اللاعب في السيرفر."), ephemeral=True)
+        role = freeze_role(inter.guild)
+        if not role:
+            try:
+                role = await inter.guild.create_role(name="⛔ إيقاف خدمات", color=discord.Color.dark_grey(),
+                                                     reason="رتبة إيقاف الخدمات البنكية")
+                set_setting(inter.guild.id, "bank_freeze_role", role.id)
+            except discord.HTTPException:
+                return await inter.response.send_message(embed=err(
+                    "ما قدرت أسوي رتبة إيقاف الخدمات. حددها من **/تسطيب_البنك** ."), ephemeral=True)
+        why = self.reason.value.strip()
+        try:
+            if self.freeze:
+                if role in m.roles:
+                    return await inter.response.send_message(embed=err(f"{m.mention} خدماته موقوفة من قبل."), ephemeral=True)
+                await m.add_roles(role, reason=f"إيقاف خدمات بواسطة {inter.user} {why}")
+            else:
+                if role not in m.roles:
+                    return await inter.response.send_message(embed=err(f"{m.mention} خدماته شغالة أصلاً."), ephemeral=True)
+                await m.remove_roles(role, reason=f"فتح خدمات بواسطة {inter.user}")
+        except discord.Forbidden:
+            return await inter.response.send_message(embed=err(
+                f"ما أقدر أعدل رتبة {role.mention}. خل رتبة البوت فوقها."), ephemeral=True)
+        t = "⛔ تم إيقاف الخدمات" if self.freeze else "✅ تم فتح الخدمات"
+        await inter.response.send_message(embed=embed(t, f"{m.mention}" + (f"\nالسبب: {why}" if why else "")), ephemeral=True)
+        await _notify(inter.guild, m.id, t, ("تم إيقاف خدماتك البنكية." if self.freeze else "رجعت خدماتك البنكية ✅")
+                      + (f"\nالسبب: {why}" if why else ""))
+        await log(f"🏦 {inter.user.mention} {'أوقف' if self.freeze else 'فتح'} خدمات {m.mention}" + (f" ({why})" if why else ""),
+                  inter.guild)
+
+
+class SalaryAmountModal(discord.ui.Modal, title="💼 توزيع راتب"):
+    amount = discord.ui.TextInput(label="مبلغ الراتب لكل شخص", placeholder="مثال: 15000", max_length=15)
+
+    def __init__(self, role):
+        super().__init__(timeout=None)
+        self.role = role
+
+    async def on_submit(self, inter: discord.Interaction):
+        amt = parse_amount(self.amount.value)
+        if not amt:
+            return await inter.response.send_message(embed=err("اكتب المبلغ رقم صحيح."), ephemeral=True)
+        role = inter.guild.get_role(self.role.id) or self.role
+        paid, no_acc, frozen = [], 0, 0
+        for m in role.members:
+            if m.bot:
+                continue
+            if bank_frozen(m):
+                frozen += 1
+                continue
+            if not get_account(m.id):
+                no_acc += 1
+                continue
+            get_player(m.id)
+            db.execute("UPDATE players SET bank = bank + ? WHERE user_id = ?", (amt, m.id))
+            paid.append(m)
+        db.commit()
+        e = embed("💼 تم توزيع الراتب",
+                  f"الرتبة: {role.mention}\nالراتب: **{money(amt)}** لكل شخص\n\n"
+                  f"✅ استلموا: **{len(paid)}**\n💸 المجموع: **{money(amt * len(paid))}**"
+                  + (f"\n🚫 ما عندهم حساب بنكي: **{no_acc}**" if no_acc else "")
+                  + (f"\n⛔ خدماتهم موقوفة: **{frozen}**" if frozen else ""))
+        await inter.response.send_message(embed=e, ephemeral=True)
+        await log(f"💼 {inter.user.mention} وزّع راتب {money(amt)} على {len(paid)} من {role.mention}", inter.guild)
+        for m in paid[:60]:
+            try:
+                await m.send(embed=embed("💼 نزل راتبك", f"نزل راتبك **{money(amt)}** في حسابك البنكي ."))
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.4)
+
+
+class SalaryRoleView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        sel = discord.ui.RoleSelect(placeholder="اختار الرتبة اللي تبي تعطيها راتب", min_values=1, max_values=1)
+
+        async def cb(inter: discord.Interaction):
+            if not bank_admin(inter.user):
+                return await inter.response.send_message(embed=err("هذا للإدارة بس."), ephemeral=True)
+            await inter.response.send_modal(SalaryAmountModal(sel.values[0]))
+        sel.callback = cb
+        self.add_item(sel)
+
+
+async def bank_accounts_report(inter: discord.Interaction):
+    rows = db.execute("SELECT a.user_id, a.iban, COALESCE(p.bank, 0) AS bank, COALESCE(p.cash, 0) AS cash "
+                      "FROM bank_accounts a LEFT JOIN players p ON p.user_id = a.user_id ORDER BY bank DESC").fetchall()
+    rows = [r for r in rows if inter.guild.get_member(r["user_id"])]
+    if not rows:
+        return await inter.response.send_message(embed=err("ما فيه أي حساب بنكي للحين."), ephemeral=True)
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = [f"{medals.get(i, f'`{i}.`')} <@{r['user_id']}> — **{money(r['bank'])}** · `{r['iban']}`"
+             + (" ⛔" if bank_frozen(inter.guild.get_member(r["user_id"])) else "")
+             for i, r in enumerate(rows, 1)]
+    desc = ""
+    for ln in lines:
+        if len(desc) + len(ln) > 3700:
+            desc += f"\n… و {len(lines) - desc.count(chr(10)) - 1} حساب ثاني (بالملف)"
+            break
+        desc += ln + "\n"
+    total = sum(r["bank"] for r in rows)
+    e = embed("📊 كشف الحسابات", desc)
+    e.add_field(name="عدد الحسابات", value=f"**{len(rows)}**")
+    e.add_field(name="مجموع الأرصدة", value=f"**{money(total)}**")
+    f = None
+    if len(desc) > 3600:
+        txt = "\n".join(f"{i}. {(inter.guild.get_member(r['user_id']).display_name)} | {r['user_id']} | آيبان {r['iban']} | {r['bank']:,}"
+                        for i, r in enumerate(rows, 1))
+        f = discord.File(io.BytesIO(txt.encode("utf-8")), filename="bank_accounts.txt")
+    if f:
+        await inter.response.send_message(embed=e, file=f, ephemeral=True)
+    else:
+        await inter.response.send_message(embed=e, ephemeral=True)
+
+
+async def bank_loans_report(inter: discord.Interaction):
+    rows = db.execute("SELECT * FROM loans WHERE status IN ('active', 'pending') ORDER BY status, id DESC").fetchall()
+    paid = db.execute("SELECT COUNT(*) FROM loans WHERE status = 'paid'").fetchone()[0]
+    if not rows:
+        return await inter.response.send_message(embed=embed("📋 سجل القروض",
+            f"ما فيه أحد عليه قرض الحين ✅\nالقروض المسددة: **{paid}**"), ephemeral=True)
+    act = [r for r in rows if r["status"] == "active"]
+    pen = [r for r in rows if r["status"] == "pending"]
+    desc = ""
+    if act:
+        desc += "**💸 عليهم قروض:**\n" + "\n".join(
+            f"<@{r['user_id']}> — باقي **{money(r['remaining'])}** من {money(r['amount'])} · `{r['created_at'][:10]}`"
+            for r in act[:40]) + "\n\n"
+    if pen:
+        desc += "**⏳ طلبات تنتظر الرد:**\n" + "\n".join(
+            f"<@{r['user_id']}> — {money(r['amount'])} · {(r['reason'] or '')[:40]}" for r in pen[:15])
+    e = embed("📋 سجل القروض", desc[:4000])
+    e.add_field(name="عليهم قروض", value=f"**{len(act)}**")
+    e.add_field(name="مجموع الباقي", value=f"**{money(sum(r['remaining'] for r in act))}**")
+    e.add_field(name="مسددة", value=f"**{paid}**")
+    await inter.response.send_message(embed=e, ephemeral=True)
+
+
+async def handle_bank_admin(inter: discord.Interaction):
+    choice = (inter.data.get("values") or ["reset"])[0]
+    if choice == "reset" or not bank_admin(inter.user):
+        if choice != "reset":
+            await inter.response.send_message(embed=err("لوحة التحكم للإدارة ومسؤول البنك بس."), ephemeral=True)
+        else:
+            await inter.response.edit_message(view=bank_admin_view())
+        return
+    if choice in ("add", "take"):
+        await inter.response.send_modal(BankAdminMoneyModal(choice))
+    elif choice == "list":
+        await bank_accounts_report(inter)
+    elif choice == "salary":
+        await inter.response.send_message(embed=embed("💼 توزيع راتب", "اختار الرتبة 👇 وبعدها اكتب المبلغ."),
+                                          view=SalaryRoleView(), ephemeral=True)
+    elif choice == "loan_give":
+        await inter.response.send_modal(BankAdminLoanModal())
+    elif choice == "loans":
+        await bank_loans_report(inter)
+    elif choice in ("freeze", "unfreeze"):
+        await inter.response.send_modal(BankFreezeModal(choice == "freeze"))
+    try:
+        await inter.message.edit(view=bank_admin_view())
+    except discord.HTTPException:
+        pass
+
+
+@bot.tree.command(name="لوحة_تحكم_البنك", description="ترسل لوحة تحكم البنك للإدارة (إضافة، سحب، كشف، رواتب، قروض، إيقاف)")
+@app_commands.describe(الروم="الروم (فاضي = هنا)")
+async def bank_admin_panel(inter: discord.Interaction, الروم: discord.TextChannel = None):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    ch = الروم or inter.channel
+    try:
+        await ch.send(embed=bank_admin_embed(inter.guild), view=bank_admin_view())
+    except discord.HTTPException as ex:
+        return await inter.response.send_message(embed=err(f"ما قدرت أرسل: `{str(ex)[:200]}`"), ephemeral=True)
+    await inter.response.send_message(embed=embed("✅ انرسلت لوحة تحكم البنك",
+        f"في {ch.mention}\n💡 خل الروم خاص للإدارة. واللي يقدر يستخدمها: الأونر والأدمن ومسؤول البنك."), ephemeral=True)
+
+
+@bot.tree.command(name="تسطيب_البنك", description="رتبة إيقاف الخدمات ورتبة مسؤول البنك")
+@app_commands.describe(رتبة_ايقاف_الخدمات="الرتبة اللي تنحط على اللي خدماته موقوفة",
+                       رتبة_مسؤول_البنك="الرتبة اللي تقدر تستخدم لوحة تحكم البنك")
+async def setup_bank(inter: discord.Interaction, رتبة_ايقاف_الخدمات: discord.Role = None,
+                     رتبة_مسؤول_البنك: discord.Role = None):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
+    out = []
+    if رتبة_ايقاف_الخدمات:
+        set_setting(inter.guild.id, "bank_freeze_role", رتبة_ايقاف_الخدمات.id)
+        out.append(f"⛔ إيقاف الخدمات: {رتبة_ايقاف_الخدمات.mention}")
+    if رتبة_مسؤول_البنك:
+        set_setting(inter.guild.id, "bank_admin_role", رتبة_مسؤول_البنك.id)
+        out.append(f"🏦 مسؤول البنك: {رتبة_مسؤول_البنك.mention}")
+    if not out:
+        fr = freeze_role(inter.guild)
+        ad = inter.guild.get_role(get_setting(inter.guild.id, "bank_admin_role") or 0)
+        out = [f"⛔ إيقاف الخدمات: {fr.mention if fr else 'ما انحددت (بتنسوى تلقائي أول مرة)'}",
+               f"🏦 مسؤول البنك: {ad.mention if ad else 'ما انحددت'}"]
+    await inter.response.send_message(embed=embed("🏦 تسطيب البنك", "\n".join(out)), ephemeral=True)
 
 
 # ============================================================
@@ -6673,6 +7093,68 @@ async def rename_prefix(message: discord.Message):
     await log(f"✏️ {message.author.mention} غيّر اسم {member.mention} من **{old}** إلى **{new}**", message.guild)
 
 
+async def points_prefix(message: discord.Message, give: bool):
+    """-اعطاء نقاط @شخص 5  /  -خصم نقاط @شخص 5  (للأونرية وصاحب السيرفر)"""
+    g, a = message.guild, message.author
+    if not (a.id == g.owner_id or has_owner_role(a)):
+        return await message.reply("❌ إعطاء وخصم النقاط للأونرية بس.")
+    words = message.content.split()[1:]
+    if words and words[0] in ("نقاط", "نقطه", "نقطة"):
+        words = words[1:]
+    member = message.mentions[0] if message.mentions else None
+    amount, rest = None, []
+    for w in words:
+        d = w.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")).strip("<@!>")
+        if member is None and d.isdigit() and len(d) >= 15:
+            member = g.get_member(int(d))
+        elif amount is None and d.isdigit() and len(d) < 9:
+            amount = int(d)
+        elif not w.startswith("<@"):
+            rest.append(w)
+    cmd = "-اعطاء نقاط" if give else "-خصم نقاط"
+    pub = g.get_channel(get_setting(g.id, "ch_points") or 0) or _guess_channel(g, ["نشر"])
+    if not pub:
+        return await message.reply("❌ ما لقيت روم النشر. حدده من **/تسطيب_رومات** خيار **النشر** .")
+    if message.channel.id != pub.id:
+        return await message.reply(f"❌ النقاط تنعطى وتنخصم في روم النشر بس: {pub.mention}")
+    if not member or not amount:
+        return await message.reply(f"❌ الاستخدام: `{cmd} @الشخص العدد`\nمثال: `{cmd} @فهد 5`")
+    if member.bot:
+        return await message.reply("❌ البوتات ما لها نقاط.")
+    why = " ".join(rest).strip()
+    b = points_breakdown(g.id, member.id, "admin")
+    have = b.get("publish", 0)
+    if not give and have < amount:
+        return await message.reply(embed=err(
+            f"نقاط {member.mention} ما تكفي للخصم ❌\nعنده **{have}** نقطة نشر بس، وإنت تبي تخصم **{amount}** ."))
+    add_points(g.id, member.id, "admin", "publish", amount if give else -amount)
+    total = have + (amount if give else -amount)
+    title = "تم إعطاء نقاط" if give else "تم خصم نقاط"
+    e = discord.Embed(title=title, color=0x006C35, timestamp=now(), description=(
+        f"**الأونر :** {a.mention}\n"
+        f"**{'المعطى' if give else 'المخصوم منه'} :** {member.mention}\n"
+        f"**العدد :** {'+' if give else '-'}{amount} نقطة\n"
+        f"**نقاط النشر الحين :** {total}\n"
+        f"**مجموع نقاطه كلها :** {sum(b.values()) + (amount if give else -amount)}" + (f"\n**السبب :** {why}" if why else "")))
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=config.SERVER_NAME)
+    await message.reply(embed=e, mention_author=False)
+    await log(f"{a.mention} {'أعطى' if give else 'خصم'} {amount} نقطة {'لـ' if give else 'من'} {member.mention} (المجموع {total})", g)
+    # رسالة لصاحب السيرفر (لو اللي سواها أونر ثاني)
+    owner = g.owner or g.get_member(g.owner_id)
+    if owner and owner.id != a.id:
+        try:
+            await owner.send(embed=e)
+        except discord.HTTPException:
+            pass
+    try:
+        await member.send(embed=discord.Embed(title=title, color=0x006C35, description=(
+            f"{'انعطيت' if give else 'انخصم منك'} **{amount}** نقطة نشر بواسطة {a.mention}\n"
+            f"نقاط النشر حقتك الحين: **{total}**" + (f"\nالسبب: {why}" if why else ""))))
+    except discord.HTTPException:
+        pass
+
+
 async def id_prefix(message: discord.Message):
     """-ايدي @رتبة (أو @شخص أو #روم) ← يرد بالايدي بس كتابة عادية عشان ينسخ"""
     bad = _staff_room_check(message, "ch_roles_cmd")
@@ -6878,6 +7360,12 @@ async def handle_enlist(inter: discord.Interaction, cid: str):
 # ============================================================
 # لوحة الدعم: المساعدة + الشكاوى في رسالة وحدة بزرين، وكل تذكرة لها كلام برا وداخل
 # ============================================================
+SUPPORT_TITLE = "- Saudi Time - VrP . Tickets"
+SUPPORT_OUT = ("🛠️ - __تذكرة المساعدة مخصصة للاستفسارات وطلب المساعدة وحل المشاكل .__\n\n"
+               "⚠️ - __تذكرة الشكاوى مخصصة لرفع الشكاوى على الأعضاء أو الإدارة بشكل خاص وسري .__\n\n"
+               "📌 - __يُرجى فتح التذكرة فقط للأمور التي تستدعي التدخل ، ويُمنع الإسراف في فتح التذاكر أو المنشن بدون سبب .__\n\n"
+               "🔔 - __في حال وجود شكوى ، يُرجى إرفاق الأدلة الواضحة لضمان النظر فيها بالشكل المناسب .__\n\n"
+               "💚 - __إدارة سعودي تايم في خدمتكم دائمًا ، ونسعى لتوفير بيئة منظمة وممتعة للجميع .__")
 SUPPORT_TEXTS = {
     "help_out": ("# 🛠️ قسم المساعدة والدعم الفني\n\n"
                  "> **أهلاً بك يا غالي في سيرفر سعودي تايم! 🌟**\n"
@@ -6915,6 +7403,21 @@ def support_slots(gid: int):
     return find_ticket_slot(gid, ("مساعد",)), find_ticket_slot(gid, ("شكو", "شكاو", "بلاغ"))
 
 
+def guild_emojis(guild, text):
+    """يحول :اسم: لإيموجي السيرفر (أو أي سيرفر فيه البوت) عشان يطلع في الإيمبد."""
+    if not text or not guild:
+        return text
+    pool = {}
+    for em in list(bot.emojis):
+        pool.setdefault(em.name.lower(), em)
+    for em in guild.emojis:
+        pool[em.name.lower()] = em
+    def rep(m):
+        em = pool.get(m.group(1).lower())
+        return str(em) if em else m.group(0)
+    return re.sub(r"(?<![<\w]):([A-Za-z0-9_~\-]{2,32}):(?!\d)", rep, text)
+
+
 async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment = None):
     help_s, comp_s = support_slots(guild.id)
     if not help_s or not comp_s:
@@ -6923,8 +7426,9 @@ async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment
     for slot, key in ((help_s, "help_in"), (comp_s, "comp_in")):
         if not get_text(guild.id, f"tk_in_{slot}", ""):
             set_text(guild.id, f"tk_in_{slot}", SUPPORT_TEXTS[key])
-    e1 = discord.Embed(description=get_text(guild.id, f"tk_out_{help_s}", "") or SUPPORT_TEXTS["help_out"], color=0x006C35)
-    e2 = discord.Embed(description=get_text(guild.id, f"tk_out_{comp_s}", "") or SUPPORT_TEXTS["comp_out"], color=0x006C35)
+    e2 = discord.Embed(title=guild_emojis(guild, get_text(guild.id, "support_title", "") or SUPPORT_TITLE)[:256],
+                       description=guild_emojis(guild, get_text(guild.id, "support_out", "") or SUPPORT_OUT)[:4000],
+                       color=0x006C35)
     if image is not None and (image.content_type or "").startswith("image/"):
         f = discord.File(io.BytesIO(await image.read()), filename="support" + (os.path.splitext(image.filename)[1] or ".png"))
     else:
@@ -6935,7 +7439,7 @@ async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment
     e2.set_image(url=f"attachment://{fname}")
     e2.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
     try:
-        await ch.send(embeds=[e1, e2], file=f, view=ticket_buttons_panel(guild.id, [help_s, comp_s]))
+        await ch.send(embed=e2, file=f, view=ticket_buttons_panel(guild.id, [help_s, comp_s]))
     except discord.Forbidden:
         return f"ما عندي صلاحية أرسل في {ch.mention}."
     except discord.HTTPException as ex:
@@ -6946,7 +7450,7 @@ async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment
                                          custom_id=f"ticket:btn:{t['slot']}"))
         f = discord.File(io.BytesIO(fbytes), filename=fname)
         try:
-            await ch.send(embeds=[e1, e2], file=f, view=v)
+            await ch.send(embed=e2, file=f, view=v)
         except discord.HTTPException as ex2:
             return f"ديسكورد رفض الرسالة: `{str(ex2)[:250]}` (قبلها: `{str(ex)[:150]}`)"
     register_panel(guild.id, "support", ch.id, {})
@@ -7005,23 +7509,24 @@ class SupportTextModal(discord.ui.Modal, title="🛠️ كلام لوحة الد
     def __init__(self, gid, help_s, comp_s, out_img, in_img):
         super().__init__(timeout=None)
         self.gid, self.help_s, self.comp_s, self.out_img, self.in_img = gid, help_s, comp_s, out_img, in_img
-
-        def field(label, key, default):
-            cur = get_text(gid, key, "") or default
-            return discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, default=cur[:4000],
-                                        max_length=4000, required=False)
-        self.h_out = field("المساعدة: الكلام برا (اللوحة)", f"tk_out_{help_s}", SUPPORT_TEXTS["help_out"])
-        self.h_in = field("المساعدة: الكلام داخل التذكرة", f"tk_in_{help_s}", SUPPORT_TEXTS["help_in"])
-        self.c_out = field("الشكاوى: الكلام برا (اللوحة)", f"tk_out_{comp_s}", SUPPORT_TEXTS["comp_out"])
-        self.c_in = field("الشكاوى: الكلام داخل التذكرة", f"tk_in_{comp_s}", SUPPORT_TEXTS["comp_in"])
-        for f_ in (self.h_out, self.h_in, self.c_out, self.c_in):
+        self.t = discord.ui.TextInput(label="عنوان اللوحة", max_length=250, required=False,
+                                      default=(get_text(gid, "support_title", "") or SUPPORT_TITLE))
+        self.out = discord.ui.TextInput(label="الكلام برا (اللوحة)", style=discord.TextStyle.paragraph, max_length=4000,
+                                        required=False, default=(get_text(gid, "support_out", "") or SUPPORT_OUT)[:4000])
+        self.h_in = discord.ui.TextInput(label="المساعدة: الكلام داخل التذكرة", style=discord.TextStyle.paragraph,
+                                         max_length=4000, required=False,
+                                         default=(get_text(gid, f"tk_in_{help_s}", "") or SUPPORT_TEXTS["help_in"])[:4000])
+        self.c_in = discord.ui.TextInput(label="الشكاوى: الكلام داخل التذكرة", style=discord.TextStyle.paragraph,
+                                         max_length=4000, required=False,
+                                         default=(get_text(gid, f"tk_in_{comp_s}", "") or SUPPORT_TEXTS["comp_in"])[:4000])
+        for f_ in (self.t, self.out, self.h_in, self.c_in):
             self.add_item(f_)
 
     async def on_submit(self, inter: discord.Interaction):
         g = self.gid
-        set_text(g, f"tk_out_{self.help_s}", self.h_out.value or SUPPORT_TEXTS["help_out"])
+        set_text(g, "support_title", self.t.value or SUPPORT_TITLE)
+        set_text(g, "support_out", self.out.value or SUPPORT_OUT)
         set_text(g, f"tk_in_{self.help_s}", self.h_in.value or SUPPORT_TEXTS["help_in"])
-        set_text(g, f"tk_out_{self.comp_s}", self.c_out.value or SUPPORT_TEXTS["comp_out"])
         set_text(g, f"tk_in_{self.comp_s}", self.c_in.value or SUPPORT_TEXTS["comp_in"])
         notes = []
         for att, slots in ((self.out_img, [-1]), (self.in_img, [self.help_s, self.comp_s])):
@@ -7038,7 +7543,8 @@ class SupportTextModal(discord.ui.Modal, title="🛠️ كلام لوحة الد
         await inter.response.send_message(embed=embed("✅ تم تسطيب لوحة الدعم", (
             "انحفظ كل شي 👌\n" + ("\n".join(notes) + "\n" if notes else "") +
             "\nالحين اكتب **`-مساعده`** في الروم اللي تبيه، أو **`/ارسال_الدعم`**.\n"
-            "وتقدر تعدّل أي شي بنفس الأمر مرة ثانية.")), ephemeral=True)
+            "💡 `__كلام__` يحط خط تحت الكلام، و `**كلام**` يخليه عريض.\n"
+            "😎 إيموجي السيرفر: اكتب اسمه بين نقطتين مثل `:ts_logo:` وبيطلع إيموجي في اللوحة.")), ephemeral=True)
 
 
 @bot.tree.command(name="تسطيب_الدعم", description="تسطيب لوحة المساعدة والشكاوى كاملة: الأسماء والإيموجي والرتب والصور والكلام")
@@ -7145,6 +7651,8 @@ async def on_interaction(inter: discord.Interaction):
         await news_open(inter)
     elif cid == "rules:open":
         await handle_rules(inter)
+    elif cid == "bankadm:menu":
+        await handle_bank_admin(inter)
     elif cid == "bank:menu":
         choice = (inter.data.get("values") or ["reset"])[0]
         if choice == "reset":

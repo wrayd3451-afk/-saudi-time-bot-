@@ -1413,6 +1413,8 @@ async def on_message(message: discord.Message):
     first = message.content.strip().split()[:1]
     if message.content.strip().split()[:1] in (["-ايموجي"], ["-إيموجي"], ["-ايموجيات"]):
         return await emoji_prefix(message)
+    if first in (["-نداء"], ["-نداءات"]):
+        return await call_prefix(message)
     if first in (["-اسم"], ["-معرف"], ["-تحديث_المعرف"]):
         return await rename_prefix(message)
     if first in (["-ايدي"], ["-آيدي"], ["-id"]):
@@ -1425,6 +1427,10 @@ async def on_message(message: discord.Message):
         if "اداره" in _norm(message.content) or "الاداره" in _norm(message.content):
             return await staff_warning_broadcast(message)
         return await owners_warning(message)
+    if first in (["-اعطاء_شرطة"], ["-إعطاء_شرطة"], ["-نقاط_شرطة"]):
+        return await police_points_prefix(message, True)
+    if first in (["-خصم_شرطة"],):
+        return await police_points_prefix(message, False)
     if first in (["-تسديد"], ["-تسديد_تحذير"]):
         ok, msg = await pay_warning(message.guild, message.author)
         return await message.reply(embed=embed("💳 تسديد التحذير", msg))
@@ -3429,6 +3435,7 @@ async def handle_points_interaction(inter: discord.Interaction, cid: str):
     app_commands.Choice(name="MDT الشرطة", value="mdt"),
     app_commands.Choice(name="اليونتات LSPD / SWAT", value="units"),
     app_commands.Choice(name="البنك", value="bank"),
+    app_commands.Choice(name="نقاط الشرطة (للقائد)", value="ppts"),
 ])
 async def send_points_panel(inter: discord.Interaction, النوع: app_commands.Choice[str], الروم: discord.TextChannel):
     if not admin_only(inter):
@@ -3440,6 +3447,11 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
         e = embed("🏦 - بنك سعودي تايم", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
                   "اختر من القائمة اللي تحت .", 0x006C35)
         view = bank_view()
+    elif النوع.value == "ppts":
+        e = embed("🚓 - نقاط الشرطة", f"**- لوحة نقاط الشرطة في {config.SERVER_NAME} .**\n\n"
+                  "➕ - __إعطاء نقاط لعسكري (للقائد) .__\n➖ - __خصم نقاط من عسكري (للقائد) .__\n"
+                  "👤 - __نقاط عسكري معين .__\n🏆 - __توب أفضل عشرة .__", 0x006C35)
+        view = ppts_view()
     elif النوع.value == "units":
         e = embed("🚓 - اليونتات", f"**- مرحبا بك عزيزي العسكري في {config.SERVER_NAME} .**\n\n"
                   "اضغط على القطاع حقك وبيطلع لك رقم اليونت ويتغيّر اسمك تلقائي .\n\n"
@@ -3570,19 +3582,29 @@ async def setup_admin_points(inter: discord.Interaction, النوع: app_command
 
 @bot.tree.command(name="تسطيب_نقاط_الشرطة", description="كم نقطة ياخذ العسكري على كل شي")
 @app_commands.describe(القبض="نقاط القبض على مجرم (الافتراضي 3)", المخالفة="نقاط المخالفة (الافتراضي 1)",
-                       دقائق_الدوام="كل كم دقيقة دوام = نقطة (الافتراضي 30)")
+                       دقائق_الدوام="كل كم دقيقة دوام = نقطة (الافتراضي 30)",
+                       رتبة_القائد="رتبة قائد الشرطة (يعطي ويخصم نقاط بـ -اعطاء_شرطة و -خصم_شرطة)",
+                       رتبة_القائد_2="رتبة قيادة ثانية (اختياري، مثل نائب القائد)")
 async def setup_police_points(inter: discord.Interaction, القبض: app_commands.Range[int, 0, 1000] = None,
                               المخالفة: app_commands.Range[int, 0, 1000] = None,
-                              دقائق_الدوام: app_commands.Range[int, 1, 1440] = None):
+                              دقائق_الدوام: app_commands.Range[int, 1, 1440] = None,
+                              رتبة_القائد: discord.Role = None, رتبة_القائد_2: discord.Role = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     gid = inter.guild.id
+    if رتبة_القائد:
+        set_setting(gid, "role_police_leader", رتبة_القائد.id)
+    if رتبة_القائد_2:
+        set_setting(gid, "role_police_leader2", رتبة_القائد_2.id)
     for key, val in (("pts_arrest", القبض), ("pts_fine", المخالفة), ("pts_duty_min", دقائق_الدوام)):
         if val is not None:
             set_setting(gid, key, val)
     await inter.response.send_message(embed=embed("🚓 نقاط الشرطة", (
         f"🚔 القبض : **{pts_value(gid, 'pts_arrest')}** نقطة\n🧾 المخالفة : **{pts_value(gid, 'pts_fine')}** نقطة\n"
-        f"🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام"), 0x006C35), ephemeral=True)
+        f"🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام\n"
+        f"👮‍♂️ القيادة : " + (" ".join(f"<@&{get_setting(gid, k)}>" for k in ("role_police_leader", "role_police_leader2")
+                                   if get_setting(gid, k)) or "ما انحددت")
+        + "\n\n💡 القائد يكتب `-اعطاء_شرطة @العسكري 5` أو `-خصم_شرطة @العسكري 5`"), 0x006C35), ephemeral=True)
 
 
 async def _edit_points(inter: discord.Interaction, kind: str, member: discord.Member, amount: int):
@@ -8238,6 +8260,462 @@ async def setup_welcome(inter: discord.Interaction, التشغيل: app_commands
         f"**روم القوانين :** {rules.mention if rules else 'ما لقيته ← حدده'}" + note)), ephemeral=True)
 
 
+# ============================================================
+# نظام السرقات: لازم تكون داخل الروم الصوتي حق المكان + لعبة حفظ المربعات
+# ============================================================
+db.execute("""CREATE TABLE IF NOT EXISTS rob_places (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, name TEXT, emoji TEXT, voice_id INTEGER,
+    min_amt INTEGER, max_amt INTEGER, police INTEGER, cooldown INTEGER, squares INTEGER, last_robbed REAL DEFAULT 0)""")
+db.execute("""CREATE TABLE IF NOT EXISTS rob_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, user_id INTEGER, place_id INTEGER,
+    status TEXT, amount INTEGER DEFAULT 0, at REAL)""")
+db.commit()
+ROB_PLAYER_COOLDOWN = 30 * 60   # كل لاعب يسرق مرة كل 30 دقيقة
+ROB_SHOW_SECONDS = 8            # وقت حفظ المربعات
+ROB_PLAY_SECONDS = 25           # وقت الضغط
+ROB_ROWS, ROB_COLS = 4, 5
+
+
+def rob_places(gid):
+    return db.execute("SELECT * FROM rob_places WHERE guild_id = ? ORDER BY id", (gid,)).fetchall()
+
+
+def police_on_duty(guild) -> int:
+    rows = db.execute("SELECT user_id FROM duty_active WHERE guild_id = ?", (guild.id,)).fetchall()
+    return sum(1 for r in rows if guild.get_member(r["user_id"]))
+
+
+def rob_panel(guild):
+    places = rob_places(guild.id)
+    lines = []
+    for p in places:
+        vc = guild.get_channel(p["voice_id"])
+        lines.append(f"{p['emoji'] or '💰'} **{p['name']}** — {money(p['min_amt'])} إلى {money(p['max_amt'])}\n"
+                     f"> 🔊 {vc.mention if vc else 'روم محذوف'} · 👮 يحتاج {p['police']} شرطي · ⏳ كل {p['cooldown']} دقيقة")
+    e = discord.Embed(title="🦹 - نظام السرقات", color=0x006C35, description=(
+        "- __لازم تكون **داخل الروم الصوتي حق المكان** عشان تبدأ السرقة .__\n"
+        "- __لازم يكون فيه **شرطة في الدوام** بالعدد المطلوب .__\n"
+        f"- __بتطلع لك مربعات خضراء **{ROB_SHOW_SECONDS} ثواني** ، احفظ أماكنها واضغطها كلها صح .__\n"
+        "- __أي غلطة = تفشل السرقة ، والشرطة توصلها إنذار أول ما تبدأ .__\n\n"
+        + ("\n\n".join(lines) or "ما فيه أماكن للحين .")))
+    e.set_footer(text=f"{config.SERVER_NAME} | نظام السرقات", icon_url=guild.icon.url if guild.icon else None)
+    v = discord.ui.View(timeout=None)
+    opts = [discord.SelectOption(label=p["name"][:100], value=str(p["id"]), emoji=p["emoji"] or "💰",
+                                 description=f"{p['min_amt']:,} - {p['max_amt']:,}"[:100]) for p in places[:24]]
+    opts.append(discord.SelectOption(label="إعادة الاختيار", value="reset", emoji="🔄"))
+    v.add_item(discord.ui.Select(custom_id="rob:menu", placeholder="🦹 اختار المكان اللي تبي تسرقه", options=opts))
+    return e, v
+
+
+async def rob_alert(guild, text, color=0xB00000, ping=True):
+    ch = guild.get_channel(get_setting(guild.id, "ch_rob_alert") or 0)
+    if not ch:
+        return
+    role = guild.get_role(role_setting(guild, "role_police", config.POLICE_ROLE_ID))
+    try:
+        await ch.send(content=role.mention if (ping and role) else None,
+                      embed=discord.Embed(description=text, color=color, timestamp=now()),
+                      allowed_mentions=discord.AllowedMentions(roles=True))
+    except discord.HTTPException:
+        pass
+
+
+class RobGame(discord.ui.View):
+    def __init__(self, inter, place, log_id):
+        super().__init__(timeout=ROB_SHOW_SECONDS + ROB_PLAY_SECONDS)
+        self.inter, self.place, self.log_id = inter, place, log_id
+        n = max(3, min(int(place["squares"] or 6), 12))
+        self.targets = set(random.sample(range(ROB_ROWS * ROB_COLS), n))
+        self.found, self.done, self.showing, self.bad = set(), False, True, None
+        self.render()
+
+    def render(self):
+        self.clear_items()
+        for i in range(ROB_ROWS * ROB_COLS):
+            if self.showing or i in self.found:
+                style = discord.ButtonStyle.success if i in self.targets else discord.ButtonStyle.secondary
+            elif self.bad == i:
+                style = discord.ButtonStyle.danger
+            elif self.done and i in self.targets:
+                style = discord.ButtonStyle.success
+            else:
+                style = discord.ButtonStyle.secondary
+            b = discord.ui.Button(label="​", style=style, row=i // ROB_COLS,
+                                  disabled=self.showing or self.done or i in self.found)
+            b.callback = self.make_cb(i)
+            self.add_item(b)
+
+    def make_cb(self, i):
+        async def cb(inter: discord.Interaction):
+            if inter.user.id != self.inter.user.id or self.done or self.showing:
+                return await inter.response.defer()
+            if i in self.targets:
+                self.found.add(i)
+                if self.found == self.targets:
+                    self.done = True
+                    self.render()
+                    await inter.response.edit_message(view=self)
+                    return await self.finish(True)
+                self.render()
+                return await inter.response.edit_message(view=self)
+            self.bad, self.done = i, True
+            self.render()
+            await inter.response.edit_message(view=self)
+            await self.finish(False, "ضغطت مربع غلط ❌")
+        return cb
+
+    async def start(self):
+        await asyncio.sleep(ROB_SHOW_SECONDS)
+        if self.done:
+            return
+        self.showing = False
+        self.render()
+        try:
+            await self.inter.edit_original_response(embed=embed(
+                "🦹 اضغط أماكن المربعات الخضراء !", f"عندك **{ROB_PLAY_SECONDS} ثانية** . أي غلطة = تفشل السرقة ."), view=self)
+        except discord.HTTPException:
+            pass
+
+    async def on_timeout(self):
+        if not self.done:
+            self.done = True
+            self.render()
+            await self.finish(False, "خلص الوقت ⏰")
+
+    async def finish(self, ok: bool, why: str = ""):
+        self.stop()
+        g, u, p = self.inter.guild, self.inter.user, self.place
+        m = g.get_member(u.id)
+        if ok and not (m and m.voice and m.voice.channel and m.voice.channel.id == p["voice_id"]):
+            ok, why = False, "طلعت من الروم الصوتي قبل ما تخلص 🔇"
+        amount = random.randint(p["min_amt"], max(p["min_amt"], p["max_amt"])) if ok else 0
+        if ok:
+            get_player(u.id)
+            db.execute("UPDATE players SET cash = cash + ? WHERE user_id = ?", (amount, u.id))
+        db.execute("UPDATE rob_log SET status = ?, amount = ? WHERE id = ?", ("success" if ok else "fail", amount, self.log_id))
+        db.commit()
+        e = (embed("💰 نجحت السرقة !", f"سرقت **{money(amount)}** كاش من **{p['name']}** 🏃‍♂️\nاهرب قبل توصل الشرطة !")
+             if ok else embed("🚨 فشلت السرقة", f"{why}\nالإنذار اشتغل والشرطة في الطريق !", 0xB00000))
+        try:
+            await self.inter.edit_original_response(embed=e, view=self)
+        except discord.HTTPException:
+            pass
+        vc = g.get_channel(p["voice_id"])
+        await rob_alert(g, (f"🏃‍♂️ **انتهت السرقة في {p['emoji'] or ''} {p['name']}**\nالسارق هرب بالفلوس ! ({vc.mention if vc else ''})"
+                            if ok else f"🚨 **فشلت السرقة في {p['emoji'] or ''} {p['name']}**\nالسارق للحين في الموقع ! ({vc.mention if vc else ''})"),
+                        0xE6A100 if ok else 0xB00000, ping=not ok)
+        await log(f"🦹 {u.mention} {'نجح' if ok else 'فشل'} في سرقة {p['name']}" + (f" وأخذ {money(amount)}" if ok else f" ({why})"), g)
+
+
+async def handle_rob_menu(inter: discord.Interaction):
+    val = (inter.data.get("values") or ["reset"])[0]
+    g, u = inter.guild, inter.user
+    if val == "reset":
+        e, v = rob_panel(g)
+        return await inter.response.edit_message(embed=e, view=v)
+    try:
+        e, v = rob_panel(g)
+        await inter.message.edit(embed=e, view=v)
+    except discord.HTTPException:
+        pass
+    p = db.execute("SELECT * FROM rob_places WHERE id = ? AND guild_id = ?", (int(val), g.id)).fetchone()
+    if not p:
+        return await inter.response.send_message(embed=err("المكان هذا انحذف."), ephemeral=True)
+    vc = g.get_channel(p["voice_id"])
+    # 1) لازم يكون في الروم الصوتي حق المكان
+    if not (u.voice and u.voice.channel and u.voice.channel.id == p["voice_id"]):
+        return await inter.response.send_message(embed=err(
+            f"لازم تكون **داخل الروم الصوتي** حق المكان عشان تسرق 🔊\nادخل {vc.mention if vc else 'روم المكان'} وجرّب مرة ثانية ."), ephemeral=True)
+    # 2) الشرطة ما تسرق
+    pr = role_setting(g, "role_police", config.POLICE_ROLE_ID)
+    if pr and any(r.id == pr for r in u.roles) and not is_power(u):
+        return await inter.response.send_message(embed=err("الشرطة ما تسرق 👮"), ephemeral=True)
+    # 3) عدد الشرطة
+    cops = police_on_duty(g)
+    if cops < (p["police"] or 0):
+        return await inter.response.send_message(embed=err(
+            f"ما تقدر تسرق الحين 👮\nالمكان يحتاج **{p['police']}** شرطي في الدوام ، والموجودين **{cops}** بس ."), ephemeral=True)
+    t = now().timestamp()
+    # 4) انتظار المكان
+    left = (p["last_robbed"] or 0) + (p["cooldown"] or 0) * 60 - t
+    if left > 0:
+        return await inter.response.send_message(embed=err(
+            f"**{p['name']}** انسرق قريب 🔒\nيفتح بعد **{int(left // 60) + 1}** دقيقة ."), ephemeral=True)
+    # 5) انتظار اللاعب
+    last = db.execute("SELECT MAX(at) FROM rob_log WHERE guild_id = ? AND user_id = ?", (g.id, u.id)).fetchone()[0] or 0
+    if t - last < ROB_PLAYER_COOLDOWN and not is_power(u):
+        return await inter.response.send_message(embed=err(
+            f"سرقت قبل شوي ⏳ تقدر تسرق بعد **{int((ROB_PLAYER_COOLDOWN - (t - last)) // 60) + 1}** دقيقة ."), ephemeral=True)
+    db.execute("UPDATE rob_places SET last_robbed = ? WHERE id = ?", (t, p["id"]))
+    cur = db.execute("INSERT INTO rob_log (guild_id, user_id, place_id, status, at) VALUES (?, ?, ?, 'running', ?)",
+                     (g.id, u.id, p["id"], t))
+    db.commit()
+    game = RobGame(inter, p, cur.lastrowid)
+    await inter.response.send_message(embed=embed(
+        f"🦹 سرقة {p['name']} بدأت !", f"**احفظ أماكن المربعات الخضراء** 👀\nعندك **{ROB_SHOW_SECONDS} ثواني** وبعدها تختفي ."),
+        view=game, ephemeral=True)
+    await rob_alert(g, f"🚨 **سرقة جارية في {p['emoji'] or ''} {p['name']}** !\n📍 {vc.mention if vc else ''}\n"
+                       f"👮 كل الوحدات تتوجه للموقع فورًا !")
+    asyncio.create_task(game.start())
+
+
+@bot.tree.command(name="تسطيب_سرقة", description="تضيف أو تعدّل أو تحذف مكان سرقة (مربوط بروم صوتي)")
+@app_commands.describe(الاسم="اسم المكان (مثال: البنك المركزي)", الروم_الصوتي="الروم الصوتي حق المكان",
+                       أقل_مبلغ="أقل فلوس ياخذها", أعلى_مبلغ="أعلى فلوس ياخذها",
+                       عدد_الشرطة="كم شرطي لازم يكون في الدوام (الافتراضي 1)",
+                       الانتظار="كم دقيقة بين كل سرقة للمكان (الافتراضي 60)",
+                       المربعات="كم مربع أخضر (صعوبة) من 3 إلى 12 (الافتراضي 6)",
+                       الإيموجي="إيموجي المكان", روم_الإنذار="الروم اللي يوصله إنذار الشرطة", حذف="تحذف المكان")
+@app_commands.choices(حذف=[app_commands.Choice(name="نعم احذفه", value=1)])
+async def setup_rob(inter: discord.Interaction, الاسم: str, الروم_الصوتي: discord.VoiceChannel = None,
+                    أقل_مبلغ: app_commands.Range[int, 0, 100000000] = None, أعلى_مبلغ: app_commands.Range[int, 0, 100000000] = None,
+                    عدد_الشرطة: app_commands.Range[int, 0, 30] = None, الانتظار: app_commands.Range[int, 0, 10080] = None,
+                    المربعات: app_commands.Range[int, 3, 12] = None, الإيموجي: str = None,
+                    روم_الإنذار: discord.TextChannel = None, حذف: app_commands.Choice[int] = None):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأونر والأدمن بس."), ephemeral=True)
+    g = inter.guild
+    if روم_الإنذار:
+        set_setting(g.id, "ch_rob_alert", روم_الإنذار.id)
+    old = db.execute("SELECT * FROM rob_places WHERE guild_id = ? AND name = ?", (g.id, الاسم.strip())).fetchone()
+    if حذف:
+        if not old:
+            return await inter.response.send_message(embed=err("ما لقيت مكان بهالاسم."), ephemeral=True)
+        db.execute("DELETE FROM rob_places WHERE id = ?", (old["id"],))
+        db.commit()
+        return await inter.response.send_message(embed=embed("🗑️ انحذف المكان", f"**{الاسم}**\nأرسل اللوحة من جديد بـ /لوحة_السرقات ."), ephemeral=True)
+    if not old and not الروم_الصوتي:
+        return await inter.response.send_message(embed=err("مكان جديد؟ لازم تختار **الروم_الصوتي** حقه."), ephemeral=True)
+    vals = dict(voice_id=الروم_الصوتي.id if الروم_الصوتي else old["voice_id"],
+                min_amt=أقل_مبلغ if أقل_مبلغ is not None else (old["min_amt"] if old else 5000),
+                max_amt=أعلى_مبلغ if أعلى_مبلغ is not None else (old["max_amt"] if old else 20000),
+                police=عدد_الشرطة if عدد_الشرطة is not None else (old["police"] if old else 1),
+                cooldown=الانتظار if الانتظار is not None else (old["cooldown"] if old else 60),
+                squares=المربعات if المربعات is not None else (old["squares"] if old else 6),
+                emoji=(الإيموجي or (old["emoji"] if old else "💰"))[:60])
+    if vals["max_amt"] < vals["min_amt"]:
+        vals["max_amt"] = vals["min_amt"]
+    if old:
+        db.execute("UPDATE rob_places SET voice_id=?, min_amt=?, max_amt=?, police=?, cooldown=?, squares=?, emoji=? WHERE id=?",
+                   (*vals.values(), old["id"]))
+    else:
+        db.execute("INSERT INTO rob_places (guild_id, name, voice_id, min_amt, max_amt, police, cooldown, squares, emoji) "
+                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (g.id, الاسم.strip(), *list(vals.values())))
+    db.commit()
+    vc = g.get_channel(vals["voice_id"])
+    al = g.get_channel(get_setting(g.id, "ch_rob_alert") or 0)
+    await inter.response.send_message(embed=embed("✅ " + ("تعدّل المكان" if old else "انضاف مكان سرقة"), (
+        f"{vals['emoji']} **{الاسم}**\n🔊 الروم : {vc.mention if vc else '-'}\n💰 الفلوس : {money(vals['min_amt'])} إلى {money(vals['max_amt'])}\n"
+        f"👮 الشرطة المطلوبة : {vals['police']}\n⏳ الانتظار : {vals['cooldown']} دقيقة\n🟩 المربعات : {vals['squares']}\n"
+        f"🚨 روم الإنذار : {al.mention if al else '⚠️ ما انحدد ← حدده بخيار روم_الإنذار'}\n\n"
+        "بعدها أرسل اللوحة بـ **/لوحة_السرقات** .")), ephemeral=True)
+
+
+@bot.tree.command(name="لوحة_السرقات", description="ترسل لوحة السرقات")
+@app_commands.describe(الروم="الروم (فاضي = هنا)")
+async def rob_panel_cmd(inter: discord.Interaction, الروم: discord.TextChannel = None):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأونر والأدمن بس."), ephemeral=True)
+    if not rob_places(inter.guild.id):
+        return await inter.response.send_message(embed=err("ضيف مكان أول بـ **/تسطيب_سرقة** ."), ephemeral=True)
+    e, v = rob_panel(inter.guild)
+    ch = الروم or inter.channel
+    try:
+        await ch.send(embed=e, view=v)
+    except discord.HTTPException as ex:
+        return await inter.response.send_message(embed=err(f"ما قدرت أرسل: `{str(ex)[:150]}`"), ephemeral=True)
+    await inter.response.send_message(embed=embed("✅ انرسلت لوحة السرقات", ch.mention), ephemeral=True)
+
+
+def is_police_leader(member) -> bool:
+    g = member.guild
+    leaders = {get_setting(g.id, k) for k in ("role_police_leader", "role_police_leader2")} - {0, None}
+    return member.id == g.owner_id or has_owner_role(member) or any(r.id in leaders for r in member.roles)
+
+
+async def apply_police_points(g, actor, member, amount: int, give: bool, why: str = ""):
+    """يرجع (embed, خطأ)"""
+    if member.bot:
+        return None, "البوتات ما لها نقاط."
+    have = sum(points_breakdown(g.id, member.id, "police").values())
+    if not give and have < amount:
+        return None, f"نقاط {member.mention} ما تكفي للخصم ❌\nعنده **{have}** نقطة بس، وإنت تبي تخصم **{amount}** ."
+    add_points(g.id, member.id, "police", "manual", amount if give else -amount)
+    total = have + (amount if give else -amount)
+    title = "🚓 تم إعطاء نقاط شرطة" if give else "🚓 تم خصم نقاط شرطة"
+    e = discord.Embed(title=title, color=0x006C35, timestamp=now(), description=(
+        f"**القائد :** {actor.mention}\n"
+        f"**{'العسكري' if give else 'المخصوم منه'} :** {member.mention}\n"
+        f"**العدد :** {'+' if give else '-'}{amount} نقطة\n"
+        f"**مجموع نقاطه الحين :** {total}" + (f"\n**السبب :** {why}" if why else "")))
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=config.SERVER_NAME)
+    await log(f"🚓 {actor.mention} {'أعطى' if give else 'خصم'} {amount} نقطة شرطة {'لـ' if give else 'من'} {member.mention} (المجموع {total})", g)
+    try:
+        await member.send(embed=discord.Embed(title=title, color=0x006C35, description=(
+            f"{'انعطيت' if give else 'انخصم منك'} **{amount}** نقطة شرطة بواسطة {actor.mention}\n"
+            f"مجموع نقاطك الحين: **{total}**" + (f"\nالسبب: {why}" if why else ""))))
+    except discord.HTTPException:
+        pass
+    return e, None
+
+
+async def police_points_prefix(message: discord.Message, give: bool):
+    """-اعطاء_شرطة @العسكري 5  /  -خصم_شرطة @العسكري 5  (قائد الشرطة + الأونرية)"""
+    g, a = message.guild, message.author
+    if not is_police_leader(a):
+        return await message.reply("❌ إعطاء وخصم نقاط الشرطة لقائد الشرطة بس.")
+    member = message.mentions[0] if message.mentions else None
+    amount, rest = None, []
+    for w in message.content.split()[1:]:
+        d = w.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")).strip("<@!>")
+        if member is None and d.isdigit() and len(d) >= 15:
+            member = g.get_member(int(d))
+        elif amount is None and d.isdigit() and len(d) < 9:
+            amount = int(d)
+        elif not w.startswith("<@"):
+            rest.append(w)
+    cmd = "-اعطاء_شرطة" if give else "-خصم_شرطة"
+    if not member or not amount:
+        return await message.reply(f"❌ الاستخدام: `{cmd} @العسكري العدد`\nمثال: `{cmd} @فهد 5`")
+    e, problem = await apply_police_points(g, a, member, amount, give, " ".join(rest).strip())
+    if problem:
+        return await message.reply(embed=err(problem))
+    await message.reply(embed=e, mention_author=False)
+
+
+def ppts_view() -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Select(custom_id="ppts:menu", placeholder="🚓 اختار من القائمة", options=[
+        discord.SelectOption(label="إعطاء نقاط", value="give", emoji="➕", description="للقائد"),
+        discord.SelectOption(label="خصم نقاط", value="take", emoji="➖", description="للقائد"),
+        discord.SelectOption(label="نقاط عسكري معين", value="user", emoji="👤"),
+        discord.SelectOption(label="توب أفضل عشرة", value="top", emoji="🏆"),
+        discord.SelectOption(label="إعادة الاختيار", value="reset", emoji="🔄"),
+    ]))
+    return v
+
+
+class PolicePointsModal(discord.ui.Modal):
+    def __init__(self, member, give: bool):
+        super().__init__(title=("➕ إعطاء نقاط" if give else "➖ خصم نقاط")[:45], timeout=None)
+        self.member, self.give = member, give
+        self.amount = discord.ui.TextInput(label=f"كم نقطة؟ ({member.display_name})"[:45], placeholder="مثال: 5", max_length=6)
+        self.why = discord.ui.TextInput(label="السبب (اختياري)", required=False, max_length=200)
+        self.add_item(self.amount)
+        self.add_item(self.why)
+
+    async def on_submit(self, inter: discord.Interaction):
+        amt = parse_amount(self.amount.value)
+        if not amt:
+            return await inter.response.send_message(embed=err("اكتب العدد رقم صحيح."), ephemeral=True)
+        e, problem = await apply_police_points(inter.guild, inter.user, self.member, amt, self.give, self.why.value.strip())
+        if problem:
+            return await inter.response.send_message(embed=err(problem), ephemeral=True)
+        await inter.response.send_message(embed=e)
+
+
+class PickCopView(discord.ui.View):
+    def __init__(self, give: bool):
+        super().__init__(timeout=180)
+        sel = discord.ui.UserSelect(placeholder="اختار العسكري")
+
+        async def cb(inter: discord.Interaction):
+            m = sel.values[0]
+            m = m if isinstance(m, discord.Member) else inter.guild.get_member(m.id)
+            if not m:
+                return await inter.response.send_message(embed=err("ما لقيت العضو."), ephemeral=True)
+            await inter.response.send_modal(PolicePointsModal(m, give))
+        sel.callback = cb
+        self.add_item(sel)
+
+
+async def handle_ppts_menu(inter: discord.Interaction):
+    choice = (inter.data.get("values") or ["reset"])[0]
+    if choice == "reset":
+        return await inter.response.edit_message(view=ppts_view())
+    if choice in ("give", "take"):
+        if not is_police_leader(inter.user):
+            await inter.response.send_message(embed=err("إعطاء وخصم النقاط لقائد الشرطة بس."), ephemeral=True)
+        else:
+            await inter.response.send_message(embed=embed("➕ إعطاء نقاط" if choice == "give" else "➖ خصم نقاط",
+                                                          "اختار العسكري 👇"), view=PickCopView(choice == "give"), ephemeral=True)
+    elif choice == "user":
+        await inter.response.send_message(embed=embed("👤 اختر العسكري"), view=PickUserView("police"), ephemeral=True)
+    elif choice == "top":
+        e, f = top_embed(inter.guild, "police")
+        await send_card(inter, e, f, "police")
+    try:
+        await inter.message.edit(view=ppts_view())
+    except discord.HTTPException:
+        pass
+
+async def call_prefix(message: discord.Message):
+    """-نداء @العضو  →  يرسل للعضو في الخاص إنه مطلوب ، ويرد البوت بإيموجي (للإدارة بس)"""
+    g, a = message.guild, message.author
+    if not is_staff_member(a):
+        return await message.reply("❌ أمر النداء للإدارة بس.")
+    member = message.mentions[0] if message.mentions else None
+    if not member:
+        raw = message.content.split(maxsplit=1)[1].strip().strip("<@!>") if len(message.content.split(maxsplit=1)) > 1 else ""
+        raw = raw.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        member = g.get_member(int(raw)) if raw.isdigit() else None
+    if not member:
+        return await message.reply("❌ الاستخدام: `-نداء @العضو`")
+    if member.bot:
+        return await message.reply("❌ ما تقدر تنادي بوت.")
+    jump = f"https://discord.com/channels/{g.id}/{message.channel.id}/{message.id}"
+    e = discord.Embed(color=0x006C35, timestamp=now(), description=(
+        f"**عزيزي العضو {member.mention} 👋**\n\n"
+        f"تم ندائك من قبل {a.mention} ، يُرجى حضورك بأسرع وقت ممكن .\n"
+        "اضغط الزر تحت عشان توصل للروم مباشرة ."))
+    e.set_author(name=a.display_name, icon_url=a.display_avatar.url)
+    if g.icon:
+        e.set_thumbnail(url=g.icon.url)
+    e.set_footer(text=f"إدارة {config.SERVER_NAME}", icon_url=g.icon.url if g.icon else None)
+    v = discord.ui.View()
+    v.add_item(discord.ui.Button(label="التنقل السريع", emoji="📩", url=jump))
+    sent = True
+    try:
+        await member.send(content=member.mention, embed=e, view=v)
+    except discord.HTTPException:
+        sent = False
+    emoji = get_text(g.id, "call_emoji", "") or "✅"
+    try:
+        await message.add_reaction(emoji)
+    except discord.HTTPException:
+        try:
+            await message.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+    if not sent:
+        await message.reply(f"⚠️ خاص {member.mention} مقفل ، ما وصله النداء . انمنشن هنا بدالها .", mention_author=False)
+
+
+@bot.tree.command(name="تسطيب_النداء", description="تحط الإيموجي اللي يرد فيه البوت على أمر -نداء (يقبل متحرك)")
+@app_commands.describe(الايموجي="الإيموجي اللي يطلع رد على النداء (متحرك أو عادي)")
+async def setup_call(inter: discord.Interaction, الايموجي: str):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأونر والأدمن بس."), ephemeral=True)
+    raw = الايموجي.strip()
+    m = re.search(r"<(a?):(\w+):(\d+)>", raw)
+    if not m:
+        # اسم إيموجي بين نقطتين أو إيموجي عادي
+        nm = raw.strip(":")
+        em = discord.utils.find(lambda e: e.name.lower() == nm.lower(), bot.emojis) if nm else None
+        raw = str(em) if em else raw
+        m = re.search(r"<(a?):(\w+):(\d+)>", raw)
+    if m:
+        test = discord.PartialEmoji(animated=bool(m.group(1)), name=m.group(2), id=int(m.group(3)))
+        if not bot.get_emoji(int(m.group(3))):
+            return await inter.response.send_message(embed=err(
+                "هذا الإيموجي من سيرفر البوت مو داخله ، لازم يكون من سيرفر فيه البوت عشان يقدر يحطه رياكشن ."), ephemeral=True)
+        raw = str(test)
+    set_text(inter.guild.id, "call_emoji", raw)
+    await inter.response.send_message(embed=embed("✅ تم تحديد إيموجي النداء",
+        f"الحين البوت بيرد بـ {raw} على أمر **-نداء** .\nجرّب: `-نداء @شخص`"), ephemeral=True)
+
+
 async def id_prefix(message: discord.Message):
     """-ايدي @رتبة (أو @شخص أو #روم) ← يرد بالايدي بس كتابة عادية عشان ينسخ"""
     bad = _staff_room_check(message, "ch_roles_cmd")
@@ -8737,6 +9215,10 @@ async def on_interaction(inter: discord.Interaction):
         await news_open(inter)
     elif cid == "rules:open":
         await handle_rules(inter)
+    elif cid == "ppts:menu":
+        await handle_ppts_menu(inter)
+    elif cid == "rob:menu":
+        await handle_rob_menu(inter)
     elif cid == "bankadm:menu":
         await handle_bank_admin(inter)
     elif cid == "bank:menu":

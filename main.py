@@ -3604,7 +3604,8 @@ async def setup_police_points(inter: discord.Interaction, القبض: app_comman
         f"🕒 نقطة كل **{pts_value(gid, 'pts_duty_min')}** دقيقة دوام\n"
         f"👮‍♂️ القيادة : " + (" ".join(f"<@&{get_setting(gid, k)}>" for k in ("role_police_leader", "role_police_leader2")
                                    if get_setting(gid, k)) or "ما انحددت")
-        + "\n\n💡 القائد يكتب `-اعطاء_شرطة @العسكري 5` أو `-خصم_شرطة @العسكري 5`"), 0x006C35), ephemeral=True)
+        + "\n🎖️ **ومن رتبة عقيد وفوق** يقدرون يعطون ويخصمون بعد (عقيد، عميد، لواء، فريق، فريق أول)"
+        + "\n\n💡 يكتب `-اعطاء_شرطة @العسكري 5` أو `-خصم_شرطة @العسكري 5`"), 0x006C35), ephemeral=True)
 
 
 async def _edit_points(inter: discord.Interaction, kind: str, member: discord.Member, amount: int):
@@ -8529,8 +8530,23 @@ async def rob_panel_cmd(inter: discord.Interaction, الروم: discord.TextChan
 
 def is_police_leader(member) -> bool:
     g = member.guild
+    if member.id == g.owner_id or has_owner_role(member):
+        return True
+    ids = {r.id for r in member.roles}
+    # رتبة قائد محددة
     leaders = {get_setting(g.id, k) for k in ("role_police_leader", "role_police_leader2")} - {0, None}
-    return member.id == g.owner_id or has_owner_role(member) or any(r.id in leaders for r in member.roles)
+    if ids & leaders:
+        return True
+    # من عقيد وفوق (أي رتبة شرطة index >= عقيد)
+    try:
+        colonel = POLICE_RANKS.index("عقيد")
+    except ValueError:
+        colonel = 13
+    for i in range(colonel, len(POLICE_RANKS)):
+        rid = get_setting(g.id, f"prank_{i}")
+        if rid and rid in ids:
+            return True
+    return False
 
 
 async def apply_police_points(g, actor, member, amount: int, give: bool, why: str = ""):

@@ -2603,6 +2603,25 @@ async def quiz_start(inter: discord.Interaction, cid: str = "quiz:start"):
     await inter.response.send_message(embed=e, view=v, ephemeral=True)
 
 
+AFTER_QUIZ_DEFAULT = '# - متابعة حساب سعودي تايم\n\n> **- خطوة متابعة الحساب الرسمي :**\n\n- __تابع حساب سعودي تايم الرسمي على تيك توك .__\n\n- __صوّر شاشة تبيّن إنك متابع للحساب .__\n\n- __أرسل الصورة داخل التذكرة .__\n\n**🔗 اضغط هنا للحساب :** https://www.tiktok.com/@saudi_time1\n\n- __إدارة سعودي تايم في خدمتكم دائمًا .__'
+
+@bot.tree.command(name="رسالة_بعد_الاختبار", description="الرسالة اللي تجي داخل التذكرة بعد ما ينجح العضو في الاختبار")
+@app_commands.describe(الكلام="الكلام الجديد (فاضي = يعرض الحالي)", تصفير="يرجّع الكلام الافتراضي")
+@app_commands.choices(تصفير=[app_commands.Choice(name="نعم", value=1)])
+async def setup_after_quiz(inter: discord.Interaction, الكلام: str = None, تصفير: app_commands.Choice[int] = None):
+    if not (admin_only(inter) or is_owner(inter)):
+        return await inter.response.send_message(embed=err("هذا الأمر للأونر والأدمن بس."), ephemeral=True)
+    gid = inter.guild.id
+    if تصفير:
+        set_text(gid, "after_quiz_msg", AFTER_QUIZ_DEFAULT)
+    elif الكلام:
+        set_text(gid, "after_quiz_msg", الكلام.replace("\\n", "\n"))
+    cur = get_text(gid, "after_quiz_msg", "") or AFTER_QUIZ_DEFAULT
+    await inter.response.send_message(embed=embed("✅ رسالة بعد الاختبار",
+        "هذي الرسالة اللي تجي بعد ما ينجح العضو:\n\n----------\n" + cur[:1800]
+        + "\n----------\n\n💡 عدّلها بخيار **الكلام** ، أو رجّع الأصل بخيار **تصفير** ."), ephemeral=True)
+
+
 async def quiz_answer(inter: discord.Interaction, cid: str):
     key = (inter.channel.id, inter.user.id)
     state = quiz_state.get(key)
@@ -2630,6 +2649,12 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
         await inter.response.edit_message(
             embed=embed("✅ نجحت في الاختبار", f"جاوبت {state['right']} من {total} صح. انتظر الإدارة تفعّلك."), view=None
         )
+        follow = get_text(inter.guild.id, "after_quiz_msg", "") or AFTER_QUIZ_DEFAULT
+        if follow.strip():
+            try:
+                await inter.channel.send(content=follow[:2000])
+            except discord.HTTPException:
+                pass
     else:
         await inter.response.edit_message(
             embed=embed("❌ لم تنجح في الاختبار", f"جاوبت {state['right']} من {total} صح، والمطلوب {need}.", 0x006C35),

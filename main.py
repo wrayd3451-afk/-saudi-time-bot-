@@ -1415,6 +1415,8 @@ async def on_message(message: discord.Message):
         return await emoji_prefix(message)
     if first in (["-نداء"], ["-نداءات"]):
         return await call_prefix(message)
+    if first in (["-سحب"], ["-جر"]):
+        return await pull_prefix(message)
     if first in (["-اسم"], ["-معرف"], ["-تحديث_المعرف"]):
         return await rename_prefix(message)
     if first in (["-ايدي"], ["-آيدي"], ["-id"]):
@@ -3700,7 +3702,11 @@ def get_app_type(gid: int, slot: int):
     رتبة_2="الرتبة الثانية اللي تنعطى إذا انقبل (اختياري)",
     المراجعين="الرتبة اللي تقدر تقبل وترفض (اختياري، الافتراضي الإدارة)",
     الايموجي="ايموجي جنب الاسم (اختياري)",
+    فرع1_اسم="فرع أول مثل LSPD (اختياري)", فرع1_رتبة="رتبة الفرع الأول",
+    فرع2_اسم="فرع ثاني مثل SWAT (اختياري)", فرع2_رتبة="رتبة الفرع الثاني",
+    حذف_الفروع="يشيل فروع التقديم",
 )
+@app_commands.choices(حذف_الفروع=[app_commands.Choice(name="نعم احذف الفروع", value=1)])
 async def setup_application(
     inter: discord.Interaction,
     الرقم: app_commands.Range[int, 1, 10],
@@ -3710,6 +3716,9 @@ async def setup_application(
     رتبة_2: discord.Role = None,
     المراجعين: discord.Role = None,
     الايموجي: str = None,
+    فرع1_اسم: str = None, فرع1_رتبة: discord.Role = None,
+    فرع2_اسم: str = None, فرع2_رتبة: discord.Role = None,
+    حذف_الفروع: app_commands.Choice[int] = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
@@ -3719,15 +3728,25 @@ async def setup_application(
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, slot) DO UPDATE SET name = excluded.name, "
         "emoji = excluded.emoji, review_ch = excluded.review_ch, role1 = excluded.role1, role2 = excluded.role2, "
         "reviewer_role = excluded.reviewer_role",
-        (inter.guild.id, الرقم, الاسم, (الايموجي or "").strip()[:30], روم_المراجعة.id, رتبة_1.id,
+        (inter.guild.id, الرقم, الاسم, (الايموجي or "").strip()[:100], روم_المراجعة.id, رتبة_1.id,
          رتبة_2.id if رتبة_2 else 0, المراجعين.id if المراجعين else 0, old["questions"] if old else ""),
     )
+    branch_note = ""
+    if حذف_الفروع:
+        db.execute("UPDATE app_types SET branches = NULL WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم))
+        branch_note = "\n🗑️ انشالت الفروع."
+    elif فرع1_اسم and فرع1_رتبة and فرع2_اسم and فرع2_رتبة:
+        branches = [{"label": فرع1_اسم.strip()[:80], "emoji": "", "role1": فرع1_رتبة.id, "role2": 0},
+                    {"label": فرع2_اسم.strip()[:80], "emoji": "", "role1": فرع2_رتبة.id, "role2": 0}]
+        db.execute("UPDATE app_types SET branches = ? WHERE guild_id = ? AND slot = ?",
+                   (json.dumps(branches, ensure_ascii=False), inter.guild.id, الرقم))
+        branch_note = f"\n🔀 الفروع: **{فرع1_اسم}** ← {فرع1_رتبة.mention} · **{فرع2_اسم}** ← {فرع2_رتبة.mention}"
     db.commit()
     await inter.response.send_message(embed=embed(
         "📝 تم تسطيب التقديم",
         f"**رقم {الرقم}:** {الاسم}\nروم المراجعة: {روم_المراجعة.mention}\n"
         f"الرتب إذا انقبل: {رتبة_1.mention} {رتبة_2.mention if رتبة_2 else ''}\n\n"
-        f"الحين حط أسئلته بـ **/اسئلة_تقديم** وبعدها أرسل اللوحة بـ **/ارسال_التقديمات**",
+        f"الحين حط أسئلته بـ **/اسئلة_تقديم** وبعدها أرسل اللوحة بـ **/ارسال_التقديمات**" + branch_note,
     ), ephemeral=True)
 
 
@@ -3774,37 +3793,94 @@ async def delete_application(inter: discord.Interaction, الرقم: app_command
     await inter.response.send_message(embed=embed("🗑️ انحذف التقديم", f"رقم {الرقم}. أرسل اللوحة من جديد."), ephemeral=True)
 
 
+def _emoji_opt(raw):
+    """يحوّل نص الإيموجي لكائن مناسب للقائمة/الزر (يدعم إيموجي ديسكورد المتحرك والعادي)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"<(a?):(\w+):(\d+)>", raw)
+    if m:
+        return discord.PartialEmoji(animated=bool(m.group(1)), name=m.group(2), id=int(m.group(3)))
+    return raw  # إيموجي عادي
+
+
+def app_branches(t):
+    try:
+        return json.loads(t["branches"]) if t and t["branches"] else []
+    except (json.JSONDecodeError, TypeError, IndexError):
+        return []
+
+
+def app_branch_view(gid: int, slot: int) -> discord.ui.View:
+    t = get_app_type(gid, slot)
+    v = discord.ui.View(timeout=300)
+    opts = [discord.SelectOption(label=b["label"], value=str(i), emoji=b.get("emoji") or None)
+            for i, b in enumerate(app_branches(t))]
+    opts.append(discord.SelectOption(label="إلغاء", value="x", emoji="🔙"))
+    v.add_item(discord.ui.Select(custom_id=f"app:branch:{slot}", placeholder="اختار الفرع اللي تبي تقدّم له", options=opts))
+    return v
+
+
 def app_select_view(gid: int) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
-    opts = [discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=t["emoji"] or None) for t in get_app_types(gid)]
+    opts = [discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=_emoji_opt(t["emoji"])) for t in get_app_types(gid)]
     v.add_item(discord.ui.Select(custom_id="app:open", placeholder="- اختر التقديم .", options=opts))
     return v
 
 
 @bot.tree.command(name="ارسال_التقديمات", description="إرسال لوحة التقديمات في روم")
-async def send_app_panel(inter: discord.Interaction, الروم: discord.TextChannel, الوصف: str = None):
+@app_commands.describe(الروم="الروم", الوصف="كلام اللوحة (اختياري)", الصورة="صورة تحت اللوحة (اختياري)",
+                       العنوان="عنوان اللوحة (اختياري)")
+async def send_app_panel(inter: discord.Interaction, الروم: discord.TextChannel, الوصف: str = None,
+                         الصورة: discord.Attachment = None, العنوان: str = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     types_ = get_app_types(inter.guild.id)
     if not types_:
         return await inter.response.send_message(embed=err("ما فيه تقديمات. سطّب بـ /تسطيب_تقديم"), ephemeral=True)
-    lines = "\n".join(f"{t['emoji'] or '📝'} - {t['name']}" for t in types_)
-    e = embed("📝 - التقديمات", (الوصف or f"- مرحبا بك في قسم التقديمات الخاص بـ **{config.SERVER_NAME}** .\n\n"
-                                          "اختر التقديم من القائمة وجاوب على الأسئلة .") + f"\n\n{lines}")
+    lines = "\n".join((f"{t['emoji']} - __{t['name']}__" if (t['emoji'] or '').strip() else f"- __{t['name']}__") for t in types_)
+    body = (الوصف or ("> **- مرحبا بك في قسم التقديمات الخاص بـ " + config.SERVER_NAME.split('|')[0].strip() + " .**\n\n"
+            "- __اختر القسم اللي تبي تقدّم له من القائمة تحت .__\n"
+            "- __جاوب على الأسئلة بصدق ووضوح .__\n"
+            "- __يُمنع الطقطقة أو الاستهبال في التقديم .__\n"
+            "- __انتظر رد المسؤول عن القسم ، وبيوصلك في الخاص .__")) + f"\n\n{lines}"
+    e = discord.Embed(title=guild_emojis(inter.guild, العنوان or "📝 - لوحة التقديمات")[:256],
+                      description=guild_emojis(inter.guild, body)[:4000], color=0x006C35)
+    e.set_footer(text=config.SERVER_NAME, icon_url=inter.guild.icon.url if inter.guild.icon else None)
+    f = None
+    if الصورة is not None and (الصورة.content_type or "").startswith("image/"):
+        try:
+            data = await الصورة.read()
+            db.execute("INSERT OR REPLACE INTO ticket_images (guild_id, slot, data, filename) VALUES (?, -99, ?, ?)",
+                       (inter.guild.id, data, الصورة.filename))
+            db.commit()
+        except discord.HTTPException:
+            pass
+    row = db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = -99", (inter.guild.id,)).fetchone()
+    if row:
+        fname = "apps" + os.path.splitext(row["filename"] or ".png")[1]
+        f = discord.File(io.BytesIO(row["data"]), filename=fname)
+        e.set_image(url=f"attachment://{fname}")
     try:
-        await الروم.send(embed=e, view=app_select_view(inter.guild.id))
+        if f:
+            await الروم.send(embed=e, file=f, view=app_select_view(inter.guild.id))
+        else:
+            await الروم.send(embed=e, view=app_select_view(inter.guild.id))
     except discord.Forbidden:
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
     except discord.HTTPException:
         return await inter.response.send_message(embed=err("فيه ايموجي غلط في أحد التقديمات."), ephemeral=True)
-    register_panel(inter.guild.id, "apps", الروم.id, {"desc": الوصف})
+    register_panel(inter.guild.id, "apps", الروم.id, {"desc": الوصف, "title": العنوان})
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التقديمات", الروم.mention), ephemeral=True)
 
 
 class ApplyModal(discord.ui.Modal):
-    def __init__(self, t):
-        super().__init__(title=f"📝 {t['name']}"[:45])
+    def __init__(self, t, branch=None):
+        bl = app_branches(t)
+        suffix = f" - {bl[branch]['label']}" if (branch is not None and branch < len(bl)) else ""
+        super().__init__(title=f"📝 {t['name']}{suffix}"[:45])
         self.t = t
+        self.branch = branch
         self.inputs = []
         for q in [q for q in (t["questions"] or "").splitlines() if q][:5]:
             ti = discord.ui.TextInput(
@@ -3818,16 +3894,21 @@ class ApplyModal(discord.ui.Modal):
         t = self.t
         answers = [(q, ti.value) for q, ti in self.inputs]
         cur = db.execute(
-            "INSERT INTO app_submissions (guild_id, slot, user_id, answers, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
-            (inter.guild.id, t["slot"], inter.user.id, json.dumps(answers, ensure_ascii=False), now().isoformat()),
+            "INSERT INTO app_submissions (guild_id, slot, user_id, answers, status, created_at, branch) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+            (inter.guild.id, t["slot"], inter.user.id, json.dumps(answers, ensure_ascii=False), now().isoformat(),
+             str(self.branch) if self.branch is not None else None),
         )
         db.commit()
         sid = cur.lastrowid
         ch = inter.guild.get_channel(t["review_ch"])
-        e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}", color=0x006C35, timestamp=now())
+        bl = app_branches(t)
+        btxt = f" - {bl[self.branch]['label']}" if (self.branch is not None and self.branch < len(bl)) else ""
+        e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}{btxt}", color=0x006C35, timestamp=now())
         e.set_author(name=str(inter.user), icon_url=inter.user.display_avatar.url)
         e.set_thumbnail(url=inter.user.display_avatar.url)
         e.add_field(name="المقدّم", value=f"{inter.user.mention} (`{inter.user.id}`)", inline=False)
+        if btxt:
+            e.add_field(name="الفرع", value=bl[self.branch]["label"], inline=False)
         for q, a in answers:
             e.add_field(name=q[:256], value=(a or "-")[:1024], inline=False)
         e.set_footer(text=f"{config.SERVER_NAME} | رقم التقديم #{sid}")
@@ -3836,8 +3917,10 @@ class ApplyModal(discord.ui.Modal):
         v.add_item(discord.ui.Button(label="رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"app:rej:{sid}"))
         if not ch:
             return await inter.response.send_message(embed=err("روم المراجعة انحذف. كلّم الإدارة."), ephemeral=True)
+        ping_role = inter.guild.get_role(t["reviewer_role"]) if t["reviewer_role"] else None
         try:
-            await ch.send(embed=e, view=v)
+            await ch.send(content=ping_role.mention if ping_role else None, embed=e, view=v,
+                          allowed_mentions=discord.AllowedMentions(roles=True))
         except discord.HTTPException:
             return await inter.response.send_message(embed=err("ما قدرت أرسل تقديمك. كلّم الإدارة."), ephemeral=True)
         await inter.response.send_message(embed=embed("✅ انرسل تقديمك", "انتظر رد الإدارة، وبيوصلك الرد في الخاص ."), ephemeral=True)
@@ -3856,9 +3939,14 @@ class RejectReasonModal(discord.ui.Modal, title="❌ سبب الرفض"):
 
 
 def can_review(member: discord.Member, t) -> bool:
-    if is_staff_member(member):
+    # الأونر وصاحب السيرفر دايم يقدرون
+    if member.id == member.guild.owner_id or has_owner_role(member):
         return True
-    return bool(t and t["reviewer_role"] and any(r.id == t["reviewer_role"] for r in member.roles))
+    # لو محدد رتبة مراجعين ← هي بس اللي تراجع (مو كل الإدارة)
+    if t and t["reviewer_role"]:
+        return any(r.id == t["reviewer_role"] for r in member.roles)
+    # لو ما حدد ← الإدارة
+    return is_staff_member(member)
 
 
 async def finish_application(inter: discord.Interaction, sid: int, accepted: bool, reason: str, message):
@@ -3869,7 +3957,13 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
     member = inter.guild.get_member(s["user_id"])
     given = []
     if accepted and member and t:
-        roles = [inter.guild.get_role(r) for r in (t["role1"], t["role2"]) if r]
+        bl = app_branches(t)
+        bidx = int(s["branch"]) if (s["branch"] is not None and str(s["branch"]).isdigit()) else None
+        if bidx is not None and bidx < len(bl):
+            role_ids = (bl[bidx].get("role1"), bl[bidx].get("role2"))
+        else:
+            role_ids = (t["role1"], t["role2"])
+        roles = [inter.guild.get_role(r) for r in role_ids if r]
         roles = [r for r in roles if r]
         try:
             if roles:
@@ -3913,6 +4007,18 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
     await log(f"{inter.user.mention} {'قبل' if accepted else 'رفض'} تقديم <@{s['user_id']}> ({name})", inter.guild)
 
 
+async def _app_precheck(inter, t, slot):
+    if not t:
+        await inter.response.send_message(embed=err("التقديم هذا انحذف."), ephemeral=True); return False
+    if not (t["questions"] or "").strip():
+        await inter.response.send_message(embed=err("التقديم هذا ما له أسئلة للحين."), ephemeral=True); return False
+    pending = db.execute("SELECT 1 FROM app_submissions WHERE guild_id = ? AND slot = ? AND user_id = ? AND status = 'pending'",
+                         (inter.guild.id, slot, inter.user.id)).fetchone()
+    if pending:
+        await inter.response.send_message(embed=err("عندك تقديم للحين ينتظر الرد."), ephemeral=True); return False
+    return True
+
+
 async def handle_app_interaction(inter: discord.Interaction, cid: str):
     if cid == "app:open":
         slot = int((inter.data.get("values") or ["0"])[0])
@@ -3921,20 +4027,32 @@ async def handle_app_interaction(inter: discord.Interaction, cid: str):
             await inter.message.edit(view=app_select_view(inter.guild.id))
         except discord.HTTPException:
             pass
-        if not t:
-            return await inter.response.send_message(embed=err("التقديم هذا انحذف."), ephemeral=True)
-        if not (t["questions"] or "").strip():
-            return await inter.response.send_message(embed=err("التقديم هذا ما له أسئلة للحين."), ephemeral=True)
-        pending = db.execute(
-            "SELECT 1 FROM app_submissions WHERE guild_id = ? AND slot = ? AND user_id = ? AND status = 'pending'",
-            (inter.guild.id, slot, inter.user.id),
-        ).fetchone()
-        if pending:
-            return await inter.response.send_message(embed=err("عندك تقديم للحين ينتظر الرد."), ephemeral=True)
+        if not await _app_precheck(inter, t, slot):
+            return
+        if app_branches(t):  # فيه فروع (مثل LSPD / SWAT) ← نعرض قائمة الفروع
+            return await inter.response.send_message(embed=embed(f"🔀 {t['name']}", "اختار الفرع اللي تبي تقدّم له 👇"),
+                                                     view=app_branch_view(inter.guild.id, slot), ephemeral=True)
         ids = {r.id for r in inter.user.roles}
         if t["role1"] in ids and (not t["role2"] or t["role2"] in ids):
             return await inter.response.send_message(embed=err("أنت مقبول في هذا من قبل."), ephemeral=True)
         return await inter.response.send_modal(ApplyModal(t))
+
+    if cid.startswith("app:branch:"):
+        slot = int(cid.split(":")[2])
+        val = (inter.data.get("values") or ["x"])[0]
+        if val == "x":
+            return await inter.response.edit_message(embed=embed("تم الإلغاء", "ماشي، إذا بدا لك قدّم من اللوحة مرة ثانية."), view=None)
+        t = get_app_type(inter.guild.id, slot)
+        if not await _app_precheck(inter, t, slot):
+            return
+        bl = app_branches(t)
+        bi = int(val) if val.isdigit() and int(val) < len(bl) else None
+        if bi is None:
+            return await inter.response.send_message(embed=err("هذا الفرع انحذف."), ephemeral=True)
+        ids = {r.id for r in inter.user.roles}
+        if bl[bi].get("role1") in ids:
+            return await inter.response.send_message(embed=err(f"أنت في **{bl[bi]['label']}** من قبل."), ephemeral=True)
+        return await inter.response.send_modal(ApplyModal(t, branch=bi))
 
     _, action, sid = cid.split(":")
     s = db.execute("SELECT * FROM app_submissions WHERE id = ?", (int(sid),)).fetchone()
@@ -5892,10 +6010,22 @@ async def post_app_panel(guild: discord.Guild, ch, desc=None):
     types_ = get_app_types(guild.id)
     if not types_:
         return False
-    lines = "\n".join(f"{t['emoji'] or '📝'} - {t['name']}" for t in types_)
-    e = embed("📝 - التقديمات", (desc or f"- مرحبا بك في قسم التقديمات الخاص بـ **{config.SERVER_NAME}** .\n\n"
-                                       "اختر التقديم من القائمة وجاوب على الأسئلة .") + f"\n\n{lines}")
-    await ch.send(embed=e, view=app_select_view(guild.id))
+    lines = "\n".join((f"{t['emoji']} - __{t['name']}__" if (t['emoji'] or '').strip() else f"- __{t['name']}__") for t in types_)
+    body = (desc or ("> **- مرحبا بك في قسم التقديمات الخاص بـ " + config.SERVER_NAME.split('|')[0].strip() + " .**\n\n"
+            "- __اختر القسم اللي تبي تقدّم له من القائمة تحت .__\n"
+            "- __جاوب على الأسئلة بصدق ووضوح .__\n"
+            "- __يُمنع الطقطقة أو الاستهبال في التقديم .__\n"
+            "- __انتظر رد المسؤول عن القسم ، وبيوصلك في الخاص .__")) + f"\n\n{lines}"
+    e = discord.Embed(title="📝 - لوحة التقديمات", description=guild_emojis(guild, body)[:4000], color=0x006C35)
+    e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
+    row = db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = -99", (guild.id,)).fetchone()
+    if row:
+        fname = "apps" + os.path.splitext(row["filename"] or ".png")[1]
+        f = discord.File(io.BytesIO(row["data"]), filename=fname)
+        e.set_image(url=f"attachment://{fname}")
+        await ch.send(embed=e, file=f, view=app_select_view(guild.id))
+    else:
+        await ch.send(embed=e, view=app_select_view(guild.id))
     return True
 
 
@@ -7854,7 +7984,12 @@ async def owners_warning(message: discord.Message):
 # ============================================================
 db.execute("CREATE TABLE IF NOT EXISTS staff_act (guild_id INTEGER, user_id INTEGER, last_ts REAL, warns INTEGER DEFAULT 0, "
            "last_warn REAL DEFAULT 0, PRIMARY KEY (guild_id, user_id))")
-for _col in ("streak", "prewarn"):  # streak = تحذيرات الغيبة الحالية ، prewarn = بلّغنا صاحب السيرفر قبل التحذير
+for _c, _tb in (("branches", "app_types"), ("branch", "app_submissions")):
+    try:
+        db.execute(f"ALTER TABLE {_tb} ADD COLUMN {_c} TEXT")
+    except sqlite3.OperationalError:
+        pass
+for _col in ("streak", "prewarn"):  # streak = تحذيرات الغيبة الحالية ، بلّغنا صاحب السيرفر قبل التحذير
     try:
         db.execute(f"ALTER TABLE staff_act ADD COLUMN {_col} INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
@@ -8755,6 +8890,41 @@ async def setup_call(inter: discord.Interaction, الايموجي: str):
     set_text(inter.guild.id, "call_emoji", raw)
     await inter.response.send_message(embed=embed("✅ تم تحديد إيموجي النداء",
         f"الحين البوت بيرد بـ {raw} على أمر **-نداء** .\nجرّب: `-نداء @شخص`"), ephemeral=True)
+
+
+async def pull_prefix(message: discord.Message):
+    """-سحب @العضو  →  يسحب العضو للروم الصوتي اللي فيه الإداري (للإدارة بس)"""
+    g, a = message.guild, message.author
+    if not is_staff_member(a):
+        return await message.reply("❌ أمر السحب للإدارة بس.")
+    if not (a.voice and a.voice.channel):
+        return await message.reply("❌ لازم تكون داخل روم صوتي عشان تسحب العضو له.")
+    member = message.mentions[0] if message.mentions else None
+    if not member:
+        raw = message.content.split(maxsplit=1)[1].strip().strip("<@!>") if len(message.content.split(maxsplit=1)) > 1 else ""
+        raw = raw.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        member = g.get_member(int(raw)) if raw.isdigit() else None
+    if not member:
+        return await message.reply("❌ الاستخدام: `-سحب @العضو`")
+    if not (member.voice and member.voice.channel):
+        return await message.reply(f"❌ {member.mention} مو داخل أي روم صوتي عشان أسحبه.")
+    if member.voice.channel.id == a.voice.channel.id:
+        return await message.reply(f"❌ {member.mention} موجود معك في نفس الروم.")
+    try:
+        await member.move_to(a.voice.channel, reason=f"سحب بواسطة {a}")
+    except discord.Forbidden:
+        return await message.reply("❌ ما عندي صلاحية **نقل الأعضاء** (Move Members)، أو رتبتي تحت رتبته.")
+    except discord.HTTPException:
+        return await message.reply("❌ ما قدرت أسحبه، جرّب مرة ثانية.")
+    emoji = get_text(g.id, "call_emoji", "") or "✅"
+    try:
+        await message.add_reaction(emoji)
+    except discord.HTTPException:
+        try:
+            await message.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+    await message.reply(f"🔊 سحبت {member.mention} إلى {a.voice.channel.mention}", mention_author=False)
 
 
 async def id_prefix(message: discord.Message):

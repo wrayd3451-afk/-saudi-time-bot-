@@ -1411,6 +1411,8 @@ async def on_message(message: discord.Message):
     if message.content.strip().startswith("-تفتيش"):
         return await inspect_command(message)
     first = message.content.strip().split()[:1]
+    if first in (["-ايموجي_الرد"], ["-ايموجي_البوت"], ["-رياكشن"], ["-تفاعل"]):
+        return await react_emoji_prefix(message)
     if message.content.strip().split()[:1] in (["-ايموجي"], ["-إيموجي"], ["-ايموجيات"]):
         return await emoji_prefix(message)
     if first in (["-نداء"], ["-نداءات"]):
@@ -3016,6 +3018,7 @@ async def activate_command(message: discord.Message):
         f"**العضو :** {member.mention}\n**ايدي العضو :** `{member.id}`\n**ايدي سوني :** `{sony_id}`\n"
         f"**الرتب :** {' '.join(r.mention for r in roles)}{removed_note}{name_note}\n**بواسطة :** {message.author.mention}",
     )
+    await bot_react(message, "ok")
     await message.reply(embed=e)
     try:
         await member.send(embed=embed(
@@ -7562,6 +7565,34 @@ async def add_emojis(guild: discord.Guild, items, status):
         pass
 
 
+async def react_emoji_prefix(message: discord.Message):
+    """-ايموجي_الرد <إيموجي>  يحدد إيموجي تفاعل البوت على أوامره (يدعم إيموجي ديسكورد المتحرك)."""
+    g = message.guild
+    if not is_power(message.author) and not message.author.guild_permissions.manage_guild:
+        return await message.reply("❌ هذا الأمر للإدارة بس.")
+    parts = message.content.split(maxsplit=1)
+    raw = parts[1].strip() if len(parts) > 1 else ""
+    if not raw:
+        cur = get_text(g.id, "react_ok", "") or get_text(g.id, "call_emoji", "") or "✅"
+        return await message.reply(embed=embed("💠 إيموجي رد البوت",
+            f"الإيموجي الحالي : {cur}\n\n"
+            "عشان تغيّره اكتب :\n`-ايموجي_الرد` وبعده الإيموجي الي تبيه (من سيرفرك ، عادي أو متحرك)\n"
+            "مثال : `-ايموجي_الرد 😎` أو `-ايموجي_الرد <a:fire:123456789>`\n\n"
+            "💡 لازم الإيموجي يكون من سيرفر البوت موجود فيه ، عشان يقدر يستخدمه.").set_footer(text="سعودي تايم"))
+    parsed = parse_bot_emoji(raw)
+    if not parsed:
+        return await message.reply("❌ ما قدرت أستخدم هذا الإيموجي. لازم يكون إيموجي من سيرفر البوت موجود فيه ، أو إيموجي عادي.")
+    # نجرب فعليًا على رسالة الأمر عشان نتأكد إنه يشتغل
+    try:
+        await message.add_reaction(parsed)
+    except discord.HTTPException:
+        return await message.reply("❌ ما قدرت أتفاعل بهذا الإيموجي. تأكد إنه من سيرفر البوت موجود فيه.")
+    set_text(g.id, "react_ok", raw)
+    set_text(g.id, "call_emoji", raw)
+    await message.reply(embed=embed("✅ تم تغيير إيموجي الرد",
+        f"الحين البوت بيتفاعل بـ {parsed} على أوامره (نداء ، سحب ، تفعيل ، تجوين ...).").set_footer(text="سعودي تايم"))
+
+
 async def emoji_prefix(message: discord.Message):
     """-ايموجي ثم الإيموجيات (أو روابطها) - تقدر تكتب كثير في رسالة وحدة"""
     if not is_power(message.author) and not message.author.guild_permissions.manage_expressions:
@@ -8855,10 +8886,10 @@ async def gather_prefix(message: discord.Message):
     g, a = message.guild, message.author
     if not is_staff_member(a):
         return await message.reply("❌ أمر التجوين للإدارة بس.")
-    room = g.get_channel(get_setting(g.id, "ch_gather") or 0) or _guess_channel(g, ("تجوين", "جوين", "تجمع", "gather"))
+    room = g.get_channel(get_setting(g.id, "ch_gather") or 0) or _guess_channel(g, ("رحلات", "رحله", "تجوين", "جوين", "تجمع", "gather"))
     if not room:
         return await message.reply(embed=err(
-            "ما لقيت روم التجوين 📍\nحدده: اكتب `-روم_التجوين #الروم` في روم التجوين ، أو سمِّ الروم فيه كلمة \"تجوين\" ."))
+            "ما لقيت روم التجوين 📍\nروح لروم **بوابة الرحلات** واكتب فيه `-روم_التجوين` ، أو سمِّ الروم فيه كلمة \"رحلات\" ."))
 
     def chk(m):
         return m.author.id == a.id and m.channel.id == message.channel.id
@@ -8902,6 +8933,7 @@ async def gather_prefix(message: discord.Message):
         await room.send(content="@here", embed=e, allowed_mentions=discord.AllowedMentions(everyone=True))
     except discord.Forbidden:
         return await message.channel.send(embed=err(f"ما عندي صلاحية أرسل في {room.mention}."))
+    await bot_react(message, "ok")
     await message.channel.send(embed=embed("✅ تم إرسال التجوين", f"انرسل في {room.mention} 🎯"))
     await log(f"🎯 {a.mention} سوّى تجوين (هوست: {host.mention} ، مساعد: {assist.mention})", g)
 
@@ -8936,14 +8968,7 @@ async def call_prefix(message: discord.Message):
         await member.send(content=member.mention, embed=e, view=v)
     except discord.HTTPException:
         sent = False
-    emoji = get_text(g.id, "call_emoji", "") or "✅"
-    try:
-        await message.add_reaction(emoji)
-    except discord.HTTPException:
-        try:
-            await message.add_reaction("✅")
-        except discord.HTTPException:
-            pass
+    await bot_react(message, "ok")
     if not sent:
         await message.reply(f"⚠️ خاص {member.mention} مقفل ، ما وصله النداء . انمنشن هنا بدالها .", mention_author=False)
 
@@ -8968,8 +8993,9 @@ async def setup_call(inter: discord.Interaction, الايموجي: str):
                 "هذا الإيموجي من سيرفر البوت مو داخله ، لازم يكون من سيرفر فيه البوت عشان يقدر يحطه رياكشن ."), ephemeral=True)
         raw = str(test)
     set_text(inter.guild.id, "call_emoji", raw)
-    await inter.response.send_message(embed=embed("✅ تم تحديد إيموجي النداء",
-        f"الحين البوت بيرد بـ {raw} على أمر **-نداء** .\nجرّب: `-نداء @شخص`"), ephemeral=True)
+    set_text(inter.guild.id, "react_ok", raw)
+    await inter.response.send_message(embed=embed("✅ تم تحديد إيموجي الرد",
+        f"الحين البوت بيرد بـ {raw} على أوامره (نداء ، سحب ، تفعيل ...) .\nجرّب: `-نداء @شخص`"), ephemeral=True)
 
 
 async def pull_prefix(message: discord.Message):
@@ -8996,14 +9022,7 @@ async def pull_prefix(message: discord.Message):
         return await message.reply("❌ ما عندي صلاحية **نقل الأعضاء** (Move Members)، أو رتبتي تحت رتبته.")
     except discord.HTTPException:
         return await message.reply("❌ ما قدرت أسحبه، جرّب مرة ثانية.")
-    emoji = get_text(g.id, "call_emoji", "") or "✅"
-    try:
-        await message.add_reaction(emoji)
-    except discord.HTTPException:
-        try:
-            await message.add_reaction("✅")
-        except discord.HTTPException:
-            pass
+    await bot_react(message, "ok")
     await message.reply(f"🔊 سحبت {member.mention} إلى {a.voice.channel.mention}", mention_author=False)
 
 
@@ -9268,6 +9287,45 @@ def guild_emojis(guild, text):
         em = pool.get(m.group(1).lower())
         return str(em) if em else m.group(0)
     return re.sub(r"(?<![<\w]):([A-Za-z0-9_~\-]{2,32}):(?!\d)", rep, text)
+
+
+def parse_bot_emoji(raw):
+    """يحوّل نص الإيموجي (اسم :x: أو إيموجي ديسكورد <a:x:id> أو عادي) لنص صالح للرياكشن، أو None لو غلط."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"<(a?):(\w+):(\d+)>", raw)
+    if not m:
+        nm = raw.strip(":")
+        em = discord.utils.find(lambda e: e.name.lower() == nm.lower(), bot.emojis) if nm else None
+        if em:
+            return str(em)
+        return raw  # إيموجي عادي (يونيكود)
+    if not bot.get_emoji(int(m.group(3))):
+        return None  # إيموجي ديسكورد من سيرفر البوت مو داخله
+    return str(discord.PartialEmoji(animated=bool(m.group(1)), name=m.group(2), id=int(m.group(3))))
+
+
+BOT_EMOJI_DEFAULTS = {"ok": "✅", "load": "⏳", "no": "❌"}
+
+
+def bot_emoji(gid, kind="ok"):
+    return get_text(gid, f"react_{kind}", "") or get_text(gid, "call_emoji", "") if kind == "ok" else get_text(gid, f"react_{kind}", "")
+
+
+async def bot_react(message, kind="ok"):
+    """يحط رياكشن بإيموجي البوت المحفوظ (يدعم المتحرك) ، ولو ما انحدد يحط الافتراضي."""
+    e = get_text(message.guild.id, f"react_{kind}", "")
+    if not e and kind == "ok":
+        e = get_text(message.guild.id, "call_emoji", "")   # توافق قديم
+    e = e or BOT_EMOJI_DEFAULTS.get(kind, "✅")
+    try:
+        await message.add_reaction(e)
+    except discord.HTTPException:
+        try:
+            await message.add_reaction(BOT_EMOJI_DEFAULTS.get(kind, "✅"))
+        except discord.HTTPException:
+            pass
 
 
 async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment = None):

@@ -1415,6 +1415,10 @@ async def on_message(message: discord.Message):
         return await emoji_prefix(message)
     if first in (["-نداء"], ["-نداءات"]):
         return await call_prefix(message)
+    if first in (["-تجوين"], ["-جوين"], ["-تجمع"]):
+        return await gather_prefix(message)
+    if first in (["-روم_التجوين"], ["-تسطيب_التجوين"]):
+        return await set_gather_room(message)
     if first in (["-سحب"], ["-جر"]):
         return await pull_prefix(message)
     if first in (["-اسم"], ["-معرف"], ["-تحديث_المعرف"]):
@@ -2990,6 +2994,17 @@ async def activate_command(message: discord.Message):
         except discord.Forbidden:
             removed_note = f"\n⚠️ ما قدرت أشيل {un_role.mention}، خل رتبة البوت فوقها."
 
+    # نغيّر اسم العضو للايدي اللي كتبه المفعّل
+    name_note = ""
+    if sony_id and sony_id != "-":
+        try:
+            await member.edit(nick=sony_id[:32], reason=f"تفعيل بواسطة {message.author}")
+            name_note = f"\n**الاسم الجديد :** {sony_id[:32]}"
+        except discord.Forbidden:
+            name_note = "\n⚠️ ما قدرت أغيّر الاسم (رتبته فوق رتبة البوت أو هو صاحب السيرفر)."
+        except discord.HTTPException:
+            name_note = "\n⚠️ ما قدرت أغيّر الاسم."
+
     db.execute(
         "INSERT INTO activations (guild_id, user_id, sony_id, by_id, created_at) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(guild_id, user_id) DO UPDATE SET sony_id = excluded.sony_id, by_id = excluded.by_id, created_at = excluded.created_at",
@@ -2999,7 +3014,7 @@ async def activate_command(message: discord.Message):
     e = embed(
         "✅ - تم التفعيل",
         f"**العضو :** {member.mention}\n**ايدي العضو :** `{member.id}`\n**ايدي سوني :** `{sony_id}`\n"
-        f"**الرتب :** {' '.join(r.mention for r in roles)}{removed_note}\n**بواسطة :** {message.author.mention}",
+        f"**الرتب :** {' '.join(r.mention for r in roles)}{removed_note}{name_note}\n**بواسطة :** {message.author.mention}",
     )
     await message.reply(embed=e)
     try:
@@ -8825,6 +8840,71 @@ async def handle_ppts_menu(inter: discord.Interaction):
         await inter.message.edit(view=ppts_view())
     except discord.HTTPException:
         pass
+
+async def set_gather_room(message: discord.Message):
+    g, a = message.guild, message.author
+    if not (a.id == g.owner_id or is_power(a)):
+        return await message.reply("❌ هذا الأمر للأونر والأدمن بس.")
+    ch = message.channel_mentions[0] if message.channel_mentions else message.channel
+    set_setting(g.id, "ch_gather", ch.id)
+    await message.reply(embed=embed("✅ تم تحديد روم التجوين", f"التجوين بينرسل في {ch.mention} .\nاكتب `-تجوين` عشان تبدأ."))
+
+
+async def gather_prefix(message: discord.Message):
+    """-تجوين → يسأل عن ايدي الهوست ومساعده ، وبعدها يرسل إعلان التجوين (للإدارة)"""
+    g, a = message.guild, message.author
+    if not is_staff_member(a):
+        return await message.reply("❌ أمر التجوين للإدارة بس.")
+    room = g.get_channel(get_setting(g.id, "ch_gather") or 0) or _guess_channel(g, ("تجوين", "جوين", "تجمع", "gather"))
+    if not room:
+        return await message.reply(embed=err(
+            "ما لقيت روم التجوين 📍\nحدده: اكتب `-روم_التجوين #الروم` في روم التجوين ، أو سمِّ الروم فيه كلمة \"تجوين\" ."))
+
+    def chk(m):
+        return m.author.id == a.id and m.channel.id == message.channel.id
+
+    async def ask(q):
+        await message.channel.send(embed=embed("🎯 التجوين", q))
+        try:
+            m = await bot.wait_for("message", check=chk, timeout=120)
+        except asyncio.TimeoutError:
+            await message.channel.send(embed=err("خلص الوقت ⏰ اكتب `-تجوين` من جديد."))
+            return None
+        return m
+
+    def resolve(m):
+        if m.mentions:
+            return m.mentions[0]
+        raw = re.sub(r"\D", "", (m.content or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+        return g.get_member(int(raw)) if raw else None
+
+    m1 = await ask("اكتب **ايدي الهوست** (أو منشنه) 👇")
+    if m1 is None:
+        return
+    host = resolve(m1)
+    if not host:
+        return await message.channel.send(embed=err("ما لقيت الهوست. اكتب `-تجوين` من جديد."))
+
+    m2 = await ask("تمام ✅ الحين اكتب **ايدي مساعد الهوست** (أو منشنه) 👇")
+    if m2 is None:
+        return
+    assist = resolve(m2)
+    if not assist:
+        return await message.channel.send(embed=err("ما لقيت مساعد الهوست. اكتب `-تجوين` من جديد."))
+
+    e = discord.Embed(title="- تجوين", color=0x006C35, timestamp=now(), description=(
+        f"**الهوست :** {host.mention}\n"
+        f"**مساعد الهوست :** {assist.mention}"))
+    if g.icon:
+        e.set_thumbnail(url=g.icon.url)
+    e.set_footer(text=f"بواسطة {a.display_name}", icon_url=a.display_avatar.url)
+    try:
+        await room.send(content="@here", embed=e, allowed_mentions=discord.AllowedMentions(everyone=True))
+    except discord.Forbidden:
+        return await message.channel.send(embed=err(f"ما عندي صلاحية أرسل في {room.mention}."))
+    await message.channel.send(embed=embed("✅ تم إرسال التجوين", f"انرسل في {room.mention} 🎯"))
+    await log(f"🎯 {a.mention} سوّى تجوين (هوست: {host.mention} ، مساعد: {assist.mention})", g)
+
 
 async def call_prefix(message: discord.Message):
     """-نداء @العضو  →  يرسل للعضو في الخاص إنه مطلوب ، ويرد البوت بإيموجي (للإدارة بس)"""

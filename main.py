@@ -7938,6 +7938,16 @@ async def on_voice_state_update(member, before, after):
             staff_touch(member)
         except Exception:
             pass
+    # حذف موجة الراديو لما تفضى (طلع الكل منها)
+    ch = before.channel
+    if ch and ch is not after.channel:
+        try:
+            radio_cat = get_setting(member.guild.id, "radio_cat") or 0
+            if ch.category_id and ch.category_id == radio_cat \
+                    and ch.name.startswith(RADIO_MARKER) and len(ch.members) == 0:
+                await ch.delete(reason="الموجة فضيت")
+        except (discord.HTTPException, AttributeError):
+            pass
 
 
 async def staff_activity_check(guild: discord.Guild):
@@ -9192,6 +9202,112 @@ async def setup_support(inter: discord.Interaction, الكاتيجوري: discor
     await inter.response.send_modal(SupportTextModal(gid, help_s, comp_s, صورة_برا, صورة_داخل))
 
 
+# ============================================================
+# نظام موجات الراديو (زي قراند) - موجة من 1 لين 500 ، تقبل كسور مثل 30.6
+# ============================================================
+RADIO_MARKER = "📻┃"
+
+
+def norm_freq(text):
+    t = (text or "").strip().replace("٬", ".").replace("،", ".").replace(",", ".")
+    t = t.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    try:
+        f = float(t)
+    except ValueError:
+        return None
+    if f < 1 or f > 500:
+        return None
+    return f"{round(f, 2):g}"   # 30.0 -> "30" ، 30.6 -> "30.6"
+
+
+async def get_radio_category(guild):
+    cid = get_setting(guild.id, "radio_cat") or 0
+    cat = guild.get_channel(cid) if cid else None
+    if isinstance(cat, discord.CategoryChannel):
+        return cat
+    cat = await guild.create_category("📻 موجات الراديو", reason="نظام الراديو")
+    set_setting(guild.id, "radio_cat", cat.id)
+    return cat
+
+
+def radio_panel_embed(guild):
+    e = discord.Embed(
+        title="📻 - راديو الموجات",
+        description=(
+            "اضغط الزر تحت واكتب **رقم الموجة** اللي تبيها .\n\n"
+            "• الموجات من **1** إلى **500** ، وتقبل الكسور مثل **30.6** .\n"
+            "• لو الموجة فيها ناس ، بتدخل معهم في **نفس** الموجة .\n"
+            "• أول ما تطلع أنت وكل اللي فيها ، الموجة **تنحذف تلقائي** .\n\n"
+            "💡 لازم تكون داخل أي روم صوتي قبل ما تضغط ، عشان أنقلك ."
+        ),
+        color=0x006C35, timestamp=now())
+    if guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
+    e.set_footer(text=config.SERVER_NAME)
+    return e
+
+
+def radio_panel_view():
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="دخول موجة", emoji="📻",
+                                 style=discord.ButtonStyle.success, custom_id="radio:open"))
+    return v
+
+
+class RadioModal(discord.ui.Modal, title="📻 دخول موجة"):
+    freq = discord.ui.TextInput(label="رقم الموجة (1 لين 500)", placeholder="مثال: 30.6", max_length=10)
+
+    async def on_submit(self, inter: discord.Interaction):
+        f = norm_freq(str(self.freq.value))
+        if f is None:
+            return await inter.response.send_message(
+                embed=err("رقم الموجة لازم يكون من **1** إلى **500** (تقدر تحط كسر مثل 30.6) ."), ephemeral=True)
+        guild = inter.guild
+        cat = await get_radio_category(guild)
+        name = f"{RADIO_MARKER}{f}"
+        ch = discord.utils.get(cat.voice_channels, name=name)
+        created = False
+        if ch is None:
+            try:
+                ch = await guild.create_voice_channel(name, category=cat, reason=f"موجة راديو {f}")
+                created = True
+            except discord.HTTPException as ex:
+                return await inter.response.send_message(embed=err(f"ما قدرت أسوي الموجة: `{str(ex)[:150]}`"), ephemeral=True)
+        member = inter.user
+        moved = False
+        if member.voice and member.voice.channel:
+            try:
+                await member.move_to(ch, reason=f"دخول موجة {f}")
+                moved = True
+            except discord.HTTPException:
+                moved = False
+        n = len(ch.members)
+        if moved:
+            msg = (f"✅ دخلت موجة **{f}** {'(جديدة)' if created else ''}\n"
+                   f"فيها الحين **{n}** شخص .\nروم الموجة : {ch.mention}")
+        else:
+            msg = (f"📻 موجة **{f}** جاهزة : {ch.mention}\n"
+                   "ادخل الروم الصوتي عشان تنضم . (لو كنت داخل روم صوتي كان نقلتك تلقائي)")
+        await inter.response.send_message(embed=embed("📻 الراديو", msg), ephemeral=True)
+
+
+@bot.tree.command(name="ارسال_الراديو", description="يرسل لوحة الراديو (دخول الموجات) في روم")
+@app_commands.describe(الروم="الروم اللي تنرسل فيه اللوحة",
+                       كاتقوري_الموجات="الكاتقوري اللي تنفتح تحته رومات الموجات (اختياري)")
+async def send_radio_panel(inter: discord.Interaction, الروم: discord.TextChannel,
+                           كاتقوري_الموجات: discord.CategoryChannel = None):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    if كاتقوري_الموجات:
+        set_setting(inter.guild.id, "radio_cat", كاتقوري_الموجات.id)
+    try:
+        await الروم.send(embed=radio_panel_embed(inter.guild), view=radio_panel_view())
+    except discord.HTTPException as ex:
+        return await inter.response.send_message(embed=err(f"ما قدرت أرسل: `{str(ex)[:150]}`"), ephemeral=True)
+    await inter.response.send_message(embed=embed("✅ انرسلت لوحة الراديو", f"في {الروم.mention}"), ephemeral=True)
+
+
+
 @bot.event
 async def on_interaction(inter: discord.Interaction):
     if inter.type == discord.InteractionType.modal_submit and inter.guild \
@@ -9266,6 +9382,8 @@ async def on_interaction(inter: discord.Interaction):
         await handle_unit(inter, cid.split(":", 1)[1])
     elif cid.startswith("app:"):
         await handle_app_interaction(inter, cid)
+    elif cid == "radio:open":
+        await inter.response.send_modal(RadioModal())
 
 
 # ============================================================

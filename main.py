@@ -582,85 +582,6 @@ async def set_job_role(member: discord.Member, old_job: str, new_job: str):
 # ============================================================
 # البنك
 # ============================================================
-@bot.tree.command(name="رصيدي", description="عرض فلوسك الكاش والبنك")
-async def balance(inter: discord.Interaction):
-    p = await require_player(inter)
-    if not p:
-        return
-    e = embed("🏦 حسابك")
-    e.add_field(name="💵 كاش", value=money(p["cash"]))
-    e.add_field(name="🏦 البنك", value=money(p["bank"]))
-    e.add_field(name="المجموع", value=money(p["cash"] + p["bank"]))
-    await inter.response.send_message(embed=e, ephemeral=True)
-
-
-@bot.tree.command(name="ايداع", description="إيداع كاش في البنك")
-async def deposit(inter: discord.Interaction, المبلغ: app_commands.Range[int, 1]):
-    if not await bank_gate(inter):
-        return
-    p = await require_player(inter)
-    if not p:
-        return
-    if p["cash"] < المبلغ:
-        return await inter.response.send_message(embed=err(f"كاشك ما يكفي. عندك {money(p['cash'])}"), ephemeral=True)
-    db.execute("UPDATE players SET cash = cash - ?, bank = bank + ? WHERE user_id = ?", (المبلغ, المبلغ, inter.user.id))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تم الإيداع", f"أودعت {money(المبلغ)} في البنك."), ephemeral=True)
-
-
-@bot.tree.command(name="سحب", description="سحب فلوس من البنك كاش")
-async def withdraw(inter: discord.Interaction, المبلغ: app_commands.Range[int, 1]):
-    if not await bank_gate(inter):
-        return
-    p = await require_player(inter)
-    if not p:
-        return
-    if p["bank"] < المبلغ:
-        return await inter.response.send_message(embed=err(f"رصيدك في البنك ما يكفي. عندك {money(p['bank'])}"), ephemeral=True)
-    db.execute("UPDATE players SET bank = bank - ?, cash = cash + ? WHERE user_id = ?", (المبلغ, المبلغ, inter.user.id))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تم السحب", f"سحبت {money(المبلغ)} كاش."), ephemeral=True)
-
-
-@bot.tree.command(name="تحويل", description="تحويل بنكي للاعب ثاني")
-async def transfer(inter: discord.Interaction, اللاعب: discord.Member, المبلغ: app_commands.Range[int, 1]):
-    if اللاعب.id == inter.user.id:
-        return await inter.response.send_message(embed=err("ما تقدر تحول لنفسك."), ephemeral=True)
-    if not await bank_gate(inter):
-        return
-    p = await require_player(inter)
-    if not p:
-        return
-    if not get_account(اللاعب.id) or bank_frozen(اللاعب):
-        return await inter.response.send_message(embed=err(f"{اللاعب.mention} ما عنده حساب بنكي أو حسابه موقوف."), ephemeral=True)
-    get_player(اللاعب.id)
-    if p["bank"] < المبلغ:
-        return await inter.response.send_message(embed=err(f"رصيدك ما يكفي. عندك {money(p['bank'])}"), ephemeral=True)
-    db.execute("UPDATE players SET bank = bank - ? WHERE user_id = ?", (المبلغ, inter.user.id))
-    db.execute("UPDATE players SET bank = bank + ? WHERE user_id = ?", (المبلغ, اللاعب.id))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تم التحويل", f"حولت {money(المبلغ)} إلى {اللاعب.mention}"))
-    await log(f"{inter.user.mention} حوّل {money(المبلغ)} إلى {اللاعب.mention}", inter.guild)
-
-
-@bot.tree.command(name="اعطاء_كاش", description="تعطي لاعب قريب منك كاش من يدك")
-async def give_cash(inter: discord.Interaction, اللاعب: discord.Member, المبلغ: app_commands.Range[int, 1]):
-    if اللاعب.id == inter.user.id:
-        return await inter.response.send_message(embed=err("ما تقدر تعطي نفسك."), ephemeral=True)
-    p = await require_player(inter)
-    if not p:
-        return
-    if not get_player(اللاعب.id):
-        return await inter.response.send_message(embed=err(f"{اللاعب.mention} ما عنده حساب."), ephemeral=True)
-    if p["cash"] < المبلغ:
-        return await inter.response.send_message(embed=err(f"كاشك ما يكفي. عندك {money(p['cash'])}"), ephemeral=True)
-    db.execute("UPDATE players SET cash = cash - ? WHERE user_id = ?", (المبلغ, inter.user.id))
-    db.execute("UPDATE players SET cash = cash + ? WHERE user_id = ?", (المبلغ, اللاعب.id))
-    db.commit()
-    await inter.response.send_message(embed=embed("💵 تسليم كاش", f"{inter.user.mention} عطى {اللاعب.mention} {money(المبلغ)} كاش"))
-    await log(f"{inter.user.mention} عطى {اللاعب.mention} {money(المبلغ)} كاش", inter.guild)
-
-
 @bot.tree.command(name="الاغنى", description="قائمة أغنى 10 لاعبين")
 async def top(inter: discord.Interaction):
     rows = db.execute("SELECT name, user_id, cash + bank AS total FROM players ORDER BY total DESC LIMIT 10").fetchall()
@@ -720,111 +641,6 @@ async def set_job(inter: discord.Interaction, اللاعب: discord.Member, ال
 # ============================================================
 # الشرطة: المخالفات والسجل
 # ============================================================
-@bot.tree.command(name="مخالفة", description="تسجيل مخالفة على لاعب (للشرطة)")
-async def fine(inter: discord.Interaction, اللاعب: discord.Member, المبلغ: app_commands.Range[int, 1], السبب: str):
-    if not is_police(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للشرطة فقط."), ephemeral=True)
-    if not await require_player(inter, اللاعب):
-        return
-    cur = db.execute(
-        "INSERT INTO fines (user_id, amount, reason, officer, created_at) VALUES (?, ?, ?, ?, ?)",
-        (اللاعب.id, المبلغ, السبب, inter.user.id, now().isoformat()),
-    )
-    db.commit()
-    e = embed("🚨 مخالفة جديدة", color=0x006C35)
-    e.add_field(name="المخالف", value=اللاعب.mention)
-    e.add_field(name="المبلغ", value=money(المبلغ))
-    e.add_field(name="رقم المخالفة", value=f"#{cur.lastrowid}")
-    e.add_field(name="السبب", value=السبب, inline=False)
-    e.add_field(name="الشرطي", value=inter.user.mention, inline=False)
-    await inter.response.send_message(content=اللاعب.mention, embed=e)
-    add_points(inter.guild.id, inter.user.id, "police", "fine", pts_value(inter.guild.id, "pts_fine"))
-    await log(f"{inter.user.mention} خالف {اللاعب.mention} بـ {money(المبلغ)}: {السبب}", inter.guild)
-
-
-@bot.tree.command(name="مخالفاتي", description="عرض مخالفاتك غير المسددة")
-async def my_fines(inter: discord.Interaction):
-    if not await require_player(inter):
-        return
-    rows = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0", (inter.user.id,)).fetchall()
-    if not rows:
-        return await inter.response.send_message(embed=embed("✅ ما عليك مخالفات"), ephemeral=True)
-    total = sum(r["amount"] for r in rows)
-    lines = [f"**#{r['id']}** : {money(r['amount'])} ({r['reason']})" for r in rows]
-    await inter.response.send_message(
-        embed=embed("🚨 مخالفاتك", "\n".join(lines) + f"\n\n**المجموع:** {money(total)}\nسدد بأمر /سداد_مخالفة", 0x006C35),
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="سداد_مخالفة", description="سداد مخالفة من حسابك البنكي")
-@app_commands.describe(رقم_المخالفة="رقم المخالفة، أو اتركه فاضي لسداد الكل")
-async def pay_fine(inter: discord.Interaction, رقم_المخالفة: int = None):
-    p = await require_player(inter)
-    if not p:
-        return
-    if رقم_المخالفة:
-        rows = db.execute("SELECT * FROM fines WHERE id = ? AND user_id = ? AND paid = 0", (رقم_المخالفة, inter.user.id)).fetchall()
-    else:
-        rows = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0", (inter.user.id,)).fetchall()
-    if not rows:
-        return await inter.response.send_message(embed=err("ما لقيت مخالفات غير مسددة."), ephemeral=True)
-    total = sum(r["amount"] for r in rows)
-    if p["bank"] < total:
-        return await inter.response.send_message(embed=err(f"رصيدك ما يكفي. المطلوب {money(total)} وعندك {money(p['bank'])}"), ephemeral=True)
-    db.execute("UPDATE players SET bank = bank - ? WHERE user_id = ?", (total, inter.user.id))
-    db.executemany("UPDATE fines SET paid = 1 WHERE id = ?", [(r["id"],) for r in rows])
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تم السداد", f"سددت {len(rows)} مخالفة بمبلغ {money(total)}"), ephemeral=True)
-    await log(f"{inter.user.mention} سدد مخالفات بمبلغ {money(total)}", inter.guild)
-
-
-@bot.tree.command(name="اضافة_سجل", description="إضافة تهمة للسجل الجنائي (للشرطة)")
-async def add_record(inter: discord.Interaction, اللاعب: discord.Member, التهمة: str):
-    if not is_police(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للشرطة فقط."), ephemeral=True)
-    if not await require_player(inter, اللاعب):
-        return
-    db.execute("INSERT INTO records (user_id, charge, officer, created_at) VALUES (?, ?, ?, ?)",
-               (اللاعب.id, التهمة, inter.user.id, now().isoformat()))
-    db.commit()
-    await inter.response.send_message(embed=embed("📁 تمت الإضافة للسجل", f"{اللاعب.mention}: {التهمة}", 0x006C35))
-    await log(f"{inter.user.mention} أضاف للسجل الجنائي لـ {اللاعب.mention}: {التهمة}", inter.guild)
-
-
-@bot.tree.command(name="سجل", description="عرض السجل الجنائي والمخالفات للاعب (للشرطة)")
-async def view_record(inter: discord.Interaction, اللاعب: discord.Member):
-    if not is_police(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للشرطة فقط."), ephemeral=True)
-    p = await require_player(inter, اللاعب)
-    if not p:
-        return
-    recs = db.execute("SELECT * FROM records WHERE user_id = ? ORDER BY id DESC LIMIT 15", (اللاعب.id,)).fetchall()
-    fines_ = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0", (اللاعب.id,)).fetchall()
-    e = embed(f"📁 ملف {اللاعب.display_name}", f"**الايدي :** `{اللاعب.id}`", 0x006C35)
-    e.add_field(
-        name=f"السجل الجنائي ({len(recs)})",
-        value="\n".join(f"• {r['charge']} ({r['created_at'][:10]})" for r in recs) or "نظيف ✅",
-        inline=False,
-    )
-    e.add_field(
-        name="مخالفات غير مسددة",
-        value=f"{len(fines_)} مخالفة بمجموع {money(sum(f['amount'] for f in fines_))}" if fines_ else "لا يوجد",
-        inline=False,
-    )
-    await inter.response.send_message(embed=e, ephemeral=True)
-
-
-@bot.tree.command(name="مسح_سجل", description="مسح السجل الجنائي للاعب (للإدارة)")
-async def clear_record(inter: discord.Interaction, اللاعب: discord.Member):
-    if not is_admin(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
-    db.execute("DELETE FROM records WHERE user_id = ?", (اللاعب.id,))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تم مسح السجل", اللاعب.mention), ephemeral=True)
-    await log(f"{inter.user.mention} مسح السجل الجنائي لـ {اللاعب.mention}", inter.guild)
-
-
 # ============================================================
 # المتجر (بدون شنطة: يخصم الكاش ويعلن الشراء)
 # ============================================================
@@ -858,50 +674,22 @@ async def buy(inter: discord.Interaction, الغرض: str, العدد: app_comma
 # ============================================================
 # أوامر الإدارة
 # ============================================================
-@bot.tree.command(name="اضافة_فلوس", description="إضافة فلوس للاعب (للإدارة)")
-@app_commands.choices(المكان=[app_commands.Choice(name="البنك", value="bank"), app_commands.Choice(name="كاش", value="cash")])
-async def admin_add(inter: discord.Interaction, اللاعب: discord.Member, المبلغ: app_commands.Range[int, 1], المكان: app_commands.Choice[str]):
-    if not is_admin(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
-    if not await require_player(inter, اللاعب):
-        return
-    db.execute(f"UPDATE players SET {المكان.value} = {المكان.value} + ? WHERE user_id = ?", (المبلغ, اللاعب.id))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تمت الإضافة", f"أضفت {money(المبلغ)} ({المكان.name}) لـ {اللاعب.mention}"), ephemeral=True)
-    await log(f"{inter.user.mention} أضاف {money(المبلغ)} ({المكان.name}) لـ {اللاعب.mention}", inter.guild)
-
-
-@bot.tree.command(name="خصم_فلوس", description="خصم فلوس من لاعب (للإدارة)")
-@app_commands.choices(المكان=[app_commands.Choice(name="البنك", value="bank"), app_commands.Choice(name="كاش", value="cash")])
-async def admin_remove(inter: discord.Interaction, اللاعب: discord.Member, المبلغ: app_commands.Range[int, 1], المكان: app_commands.Choice[str]):
-    if not is_admin(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
-    if not await require_player(inter, اللاعب):
-        return
-    db.execute(f"UPDATE players SET {المكان.value} = MAX(0, {المكان.value} - ?) WHERE user_id = ?", (المبلغ, اللاعب.id))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ تم الخصم", f"خصمت {money(المبلغ)} ({المكان.name}) من {اللاعب.mention}"), ephemeral=True)
-    await log(f"{inter.user.mention} خصم {money(المبلغ)} ({المكان.name}) من {اللاعب.mention}", inter.guild)
-
-
 @bot.tree.command(name="مساعدة", description="قائمة أوامر البوت")
 async def help_cmd(inter: discord.Interaction):
     e = embed("📖 أوامر البوت")
-    e.add_field(name="🏦 البنك", value="/رصيدي · /ايداع · /سحب · /تحويل · /اعطاء_كاش · /الاغنى", inline=False)
+    e.add_field(name="🏦 البنك", value="`-رصيد` (فلوسك) · `-بنك` (لوحة الإدارة) · لوحة البنك للأعضاء من /ارسال_لوحة · /الاغنى", inline=False)
     e.add_field(name="🛒 المتجر", value="/المتجر · /شراء", inline=False)
     e.add_field(name="💼 الوظائف", value="/الوظائف · /راتب", inline=False)
-    e.add_field(name="🚨 المخالفات", value="/مخالفاتي · /سداد_مخالفة", inline=False)
-    e.add_field(name="👮 الشرطة", value="/مخالفة · /اضافة_سجل · /سجل", inline=False)
-    e.add_field(name="🛠️ الإدارة", value="/تسطيب_رومات · /تسطيب_رتب · /تعيين_وظيفة · /اضافة_فلوس · /خصم_فلوس · /مسح_سجل", inline=False)
+    e.add_field(name="🛠️ الإدارة", value="/تسطيب_رومات · /تسطيب_رتب · /تعيين_وظيفة · فلوس اللاعبين من `-بنك`", inline=False)
     e.add_field(name="🎫 التذاكر", value="/تسطيب_تذكرة · /حذف_تذكرة · /ارسال_التذاكر", inline=False)
     e.add_field(name="💬 الردود والإيمبد", value="/اضافة_رد · /حذف_رد · /الردود · /ايمبد · /رسالة_للكل", inline=False)
-    e.add_field(name="📊 نقاط الإدارة", value="/تسطيب_نقاط_الادارة · /تعديل_نقاط_الادارة · /تصفير_نقاط_الادارة · /تسطيب_الاطار · /تسطيب_رتب_الادارة", inline=False)
+    e.add_field(name="📊 نقاط الإدارة", value="/تسطيب_نقاط_الادارة · /تعديل_نقاط_الادارة · /تصفير_نقاط_الادارة · /تسطيب_رتب_الادارة", inline=False)
     e.add_field(name="🚓 نقاط الشرطة و MDT", value="/تسطيب_نقاط_الشرطة · /تعديل_نقاط_الشرطة · /تصفير_نقاط_الشرطة · /ارسال_لوحة · /حذف_يونت", inline=False)
     e.add_field(name="🏦 البنك والرواتب", value="/ارسال_لوحة (البنك) · /تسطيب_رتب_الشرطة · /تسطيب_الرواتب · /صرف_الرواتب", inline=False)
     e.add_field(name="📜 القوانين", value="/تحميل_القوانين · /اضافة_قوانين · /حذف_قوانين · /ارسال_القوانين", inline=False)
     e.add_field(name="📝 التقديمات", value="/تسطيب_تقديم · /اسئلة_تقديم · /حذف_تقديم · /ارسال_التقديمات", inline=False)
     e.add_field(name="💼 التوظيف والاستقالة", value="/تسطيب_وظيفة · /حذف_وظيفة · /قائمة_الوظائف · `-اسم_الوظيفة @الشخص` · `-استقالة @الشخص`", inline=False)
-    e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` (مشرف السجناء) · `-خط` · /تسطيب_الخط · /تسطيب_الادارة_العليا", inline=False)
+    e.add_field(name="🛡️ الإسكات والحظر", value="`-اسكات @العضو 30 السبب` · `-فك_اسكات @العضو` · `-حظر ايدي السبب` · `-فك_حظر ايدي` (مشرف السجناء) · `-خط` · /تسطيب_الادارة_العليا", inline=False)
     e.add_field(name="📝 الاختبار", value="/تحميل_الاسئلة · /اضافة_سؤال · العضو يكتب `T1` في تذكرته (بس T1) · `-تفعيل @العضو`", inline=False)
     e.add_field(name="✈️ الأقيام", value="`-قيم` في روم إنشاء القيم · `-تفتيش @العضو` في روم التفتيش · /تسطيب_التفتيش", inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
@@ -1369,26 +1157,6 @@ async def line_command(message: discord.Message):
         pass
 
 
-@bot.tree.command(name="تسطيب_الخط", description="تغيير صورة الخط اللي تطلع بأمر -خط (للأونر)")
-@app_commands.describe(صورة="ارفع صورة الخط الجديدة (اتركها فاضية ترجع الصورة الأصلية)")
-async def setup_line(inter: discord.Interaction, صورة: discord.Attachment = None):
-    if not is_owner_role(inter.user):
-        return await inter.response.send_message(embed=err("هذا الأمر للأونر بس."), ephemeral=True)
-    if صورة is None:
-        db.execute("DELETE FROM line_images WHERE guild_id = ?", (inter.guild.id,))
-        db.commit()
-        return await inter.response.send_message(embed=embed("✅ الخط", "رجعت صورة الخط الأصلية."), ephemeral=True)
-    if not (صورة.content_type or "").startswith("image/"):
-        return await inter.response.send_message(embed=err("لازم تكون صورة."), ephemeral=True)
-    if صورة.size > 8 * 1024 * 1024:
-        return await inter.response.send_message(embed=err("الصورة كبيرة، خلها أقل من 8 ميقا."), ephemeral=True)
-    data = await صورة.read()
-    db.execute("INSERT OR REPLACE INTO line_images (guild_id, data, filename) VALUES (?, ?, ?)",
-               (inter.guild.id, data, صورة.filename))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ الخط", "تم تغيير صورة الخط. جرّب `-خط`."), ephemeral=True)
-
-
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -1413,6 +1181,10 @@ async def on_message(message: discord.Message):
     first = message.content.strip().split()[:1]
     if first in (["-ايموجي_الرد"], ["-ايموجي_البوت"], ["-رياكشن"], ["-تفاعل"]):
         return await react_emoji_prefix(message)
+    if first in (["-بنك"], ["-البنك"], ["-لوحه_البنك"], ["-لوحة_البنك"]):
+        return await bank_panel_prefix(message)
+    if first in (["-رصيد"], ["-رصيدي"], ["-فلوسي"], ["-حسابي"]):
+        return await balance_prefix(message)
     if message.content.strip().split()[:1] in (["-ايموجي"], ["-إيموجي"], ["-ايموجيات"]):
         return await emoji_prefix(message)
     if first in (["-نداء"], ["-نداءات"]):
@@ -1942,6 +1714,84 @@ async def delete_ticket_type(inter: discord.Interaction, الرقم: app_command
     )
 
 
+@bot.tree.command(name="تعديل_تذكرة", description="تعدّل تذكرة موجودة — غيّر اللي تبي بس والباقي يبقى زي ما هو")
+@app_commands.describe(
+    الرقم="رقم التذكرة اللي تبي تعدّلها (شوفها بـ /قائمة_التذاكر)",
+    الاسم="اسم جديد (اختياري)",
+    الكاتقوري="كاتقوري جديد (اختياري)",
+    رتبة_المسؤول="رتبة مسؤول جديدة (اختياري)",
+    الايموجي="ايموجي جديد (اختياري)",
+    رسالة_الترحيب="رسالة ترحيب جديدة (اختياري)",
+    لون_الزر="لون الزر للتذاكر 11-20 (اختياري)",
+    الاستلام="فيها زر استلام ولا لا (اختياري)",
+    منشن_المسؤول="يمنشن المسؤول أول ما تنفتح (اختياري)",
+)
+@app_commands.choices(
+    لون_الزر=[app_commands.Choice(name=n, value=v) for n, v in
+             (("أزرق", "primary"), ("أخضر", "success"), ("رمادي", "secondary"), ("أحمر", "danger"))],
+    الاستلام=[app_commands.Choice(name="إيه، فيها استلام", value=1), app_commands.Choice(name="لا، بدون استلام", value=0)],
+    منشن_المسؤول=[app_commands.Choice(name="إيه، منشن", value=1), app_commands.Choice(name="لا، بدون منشن", value=0)],
+)
+async def edit_ticket(
+    inter: discord.Interaction,
+    الرقم: app_commands.Range[int, 1, 20],
+    الاسم: app_commands.Range[str, 1, 40] = None,
+    الكاتقوري: discord.CategoryChannel = None,
+    رتبة_المسؤول: discord.Role = None,
+    الايموجي: str = None,
+    رسالة_الترحيب: str = None,
+    لون_الزر: app_commands.Choice[str] = None,
+    الاستلام: app_commands.Choice[int] = None,
+    منشن_المسؤول: app_commands.Choice[int] = None,
+):
+    if not admin_only(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    old = db.execute("SELECT * FROM ticket_types WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم)).fetchone()
+    if not old:
+        return await inter.response.send_message(embed=err(
+            f"ما فيه تذكرة برقم **{الرقم}** .\nشوف التذاكر الموجودة بـ /قائمة_التذاكر ، أو سوّ وحدة جديدة بـ /تسطيب_تذكرة ."), ephemeral=True)
+    # نبني القيم: اللي ما كتبه الإداري يبقى زي ما هو
+    name = الاسم if الاسم is not None else old["name"]
+    cat = الكاتقوري.id if الكاتقوري else old["category_id"]
+    role = رتبة_المسؤول.id if رتبة_المسؤول else old["staff_role"]
+    emoji = الايموجي.strip()[:30] if الايموجي is not None else (old["emoji"] or "")
+    welcome = رسالة_الترحيب if رسالة_الترحيب is not None else old["welcome"]
+    color = لون_الزر.value if لون_الزر else (old["btn_color"] or "primary")
+    claim = الاستلام.value if الاستلام else (old["claim_on"] if old["claim_on"] is not None else 1)
+    ping = منشن_المسؤول.value if منشن_المسؤول else (old["ping_staff"] if old["ping_staff"] is not None else 1)
+    db.execute(
+        "UPDATE ticket_types SET name=?, emoji=?, category_id=?, staff_role=?, welcome=?, btn_color=?, claim_on=?, ping_staff=? "
+        "WHERE guild_id=? AND slot=?",
+        (name, emoji, cat, role, welcome, color, claim, ping, inter.guild.id, الرقم),
+    )
+    db.commit()
+    changed = []
+    if الاسم is not None: changed.append("الاسم")
+    if الكاتقوري: changed.append("الكاتقوري")
+    if رتبة_المسؤول: changed.append("رتبة المسؤول")
+    if الايموجي is not None: changed.append("الإيموجي")
+    if رسالة_الترحيب is not None: changed.append("رسالة الترحيب")
+    if لون_الزر: changed.append("لون الزر")
+    if الاستلام: changed.append("الاستلام")
+    if منشن_المسؤول: changed.append("المنشن")
+    cat_ch = inter.guild.get_channel(cat)
+    colors = {"primary": "🔵 أزرق", "success": "🟢 أخضر", "secondary": "⚪ رمادي", "danger": "🔴 أحمر"}
+    await inter.response.send_message(
+        embed=embed(
+            "✏️ تم تعديل التذكرة",
+            (f"**اللي تغيّر:** {' ، '.join(changed)}\n\n" if changed else "ما غيّرت شي (ما كتبت أي خانة) .\n\n") +
+            f"**رقم {الرقم}:** {emoji} {name}\n"
+            f"الكاتقوري: {cat_ch.mention if cat_ch else '—'}\n"
+            f"المسؤول: <@&{role}>\n"
+            f"**الشكل:** {'أزرار' if الرقم > 10 else 'منيو'}" + (f" | **لون الزر:** {colors.get(color, color)}" if الرقم > 10 else "") + "\n"
+            f"**الاستلام:** {'✅ فيها' if claim else '❌ بدون'} · **المنشن:** {'✅' if ping else '❌'}\n\n"
+            "💡 لو غيّرت الاسم أو الإيموجي أو لون الزر ، أعد إرسال اللوحة بـ /ارسال_التذاكر عشان يبان التغيير .",
+        ),
+        ephemeral=True,
+    )
+
+
+
 def ticket_select(guild_id: int, slots=None) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     options = [
@@ -2138,7 +1988,7 @@ async def ticket_design(inter: discord.Interaction, الفاصل: str = None, ا
             set_text(gid, k, v.replace("\\n", "\n")[:1500])
     types_ = get_ticket_types(gid)[:5]
     demo = ticket_panel_embed(inter.guild, types_ or [{"emoji": "🛃", "name": "مثال"}], False)
-    await inter.response.send_message(content="👀 **هذا شكل اللوحة الحين** (أعد إرسالها بـ /ارسال_التذاكر أو /اعادة_اللوحات):",
+    await inter.response.send_message(content="👀 **هذا شكل اللوحة الحين** (أعد إرسالها بـ /ارسال_التذاكر):",
                                       embed=demo, ephemeral=True)
 
 
@@ -3513,29 +3363,6 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
     await inter.response.send_message(embed=embed("✅ انرسلت اللوحة", الروم.mention), ephemeral=True)
 
 
-@bot.tree.command(name="تسطيب_الاطار", description="رفع صورة الإطار اللي تطلع تحت نقاط الإدارة")
-async def setup_frame(inter: discord.Interaction, الصورة: discord.Attachment):
-    if not admin_only(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
-    if not (الصورة.content_type or "").startswith("image/"):
-        return await inter.response.send_message(embed=err("لازم تكون صورة."), ephemeral=True)
-    if الصورة.size > 7_000_000:
-        return await inter.response.send_message(embed=err("الصورة كبيرة، خلها أقل من 7 ميقا."), ephemeral=True)
-    kind = "admin"
-    data = await الصورة.read()
-    ext = (الصورة.filename.rsplit(".", 1)[-1] or "png").lower()
-    db.execute(
-        "INSERT INTO assets (guild_id, key, filename, data) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(guild_id, key) DO UPDATE SET filename = excluded.filename, data = excluded.data",
-        (inter.guild.id, f"frame_{kind}", f"frame_{kind}.{ext}", data),
-    )
-    db.commit()
-    await inter.response.send_message(
-        embed=embed("✅ انحفظ الإطار", "إطار نقاط الإدارة ."),
-        ephemeral=True,
-    )
-
-
 @bot.tree.command(name="تسطيب_رتب_الادارة", description="تحديد رتب الإدارة من Junior 1 إلى Middle 7")
 @app_commands.describe(**{f"جونير_{i}": f"رتبة Junior {i}" for i in range(1, 8)}, **{f"ميدل_{i}": f"رتبة Middle {i}" for i in range(1, 8)})
 async def setup_admin_ranks(
@@ -4866,7 +4693,7 @@ class BankFreezeModal(discord.ui.Modal):
                 set_setting(inter.guild.id, "bank_freeze_role", role.id)
             except discord.HTTPException:
                 return await inter.response.send_message(embed=err(
-                    "ما قدرت أسوي رتبة إيقاف الخدمات. حددها من **/تسطيب_البنك** ."), ephemeral=True)
+                    "ما قدرت أسوي رتبة إيقاف الخدمات. بتنسوى تلقائي أول مرة تستخدم الإيقاف."), ephemeral=True)
         why = self.reason.value.strip()
         try:
             if self.freeze:
@@ -5021,42 +4848,6 @@ async def handle_bank_admin(inter: discord.Interaction):
         await inter.message.edit(view=bank_admin_view())
     except discord.HTTPException:
         pass
-
-
-@bot.tree.command(name="لوحة_تحكم_البنك", description="ترسل لوحة تحكم البنك للإدارة (إضافة، سحب، كشف، رواتب، قروض، إيقاف)")
-@app_commands.describe(الروم="الروم (فاضي = هنا)")
-async def bank_admin_panel(inter: discord.Interaction, الروم: discord.TextChannel = None):
-    if not (admin_only(inter) or is_owner(inter)):
-        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
-    ch = الروم or inter.channel
-    try:
-        await ch.send(embed=bank_admin_embed(inter.guild), view=bank_admin_view())
-    except discord.HTTPException as ex:
-        return await inter.response.send_message(embed=err(f"ما قدرت أرسل: `{str(ex)[:200]}`"), ephemeral=True)
-    await inter.response.send_message(embed=embed("✅ انرسلت لوحة تحكم البنك",
-        f"في {ch.mention}\n💡 خل الروم خاص للإدارة. واللي يقدر يستخدمها: الأونر والأدمن ومسؤول البنك."), ephemeral=True)
-
-
-@bot.tree.command(name="تسطيب_البنك", description="رتبة إيقاف الخدمات ورتبة مسؤول البنك")
-@app_commands.describe(رتبة_ايقاف_الخدمات="الرتبة اللي تنحط على اللي خدماته موقوفة",
-                       رتبة_مسؤول_البنك="الرتبة اللي تقدر تستخدم لوحة تحكم البنك")
-async def setup_bank(inter: discord.Interaction, رتبة_ايقاف_الخدمات: discord.Role = None,
-                     رتبة_مسؤول_البنك: discord.Role = None):
-    if not (admin_only(inter) or is_owner(inter)):
-        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
-    out = []
-    if رتبة_ايقاف_الخدمات:
-        set_setting(inter.guild.id, "bank_freeze_role", رتبة_ايقاف_الخدمات.id)
-        out.append(f"⛔ إيقاف الخدمات: {رتبة_ايقاف_الخدمات.mention}")
-    if رتبة_مسؤول_البنك:
-        set_setting(inter.guild.id, "bank_admin_role", رتبة_مسؤول_البنك.id)
-        out.append(f"🏦 مسؤول البنك: {رتبة_مسؤول_البنك.mention}")
-    if not out:
-        fr = freeze_role(inter.guild)
-        ad = inter.guild.get_role(get_setting(inter.guild.id, "bank_admin_role") or 0)
-        out = [f"⛔ إيقاف الخدمات: {fr.mention if fr else 'ما انحددت (بتنسوى تلقائي أول مرة)'}",
-               f"🏦 مسؤول البنك: {ad.mention if ad else 'ما انحددت'}"]
-    await inter.response.send_message(embed=embed("🏦 تسطيب البنك", "\n".join(out)), ephemeral=True)
 
 
 # ============================================================
@@ -5631,18 +5422,6 @@ async def room_prefix(message: discord.Message, open_: bool):
         pass
 
 
-@bot.tree.command(name="فتح_روم", description="يفتح الكتابة في الروم لكل الرتب اللي فيه")
-@app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
-async def open_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
-    await _toggle_room(inter, الروم, True)
-
-
-@bot.tree.command(name="قفل_روم", description="يقفل الكتابة في الروم (الكل يشوفه بس ما أحد يكتب)")
-@app_commands.describe(الروم="الروم (فاضي = الروم اللي أنت فيه)")
-async def close_room(inter: discord.Interaction, الروم: discord.TextChannel = None):
-    await _toggle_room(inter, الروم, False)
-
-
 # ============================================================
 # حماية السيرفر: نسخة كاملة (الرتب + الرومات + الصلاحيات + إعدادات البوت)
 # وتسترجعها في سيرفر ثاني لو صار شي
@@ -6132,18 +5911,6 @@ async def resend_panels(guild: discord.Guild) -> list:
     return done
 
 
-@bot.tree.command(name="اعادة_اللوحات", description="يرجّع لوحات التذاكر والتقديمات في أماكنها القديمة")
-async def resend_panels_cmd(inter: discord.Interaction):
-    if not admin_only(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
-    await inter.response.defer(ephemeral=True)
-    done = await resend_panels(inter.guild)
-    await inter.followup.send(embed=embed("🔁 إعادة اللوحات", (
-        "\n".join(done) if done else
-        "ما قدرت أرسل شي. تأكد إن التذاكر والتقديمات مسطّبة (/قائمة_التذاكر)، "
-        "أو أرسلها بيدك مرة وحدة بـ /ارسال_التذاكر و /ارسال_التقديمات وبعدها يحفظ البوت مكانها.")), ephemeral=True)
-
-
 async def order_roles_like(guild: discord.Guild, snap: dict) -> int:
     """يرتّب رتب السيرفر بنفس ترتيب النسخة (بالاسم). يرجع كم رتبة ترتبت"""
     by_name = collections.defaultdict(list)
@@ -6486,64 +6253,6 @@ async def clone_from_cmd(inter: discord.Interaction, ايدي_السيرفر: st
         return await ch.send(f"⚠️ صار خطأ وأنا أنسخ: `{type(ex).__name__}: {str(ex)[:300]}`")
     await ch.send("🛡️ خلصت النسخ، أبدأ أحطه هنا...")
     asyncio.create_task(_restore_server(g, snap, ch, bool(حذف_الموجود)))
-
-
-@bot.tree.command(name="نسخ_الكلام", description="ينسخ الكلام بس من سيرفر ثاني لهذا السيرفر (الرومات بنفس الأسماء)")
-@app_commands.describe(ايدي_السيرفر="ايدي السيرفر اللي فيه الكلام", الرسايل="كم رسالة من كل روم (الافتراضي 50)")
-async def copy_messages_cmd(inter: discord.Interaction, ايدي_السيرفر: str, الرسايل: app_commands.Range[int, 1, 100] = 50):
-    g = inter.guild
-    src = bot.get_guild(int(ايدي_السيرفر)) if ايدي_السيرفر.strip().isdigit() else None
-    if src is None:
-        return await inter.response.send_message(embed=err("البوت مو موجود في ذاك السيرفر، أو الايدي غلط."), ephemeral=True)
-    if inter.user.id != g.owner_id and not await bot.is_owner(inter.user):
-        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
-    await inter.response.send_message(f"⏳ أجمع الكلام من **{src.name}**...")
-    ch_out = inter.channel
-    try:
-        media = await collect_media(src, الرسايل)
-    except Exception as ex:
-        return await ch_out.send(f"⚠️ خطأ وأنا أجمع: `{type(ex).__name__}: {str(ex)[:300]}`")
-    media["emojis"], media["stickers"] = [], []
-    total = sum(len(v) for v in media["messages"].values())
-    if not total:
-        return await ch_out.send(
-            "⚠️ ما لقيت ولا رسالة في السيرفر الأساسي.\nتأكد إن البوت عنده **Administrator** هناك، "
-            "وإن **Message Content Intent** مفعّل في discord.com/developers ← Bot.")
-    # نربط الرومات والرتب والإيموجيات بالاسم
-    ids = {}
-    tgt_by_name = {}
-    for c in g.text_channels:
-        tgt_by_name.setdefault(_norm(c.name), c)
-    missing = []
-    for c in src.text_channels:
-        t = tgt_by_name.get(_norm(c.name))
-        if t:
-            ids[c.id] = t.id
-        elif str(c.id) in media["messages"]:
-            missing.append(c.name)
-    for r in src.roles:
-        t = discord.utils.get(g.roles, name=r.name)
-        if t:
-            ids[r.id] = t.id
-    for e in src.emojis:
-        t = discord.utils.get(g.emojis, name=e.name)
-        if t:
-            ids[e.id] = t.id
-    await ch_out.send(f"📦 لقيت **{total}** رسالة في **{len(media['messages'])}** روم. أبدأ أحطها...")
-
-    async def say(t):
-        try:
-            await ch_out.send(t)
-        except discord.HTTPException:
-            pass
-    try:
-        await restore_media(g, media, ids, say)
-    except Exception as ex:
-        import traceback; traceback.print_exc()
-        return await say(f"⚠️ خطأ وأنا أحط الكلام: `{type(ex).__name__}: {str(ex)[:300]}`")
-    if missing:
-        await say("ℹ️ رومات ما لقيت لها روم بنفس الاسم هنا: " + "، ".join(missing[:20]))
-    await say("✅ خلص نسخ الكلام")
 
 
 OLD_DECORS = ["⎧║-◞-ᵀˢ", "⎧║◞ᵀˢ", "⎧║-◞ᵀˢ", "⎧║◞-ᵀˢ"]  # زخارف قديمة تنشال
@@ -7563,6 +7272,30 @@ async def add_emojis(guild: discord.Guild, items, status):
         await status.edit(content=text)
     except discord.HTTPException:
         pass
+
+
+async def bank_panel_prefix(message: discord.Message):
+    """-بنك  يرسل لوحة تحكم البنك للإدارة (نفس اللي كانت بالسلاش)."""
+    g = message.guild
+    admin_role = g.get_role(get_setting(g.id, "bank_admin_role") or 0)
+    ok = is_power(message.author) or (admin_role and admin_role in getattr(message.author, "roles", []))
+    if not ok:
+        return await message.reply("❌ هذه اللوحة للأدمن والأونر ومسؤول البنك بس.")
+    try:
+        await message.channel.send(embed=bank_admin_embed(g), view=bank_admin_view())
+    except discord.HTTPException as ex:
+        return await message.reply(f"❌ ما قدرت أرسل اللوحة: `{str(ex)[:150]}`")
+    await bot_react(message, "ok")
+
+
+async def balance_prefix(message: discord.Message):
+    """-رصيد  يعرض فلوس العضو (كاش + بنك)."""
+    p = get_player(message.author.id)
+    e = embed("🏦 حسابك")
+    e.add_field(name="💵 كاش", value=money(p["cash"]))
+    e.add_field(name="🏦 البنك", value=money(p["bank"]))
+    e.add_field(name="المجموع", value=money(p["cash"] + p["bank"]))
+    await message.reply(embed=e)
 
 
 async def react_emoji_prefix(message: discord.Message):
@@ -8973,31 +8706,6 @@ async def call_prefix(message: discord.Message):
         await message.reply(f"⚠️ خاص {member.mention} مقفل ، ما وصله النداء . انمنشن هنا بدالها .", mention_author=False)
 
 
-@bot.tree.command(name="تسطيب_النداء", description="تحط الإيموجي اللي يرد فيه البوت على أمر -نداء (يقبل متحرك)")
-@app_commands.describe(الايموجي="الإيموجي اللي يطلع رد على النداء (متحرك أو عادي)")
-async def setup_call(inter: discord.Interaction, الايموجي: str):
-    if not (admin_only(inter) or is_owner(inter)):
-        return await inter.response.send_message(embed=err("هذا الأمر للأونر والأدمن بس."), ephemeral=True)
-    raw = الايموجي.strip()
-    m = re.search(r"<(a?):(\w+):(\d+)>", raw)
-    if not m:
-        # اسم إيموجي بين نقطتين أو إيموجي عادي
-        nm = raw.strip(":")
-        em = discord.utils.find(lambda e: e.name.lower() == nm.lower(), bot.emojis) if nm else None
-        raw = str(em) if em else raw
-        m = re.search(r"<(a?):(\w+):(\d+)>", raw)
-    if m:
-        test = discord.PartialEmoji(animated=bool(m.group(1)), name=m.group(2), id=int(m.group(3)))
-        if not bot.get_emoji(int(m.group(3))):
-            return await inter.response.send_message(embed=err(
-                "هذا الإيموجي من سيرفر البوت مو داخله ، لازم يكون من سيرفر فيه البوت عشان يقدر يحطه رياكشن ."), ephemeral=True)
-        raw = str(test)
-    set_text(inter.guild.id, "call_emoji", raw)
-    set_text(inter.guild.id, "react_ok", raw)
-    await inter.response.send_message(embed=embed("✅ تم تحديد إيموجي الرد",
-        f"الحين البوت بيرد بـ {raw} على أوامره (نداء ، سحب ، تفعيل ...) .\nجرّب: `-نداء @شخص`"), ephemeral=True)
-
-
 async def pull_prefix(message: discord.Message):
     """-سحب @العضو  →  يسحب العضو للروم الصوتي اللي فيه الإداري (للإدارة بس)"""
     g, a = message.guild, message.author
@@ -9145,35 +8853,6 @@ def _enlist_embed(e: discord.Embed, count: int, cap: int = 30, batch: int = 1) -
     e.add_field(name="🪖 الدورة", value=f"**رقم {batch}**")
     e.add_field(name="👥 المسجلين", value=f"**{count} / {cap}**")
     return e
-
-
-@bot.tree.command(name="تسجيل_عسكري", description="لوحة تسجيل عسكري: اللي يضغط ياخذ رتبة، وكل ما تكتمل الدورة يمنشنهم ويفتح دورة جديدة")
-@app_commands.describe(الروم="الروم اللي تنرسل فيه اللوحة", الرتبة="الرتبة اللي تنعطى للي يسجل (مثل: طالب تحت تدريب)",
-                       العدد="كم شخص في كل دورة (الافتراضي 30)",
-                       الوصف="الكلام اللي في اللوحة", العنوان="عنوان اللوحة (الافتراضي: تسجيل عسكري)",
-                       الصورة="صورة للوحة (اختياري)")
-async def enlist_panel(inter: discord.Interaction, الروم: discord.TextChannel, الرتبة: discord.Role,
-                       العدد: app_commands.Range[int, 1, 200] = 30, الوصف: str = None, العنوان: str = None,
-                       الصورة: discord.Attachment = None):
-    if not admin_only(inter):
-        return await inter.response.send_message(embed=err("هذا الأمر للأدمن والأونر بس."), ephemeral=True)
-    if الرتبة >= inter.guild.me.top_role:
-        return await inter.response.send_message(embed=err(f"{الرتبة.mention} فوق رتبة البوت. ارفع رتبة البوت فوقها."), ephemeral=True)
-    e = embed(f"🎖️ - {العنوان or 'تـسـجـيـل عـسـكـري'}", (الوصف or
-              "- باب التسجيل العسكري مفتوح الحين 🪖\n\nاضغط زر **تسجيل** عشان تنضم للدورة، وتاخذ رتبة "
-              f"{الرتبة.mention} وتبدأ تدريبك ."))
-    e = _enlist_embed(e, 0, العدد, 1)
-    kw = {}
-    if الصورة and (الصورة.content_type or "").startswith("image/"):
-        kw["file"] = await الصورة.to_file()
-        e.set_image(url=f"attachment://{kw['file'].filename}")
-    try:
-        msg = await الروم.send(embed=e, view=enlist_view(الرتبة.id, 0, العدد), **kw)
-    except discord.HTTPException:
-        return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
-    db.execute("INSERT OR REPLACE INTO enlist_panels VALUES (?, ?, ?, ?, 1)", (msg.id, inter.guild.id, الرتبة.id, العدد))
-    db.commit()
-    await inter.response.send_message(embed=embed("✅ انرسلت لوحة التسجيل", f"{الروم.mention}\nكل دورة **{العدد}** شخص."), ephemeral=True)
 
 
 async def handle_enlist(inter: discord.Interaction, cid: str):

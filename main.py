@@ -5039,8 +5039,12 @@ def get_rule_sections(gid: int):
 
 def rules_menu(gid: int) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
-    opts = [discord.SelectOption(label=r["name"][:100], value=str(r["idx"]), emoji=r["emoji"] or None)
-            for r in get_rule_sections(gid)][:25]
+    opts = []
+    for r in get_rule_sections(gid)[:25]:
+        try:
+            opts.append(discord.SelectOption(label=r["name"][:100], value=str(r["idx"]), emoji=_emoji_opt(r["emoji"])))
+        except Exception:  # إيموجي البوت ما يقدر عليه - نحط القسم بدون إيموجي بدل ما تطيح اللوحة
+            opts.append(discord.SelectOption(label=r["name"][:100], value=str(r["idx"])))
     v.add_item(discord.ui.Select(custom_id="rules:open", placeholder="اختر من القائمة", options=opts))
     return v
 
@@ -5082,7 +5086,7 @@ async def add_rules(inter: discord.Interaction, اسم_القسم: app_commands.
     if not old and len(get_rule_sections(inter.guild.id)) >= 25:
         return await inter.response.send_message(embed=err("وصلت الحد: 25 قسم."), ephemeral=True)
     await inter.response.send_modal(RuleSectionModal(
-        اسم_القسم.strip(), (الايموجي or (old["emoji"] if old else "") or "").strip()[:30],
+        اسم_القسم.strip(), (الايموجي or (old["emoji"] if old else "") or "").strip()[:64],
         old["idx"] if old else None, old["content"] if old else None,
     ))
 

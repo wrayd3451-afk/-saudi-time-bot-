@@ -1933,20 +1933,21 @@ def ticket_panel_embed(guild: discord.Guild, types_, buttons: bool, desc=None, t
             e = discord.Embed(description=custom[:4000], color=0x006C35)
             e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
             return e
-    sep, dot = tk(gid, "tk_sep"), tk(gid, "tk_dot")
-    lines = "\n".join(f"> {t['emoji'] or dot} **{t['name']}**" for t in types_)
-    body = (desc or tk(gid, "tk_desc") or
-            f"**مـرحـبـا بـك فـي قـسـم الـتـذاكـر الـخـاص بـ {config.SERVER_NAME}** 💚\n"
-            f"{dot} اختر التذكرة المناسبة لطلبك وبيتم خدمتك بأسرع وقت .")
-    how = "🔘 اضغط على زر التذكرة اللي تبيها ." if buttons else "📋 اختر نوع التذكرة من القائمة اللي تحت ."
-    e = discord.Embed(title=f"{tk(gid, 'tk_title_emoji')} | {title or tk(gid, 'tk_title')}",
-                      description=f"{body}\n\n{sep}\n{lines}\n{sep}\n\n{how}\n"
-                                  f"⚠️ يمنع فتح تذكرة بدون سبب .", color=0x006C35, timestamp=now())
-    if guild.icon:
-        e.set_thumbnail(url=guild.icon.url)
-        e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url)
-    else:
-        e.set_footer(text=config.SERVER_NAME)
+    dot = tk(gid, "tk_dot")
+    # ستايل عريض نظيف زي لوحة الدعم: كل تذكرة سطر مسطّر ، بدون أيقونة صغيرة ولا فواصل
+    bullets = "\n\n".join(
+        (f"{t['emoji']} - __{t['name']}__" if (t['emoji'] or '').strip() else f"{dot} - __{t['name']}__")
+        for t in types_)
+    intro = (desc or tk(gid, "tk_desc") or
+             f"**مـرحـبـا بـك فـي قـسـم الـتـذاكـر الـخـاص بـ {config.SERVER_NAME}** 💚")
+    how = ("🔘 - __اضغط على زر التذكرة اللي تبيها .__" if buttons
+           else "📋 - __اختر نوع التذكرة من القائمة اللي تحت .__")
+    warn = "⚠️ - __يمنع فتح تذكرة بدون سبب أو منشن الإدارة بدون داعي .__"
+    e = discord.Embed(
+        title=f"{tk(gid, 'tk_title_emoji')} | {title or tk(gid, 'tk_title')}"[:256],
+        description=f"{intro}\n\n{bullets}\n\n{how}\n\n{warn}"[:4000],
+        color=0x006C35, timestamp=now())
+    e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
     return e
 
 
@@ -5158,8 +5159,17 @@ class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
                 pass
         try:
             await self.channel.send(**kwargs)
-        except discord.HTTPException:
-            return await inter.followup.send(embed=err(f"ما قدرت أرسل في {self.channel.mention}. (أو فيه ايموجي غلط في قسم)"), ephemeral=True)
+        except discord.Forbidden:
+            return await inter.followup.send(embed=err(
+                f"ما عندي صلاحية أرسل في {self.channel.mention} .\n\n"
+                "روح على الروم ← **الإعدادات** ← **الصلاحيات** ← أضف رتبة البوت وأعطها :\n"
+                "• **إرسال الرسائل** (Send Messages)\n"
+                "• **تضمين الروابط** (Embed Links)\n"
+                "• **إرفاق الملفات** (Attach Files)\n\n"
+                "وبعدها أعد الأمر ."), ephemeral=True)
+        except discord.HTTPException as ex:
+            return await inter.followup.send(embed=err(
+                f"ما قدرت أرسل في {self.channel.mention} .\nالسبب من ديسكورد :\n`{str(ex)[:300]}`"), ephemeral=True)
         await inter.followup.send(embed=embed("✅ انرسلت لوحة القوانين", self.channel.mention), ephemeral=True)
 
 

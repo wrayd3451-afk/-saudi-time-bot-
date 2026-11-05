@@ -1795,7 +1795,7 @@ async def edit_ticket(
 def ticket_select(guild_id: int, slots=None) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     options = [
-        discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=t["emoji"] or None)
+        discord.SelectOption(label=t["name"], value=str(t["slot"]), emoji=_emoji_opt(t["emoji"]))
         for t in get_ticket_types(guild_id) if (t["slot"] in slots if slots else t["slot"] <= 10)
     ]
     options.append(discord.SelectOption(label="إعادة الاختيار", value="reset", emoji="🔄",
@@ -1809,7 +1809,7 @@ def ticket_buttons_panel(guild_id: int, slots=None) -> discord.ui.View:
     styles = {"primary": discord.ButtonStyle.primary, "success": discord.ButtonStyle.success,
               "secondary": discord.ButtonStyle.secondary, "danger": discord.ButtonStyle.danger}
     for i, t in enumerate([t for t in get_ticket_types(guild_id) if (t["slot"] in slots if slots else t["slot"] > 10)]):
-        view.add_item(discord.ui.Button(label=t["name"], emoji=t["emoji"] or None,
+        view.add_item(discord.ui.Button(label=t["name"], emoji=_emoji_opt(t["emoji"]),
                                         style=styles.get(t["btn_color"] or "primary", discord.ButtonStyle.primary),
                                         custom_id=f"ticket:btn:{t['slot']}", row=i // 5))
     return view
@@ -3640,12 +3640,14 @@ async def delete_application(inter: discord.Interaction, الرقم: app_command
 
 
 def _emoji_opt(raw):
-    """يحوّل نص الإيموجي لكائن مناسب للقائمة/الزر (يدعم إيموجي ديسكورد المتحرك والعادي)."""
+    """يحوّل نص الإيموجي لكائن مناسب للقائمة/الزر. يرجّع None لو البوت ما يقدر يستخدم إيموجي ديسكورد (من سيرفر ثاني)."""
     raw = (raw or "").strip()
     if not raw:
         return None
     m = re.search(r"<(a?):(\w+):(\d+)>", raw)
     if m:
+        if not bot.get_emoji(int(m.group(3))):
+            return None  # إيموجي من سيرفر ثاني - البوت ما يقدر عليه ، نتجاهله بدل ما تطيح اللوحة
         return discord.PartialEmoji(animated=bool(m.group(1)), name=m.group(2), id=int(m.group(3)))
     return raw  # إيموجي عادي
 
@@ -3660,7 +3662,7 @@ def app_branches(t):
 def app_branch_view(gid: int, slot: int) -> discord.ui.View:
     t = get_app_type(gid, slot)
     v = discord.ui.View(timeout=300)
-    opts = [discord.SelectOption(label=b["label"], value=str(i), emoji=b.get("emoji") or None)
+    opts = [discord.SelectOption(label=b["label"], value=str(i), emoji=_emoji_opt(b.get("emoji")))
             for i, b in enumerate(app_branches(t))]
     opts.append(discord.SelectOption(label="إلغاء", value="x", emoji="🔙"))
     v.add_item(discord.ui.Select(custom_id=f"app:branch:{slot}", placeholder="اختار الفرع اللي تبي تقدّم له", options=opts))
@@ -8264,7 +8266,7 @@ def rob_panel(guild):
         + ("\n\n".join(lines) or "ما فيه أماكن للحين .")))
     e.set_footer(text=f"{config.SERVER_NAME} | نظام السرقات", icon_url=guild.icon.url if guild.icon else None)
     v = discord.ui.View(timeout=None)
-    opts = [discord.SelectOption(label=p["name"][:100], value=str(p["id"]), emoji=p["emoji"] or "💰",
+    opts = [discord.SelectOption(label=p["name"][:100], value=str(p["id"]), emoji=_emoji_opt(p["emoji"]) or "💰",
                                  description=f"{p['min_amt']:,} - {p['max_amt']:,}"[:100]) for p in places[:24]]
     opts.append(discord.SelectOption(label="إعادة الاختيار", value="reset", emoji="🔄"))
     v.add_item(discord.ui.Select(custom_id="rob:menu", placeholder="🦹 اختار المكان اللي تبي تسرقه", options=opts))

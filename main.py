@@ -176,11 +176,17 @@ def restore_backup():
             if not ch:
                 continue
             for m in _discord_get(f"/channels/{ch['id']}/messages?limit=20", token):
-                att = next((a for a in m.get("attachments", []) if a.get("filename") == DB_FILE), None)
+                att = next((a for a in m.get("attachments", [])
+                            if a.get("filename") in (DB_FILE + ".gz", DB_FILE)), None)
                 if att:
                     req = urllib.request.Request(att["url"], headers={"User-Agent": "DiscordBot (saudi-time, 1.0)"})
-                    with urllib.request.urlopen(req, timeout=60) as r, open(DB_FILE, "wb") as f:
-                        f.write(r.read())
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        data = r.read()
+                    if att["filename"].endswith(".gz"):
+                        import gzip
+                        data = gzip.decompress(data)
+                    with open(DB_FILE, "wb") as f:
+                        f.write(data)
                     print(f"♻️ رجّعت البيانات من النسخة الاحتياطية ({m.get('timestamp', '')[:19]})")
                     return
         print("ℹ️ ما فيه نسخة احتياطية، نبدأ من جديد")
@@ -722,19 +728,26 @@ async def get_backup_channel():
 
 
 async def do_backup(force: bool = False):
+    """يرفع نسخة مضغوطة (gzip) عشان ما تتعدى حد ديسكورد. يرجّع (نجاح, معلومة/سبب)."""
     global _last_backup_changes
     if not force and db.total_changes == _last_backup_changes:
-        return
+        return True, None
     ch = await get_backup_channel()
     if not ch:
-        return
+        return False, "ما لقيت روم النسخ الاحتياطي (ولا قدرت أسويه). تأكد إني أقدر أنشئ رومات."
     db.commit()
+    import gzip, shutil
     tmp = "vrp_backup_tmp.db"
+    gz = tmp + ".gz"
     bk = sqlite3.connect(tmp)
     db.backup(bk)
     bk.close()
+    with open(tmp, "rb") as fi, gzip.open(gz, "wb", compresslevel=9) as fo:
+        shutil.copyfileobj(fi, fo)
+    size = os.path.getsize(gz)
     try:
-        await ch.send(content=f"💾 نسخة احتياطية <t:{int(now().timestamp())}:R>", file=discord.File(tmp, filename=DB_FILE))
+        await ch.send(content=f"💾 نسخة احتياطية <t:{int(now().timestamp())}:R> ({size // 1024} KB)",
+                      file=discord.File(gz, filename=DB_FILE + ".gz"))
         _last_backup_changes = db.total_changes
         # نخلي آخر 3 نسخ بس
         old = [m async for m in ch.history(limit=30) if m.author.id == bot.user.id][3:]
@@ -743,13 +756,19 @@ async def do_backup(force: bool = False):
                 await m.delete()
             except discord.HTTPException:
                 pass
+        return True, size
     except discord.HTTPException as e:
         print(f"⚠️ فشل النسخ الاحتياطي: {e}")
+        reason = f"ديسكورد رفض الملف (الحجم {size // 1024} KB)."
+        if "413" in str(e) or "Payload Too Large" in str(e) or size > 8 * 1024 * 1024:
+            reason += " الملف أكبر من حد الرفع — نظّف الصور الزايدة أو رفّع السيرفر (بوست) عشان يرتفع الحد."
+        return False, reason
     finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        for p in (tmp, gz):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 async def backup_loop():
@@ -778,9 +797,13 @@ async def manual_backup(inter: discord.Interaction):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
-    await do_backup(force=True)
-    ch = await get_backup_channel()
-    await inter.followup.send(embed=embed("💾 تم الحفظ", f"النسخة في {ch.mention}" if ch else "ما قدرت ألقى روم النسخ."), ephemeral=True)
+    ok, info = await do_backup(force=True)
+    if ok:
+        ch = await get_backup_channel()
+        extra = f"\nالحجم: **{info // 1024} KB**" if isinstance(info, int) else ""
+        await inter.followup.send(embed=embed("💾 تم الحفظ", (f"النسخة انحفظت في {ch.mention}" if ch else "انحفظت.") + extra), ephemeral=True)
+    else:
+        await inter.followup.send(embed=err(f"ما قدرت أحفظ النسخة.\n{info or ''}"), ephemeral=True)
 
 
 # الصلاحيات العادية للأعضاء (بدون أي صلاحية إدارية)
@@ -942,6 +965,8 @@ def admin_only(inter: discord.Interaction) -> bool:
     تحديث_المعرف="الروم اللي الإدارة تغيّر فيه الأسماء بـ -اسم (الأونر في كل مكان)",
     النشر="روم النشر: الأونرية يعطون ويخصمون نقاط النشر فيه بـ -اعطاء و -خصم",
     القروض="الروم اللي توصل فيه طلبات القروض",
+    المخالفات="روم المخالفات: المواطن يكتب فيه -مخالفاتي ويشوف مخالفاته",
+    تفتيش_الحقيبة="روم تفتيش الحقيبة: العسكري يكتب فيه -حقيبه @الشخص",
     الصوتي="الروم الصوتي اللي يقعد فيه البوت 24 ساعة",
     ايدي_الصوتي="أو حط ايدي الروم الصوتي هنا (إذا ما لقيته في القائمة)",
     اللوق="روم اللوق",
@@ -955,6 +980,8 @@ async def setup_channels(
     تحديث_المعرف: discord.TextChannel = None,
     النشر: discord.TextChannel = None,
     القروض: discord.TextChannel = None,
+    المخالفات: discord.TextChannel = None,
+    تفتيش_الحقيبة: discord.TextChannel = None,
     الصوتي: discord.VoiceChannel = None,
     ايدي_الصوتي: str = None,
     اللوق: discord.TextChannel = None,
@@ -994,6 +1021,12 @@ async def setup_channels(
     if القروض:
         set_setting(gid, "ch_loans", القروض.id)
         done.append(f"✅ القروض: {القروض.mention}")
+    if المخالفات:
+        set_setting(gid, "ch_fines", المخالفات.id)
+        done.append(f"✅ المخالفات: {المخالفات.mention} (المواطن يكتب -مخالفاتي)")
+    if تفتيش_الحقيبة:
+        set_setting(gid, "ch_bag", تفتيش_الحقيبة.id)
+        done.append(f"✅ تفتيش الحقيبة: {تفتيش_الحقيبة.mention} (العسكري يكتب -حقيبه @الشخص)")
     if not الصوتي and ايدي_الصوتي:
         raw = ايدي_الصوتي.strip().strip("<#>")
         ch = inter.guild.get_channel(int(raw)) if raw.isdigit() else None
@@ -1013,7 +1046,8 @@ async def setup_channels(
         rows = [
             ("إنشاء القيم", "ch_game"), ("شراء التذكرة", "ch_ticket"),
             ("التفتيش", "ch_inspect"), ("تحديث الأدوار", "ch_roles_update"),
-            ("القروض", "ch_loans"), ("الصوتي", "ch_voice"), ("اللوق", "ch_log"),
+            ("القروض", "ch_loans"), ("المخالفات", "ch_fines"), ("تفتيش الحقيبة", "ch_bag"),
+            ("الصوتي", "ch_voice"), ("اللوق", "ch_log"),
         ]
         text = "\n".join(f"• {n}: {('<#%d>' % get_setting(gid, k)) if get_setting(gid, k) else 'ما تحدد'}" for n, k in rows)
         return await inter.followup.send(embed=embed("🛠️ الرومات الحالية", text + "\n\nاختر روم من خيارات الأمر عشان تغيّره."), ephemeral=True)
@@ -1179,6 +1213,10 @@ async def on_message(message: discord.Message):
     if message.content.strip().startswith("-تفتيش"):
         return await inspect_command(message)
     first = message.content.strip().split()[:1]
+    if first in (["-مخالفاتي"], ["-مخالفاتى"], ["-مخالفات"]):
+        return await my_fines_prefix(message)
+    if first in (["-حقيبه"], ["-حقيبة"], ["-تفتيش_حقيبه"], ["-تفتيش_الحقيبه"]):
+        return await bag_inspect_prefix(message)
     if first in (["-ايموجي_الرد"], ["-ايموجي_البوت"], ["-رياكشن"], ["-تفاعل"]):
         return await react_emoji_prefix(message)
     if first in (["-بنك"], ["-البنك"], ["-لوحه_البنك"], ["-لوحة_البنك"]):
@@ -2588,6 +2626,78 @@ async def setup_inspect(
     await inter.response.send_message(embed=embed("🛃 تسطيب التفتيش", text[:4000]), ephemeral=True)
 
 
+def is_police_msg(member) -> bool:
+    """فحص العسكري من رسالة (شرطة أو سوات أو أدمن/أونر)."""
+    if not isinstance(member, discord.Member):
+        return False
+    if is_power(member):
+        return True
+    for key in ("role_police", "role_swat"):
+        rid = get_setting(member.guild.id, key)
+        if rid and any(r.id == rid for r in member.roles):
+            return True
+    return False
+
+
+async def my_fines_prefix(message: discord.Message):
+    """-مخالفاتي  المواطن يشوف مخالفاته غير المسددة (العدد + المبلغ)."""
+    gid = message.guild.id
+    room = get_setting(gid, "ch_fines")
+    if room and message.channel.id != room:
+        return  # خارج روم المخالفات نتجاهله
+    uid = message.author.id
+    fines_ = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0 ORDER BY id DESC", (uid,)).fetchall()
+    if not fines_:
+        return await message.reply(embed=embed("🧾 مخالفاتك",
+            f"{message.author.mention}\n\nما عليك أي مخالفة ✅ ، شكراً لالتزامك ."))
+    total = sum(f["amount"] for f in fines_)
+    lines = "\n".join(f"• #{f['id']} — {money(f['amount'])} ({f['reason'] or 'بدون سبب'})" for f in fines_[:15])
+    e = embed("🧾 مخالفاتك غير المسددة",
+              f"{message.author.mention}\n\n**عدد المخالفات :** {len(fines_)}\n**الإجمالي المطلوب :** {money(total)}\n\n{lines}")
+    e.set_thumbnail(url=message.author.display_avatar.url)
+    await message.reply(embed=e)
+
+
+CRIME_ITEMS = [
+    "🔪 سلاح أبيض ( سكين )", "🗡️ خنجر", "🪓 ساطور", "🔫 مسدس", "🔫 رشاش",
+    "💊 مواد مخدرة", "💵 أموال مزيّفة", "🧨 متفجرات", "🔧 أدوات سرقة", "🚬 ممنوعات",
+    "⛓️ أدوات اعتداء", "📦 بضاعة مهرّبة",
+]
+
+
+async def bag_inspect_prefix(message: discord.Message):
+    """-حقيبه @الشخص  تفتيش الحقيبة: يبيّن إذا مجرم ووش معه (للعسكر)."""
+    import random
+    gid = message.guild.id
+    room = get_setting(gid, "ch_bag")
+    if room and message.channel.id != room:
+        return  # خارج روم تفتيش الحقيبة نتجاهله
+    if not is_police_msg(message.author):
+        return await message.reply(embed=err("تفتيش الحقيبة للعسكر بس."))
+    parts = message.content.split()
+    member = message.mentions[0] if message.mentions else None
+    if member is None and len(parts) >= 2 and parts[1].strip("<@!>").isdigit():
+        member = message.guild.get_member(int(parts[1].strip("<@!>")))
+    if member is None or member.bot:
+        return await message.reply(embed=err("منشن الشخص اللي تبي تفتّشه . مثال: `-حقيبه @العضو`"))
+    crime_role = get_setting(gid, "role_crime")
+    is_criminal = bool(crime_role) and any(r.id == crime_role for r in member.roles)
+    if not is_criminal:
+        e = embed("🎒 تفتيش الحقيبة",
+                  f"**الشخص :** {member.mention}\n**الحالة :** مواطن عادي ✅\n\n"
+                  "الحقيبة نظيفة ، ما فيها شي ممنوع .")
+        e.set_thumbnail(url=member.display_avatar.url)
+        return await message.reply(embed=e)
+    items = random.sample(CRIME_ITEMS, random.randint(1, 3))
+    e = embed("🎒 تفتيش الحقيبة — ⚠️ مطلوب",
+              f"**الشخص :** {member.mention}\n**الحالة :** مجرم / معه رتبة إجرامية 🚨\n\n"
+              "**اللي لقيناه في حقيبته :**\n" + "\n".join(f"• {it}" for it in items) +
+              f"\n\n**المفتّش :** {message.author.mention}")
+    e.set_thumbnail(url=member.display_avatar.url)
+    await message.reply(embed=e)
+
+
+
 async def inspect_command(message: discord.Message):
     gid = message.guild.id
     inspect_ch = get_setting(gid, "ch_inspect")
@@ -3095,12 +3205,8 @@ MDT_MENU = [
     ("تسجيل دخول", "in", "🟢"),
     ("تسجيل خروج", "out", "🔴"),
     ("المتواجدين بالدوام", "onduty", "👮"),
-    ("بحث عن مواطن", "search", "🔎"),
-    ("قبض على مجرم", "arrest", "🚔"),
     ("مخالفة", "fine", "🧾"),
     ("نقاطي", "me", "📊"),
-    ("نقاط شخص معين", "user", "👤"),
-    ("توب أفضل عشرة", "top", "🏆"),
     ("إعادة الاختيار", "reset", "🔄"),
 ]
 
@@ -3548,11 +3654,16 @@ def get_app_type(gid: int, slot: int):
     رتبة_2="الرتبة الثانية اللي تنعطى إذا انقبل (اختياري)",
     المراجعين="الرتبة اللي تقدر تقبل وترفض (اختياري، الافتراضي الإدارة)",
     الايموجي="ايموجي جنب الاسم (اختياري)",
+    النوع="إلكتروني (نموذج يطلع مرة وحدة) أو استبيان (البوت يسأل سؤال سؤال في الروم)",
     فرع1_اسم="فرع أول مثل LSPD (اختياري)", فرع1_رتبة="رتبة الفرع الأول",
     فرع2_اسم="فرع ثاني مثل SWAT (اختياري)", فرع2_رتبة="رتبة الفرع الثاني",
     حذف_الفروع="يشيل فروع التقديم",
 )
-@app_commands.choices(حذف_الفروع=[app_commands.Choice(name="نعم احذف الفروع", value=1)])
+@app_commands.choices(
+    حذف_الفروع=[app_commands.Choice(name="نعم احذف الفروع", value=1)],
+    النوع=[app_commands.Choice(name="إلكتروني - نموذج يطلع مرة وحدة", value="form"),
+           app_commands.Choice(name="استبيان - البوت يسأل سؤال سؤال في الروم", value="chat")],
+)
 async def setup_application(
     inter: discord.Interaction,
     الرقم: app_commands.Range[int, 1, 10],
@@ -3562,6 +3673,7 @@ async def setup_application(
     رتبة_2: discord.Role = None,
     المراجعين: discord.Role = None,
     الايموجي: str = None,
+    النوع: app_commands.Choice[str] = None,
     فرع1_اسم: str = None, فرع1_رتبة: discord.Role = None,
     فرع2_اسم: str = None, فرع2_رتبة: discord.Role = None,
     حذف_الفروع: app_commands.Choice[int] = None,
@@ -3577,6 +3689,16 @@ async def setup_application(
         (inter.guild.id, الرقم, الاسم, (الايموجي or "").strip()[:100], روم_المراجعة.id, رتبة_1.id,
          رتبة_2.id if رتبة_2 else 0, المراجعين.id if المراجعين else 0, old["questions"] if old else ""),
     )
+    # نوع التقديم: إلكتروني (نموذج) أو استبيان (أسئلة في الروم)
+    def _old_mode():
+        try:
+            return old["mode"] if old else None
+        except (IndexError, KeyError):
+            return None
+    cur_mode = النوع.value if النوع else (_old_mode() or "form")
+    if النوع:
+        db.execute("UPDATE app_types SET mode = ? WHERE guild_id = ? AND slot = ?", (النوع.value, inter.guild.id, الرقم))
+    mode_note = f"\n**النوع :** {'📋 استبيان (البوت يسأل سؤال سؤال في الروم)' if cur_mode == 'chat' else '🖊️ إلكتروني (نموذج يطلع مرة وحدة)'}"
     branch_note = ""
     if حذف_الفروع:
         db.execute("UPDATE app_types SET branches = NULL WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم))
@@ -3591,8 +3713,8 @@ async def setup_application(
     await inter.response.send_message(embed=embed(
         "📝 تم تسطيب التقديم",
         f"**رقم {الرقم}:** {الاسم}\nروم المراجعة: {روم_المراجعة.mention}\n"
-        f"الرتب إذا انقبل: {رتبة_1.mention} {رتبة_2.mention if رتبة_2 else ''}\n\n"
-        f"الحين حط أسئلته بـ **/اسئلة_تقديم** وبعدها أرسل اللوحة بـ **/ارسال_التقديمات**" + branch_note,
+        f"الرتب إذا انقبل: {رتبة_1.mention} {رتبة_2.mention if رتبة_2 else ''}\n" + mode_note + "\n\n"
+        f"الحين حط {'نموذج الاستبيان' if cur_mode == 'chat' else 'أسئلته'} بـ **/اسئلة_تقديم** وبعدها أرسل اللوحة بـ **/ارسال_التقديمات**" + branch_note,
     ), ephemeral=True)
 
 
@@ -3627,6 +3749,8 @@ async def application_questions(inter: discord.Interaction, الرقم: app_comm
     t = get_app_type(inter.guild.id, الرقم)
     if not t:
         return await inter.response.send_message(embed=err("سطّب التقديم أول بـ /تسطيب_تقديم"), ephemeral=True)
+    if app_mode(t) == "chat":
+        return await inter.response.send_modal(SurveyTemplateModal(الرقم, t["questions"] or ""))
     await inter.response.send_modal(AppQuestionsModal(الرقم, [q for q in (t["questions"] or "").splitlines() if q]))
 
 
@@ -3722,6 +3846,144 @@ async def send_app_panel(inter: discord.Interaction, الروم: discord.TextCha
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التقديمات", الروم.mention), ephemeral=True)
 
 
+async def post_app_submission(guild, t, user, answers, branch=None, body=None):
+    """يسجّل التقديم ويرسله لروم المراجعة بزرين قبول/رفض. يرجّع (ok, نص_خطأ).
+    body = نص الاستبيان الكامل (لو موجود يطلع كامل بدل حقول سؤال/جواب)."""
+    cur = db.execute(
+        "INSERT INTO app_submissions (guild_id, slot, user_id, answers, status, created_at, branch) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+        (guild.id, t["slot"], user.id, json.dumps(answers, ensure_ascii=False), now().isoformat(),
+         str(branch) if branch is not None else None),
+    )
+    db.commit()
+    sid = cur.lastrowid
+    ch = guild.get_channel(t["review_ch"])
+    bl = app_branches(t)
+    btxt = f" - {bl[branch]['label']}" if (branch is not None and branch < len(bl)) else ""
+    head = f"**المقدّم :** {user.mention} (`{user.id}`)"
+    e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}{btxt}", color=0x006C35, timestamp=now(),
+                      description=(f"{head}\n\n{body}" if body else None)[:4096] if body else None)
+    e.set_author(name=str(user), icon_url=user.display_avatar.url)
+    e.set_thumbnail(url=user.display_avatar.url)
+    if not body:
+        e.add_field(name="المقدّم", value=f"{user.mention} (`{user.id}`)", inline=False)
+    if btxt:
+        e.add_field(name="الفرع", value=bl[branch]["label"], inline=False)
+    if not body:
+        for q, a in answers:
+            e.add_field(name=q[:256], value=(a or "-")[:1024], inline=False)
+    e.set_footer(text=f"{config.SERVER_NAME} | رقم التقديم #{sid}")
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="قبول", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"app:acc:{sid}"))
+    v.add_item(discord.ui.Button(label="رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"app:rej:{sid}"))
+    if not ch:
+        return False, "روم المراجعة انحذف. كلّم الإدارة."
+    ping_role = guild.get_role(t["reviewer_role"]) if t["reviewer_role"] else None
+    try:
+        await ch.send(content=ping_role.mention if ping_role else None, embed=e, view=v,
+                      allowed_mentions=discord.AllowedMentions(roles=True))
+    except discord.HTTPException:
+        return False, "ما قدرت أرسل التقديم. كلّم الإدارة."
+    return True, None
+
+
+def app_mode(t):
+    try:
+        return (t["mode"] or "form") if t else "form"
+    except (IndexError, KeyError):
+        return "form"
+
+
+DEFAULT_SURVEY = (
+    "- استبيان التقديم\n\n"
+    "الاسم :\n\n"
+    "العمر :\n\n"
+    "المعرفة والخبرة العملية :\n\n"
+    "القسم / العصابة التي تريد الانضمام إليها :\n\n"
+    "⛔ لا يجب عليك كتابة معلوماتك الحقيقية ⛔"
+)
+
+
+def survey_questions(template):
+    """يطلّع أسئلة الاستبيان من النموذج: كل سطر فيه ( : ) ، ويتجاهل سطور المعلومات والمنشن والتحذير."""
+    qs = []
+    for line in (template or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "@everyone" in line or "@here" in line or "<@&" in line or "<@" in line:
+            continue
+        if "⛔" in line or "🔴" in line or "🚫" in line:
+            continue
+        if ":" in line or "：" in line:
+            label = re.split(r"[:：]", line, 1)[0].strip(" -•*_~`").strip()
+            if label:
+                qs.append(label)
+    return qs[:15]
+
+
+async def run_survey(inter: discord.Interaction, t, branch=None):
+    """تقديم استبيان: البوت يسأل سؤال سؤال في الروم برسائل عادية (مو إمبيد) ، ويجمع ويرسل للمراجعة."""
+    ch = inter.channel
+    user = inter.user
+    qs = survey_questions(t["questions"] or DEFAULT_SURVEY) or ["اكتب تقديمك"]
+    await inter.response.send_message(f"📝 بدأ تقديمك يا {user.mention} ، جاوب على الأسئلة تحت 👇 (اكتب **الغاء** لو تبي توقف)", ephemeral=True)
+
+    def chk(m):
+        return m.author.id == user.id and m.channel.id == ch.id
+
+    answers = []
+    for i, q in enumerate(qs, 1):
+        try:
+            await ch.send(f"{user.mention}\n**{q} :**")
+        except discord.HTTPException:
+            return
+        try:
+            amsg = await bot.wait_for("message", check=chk, timeout=300)
+        except asyncio.TimeoutError:
+            try:
+                await ch.send(f"{user.mention} ⏱️ خلص الوقت ، التقديم اتلغى . ابدأ من جديد من اللوحة .")
+            except discord.HTTPException:
+                pass
+            return
+        if amsg.content.strip() in ("الغاء", "إلغاء", "الغاء التقديم", "cancel", "كنسل"):
+            try:
+                await ch.send(f"{user.mention} ❌ تم إلغاء التقديم .")
+            except discord.HTTPException:
+                pass
+            return
+        answers.append((q, (amsg.content or "-")[:1000]))
+    body = "\n".join(f"**{q} :** {a}" for q, a in answers)
+    ok, errtext = await post_app_submission(inter.guild, t, user, answers, branch, body=body)
+    rev = inter.guild.get_role(t["reviewer_role"]) if t["reviewer_role"] else None
+    revname = rev.name if rev else "المسؤول"
+    try:
+        if ok:
+            await ch.send(f"{user.mention} ✅ تم إرسال التقديم ، وسيتم مراجعته من قبل **{revname}** .")
+        else:
+            await ch.send(f"{user.mention} ⚠️ {errtext}")
+    except discord.HTTPException:
+        pass
+
+
+class SurveyTemplateModal(discord.ui.Modal, title="📝 نموذج الاستبيان"):
+    """الإدارة تكتب نموذج الاستبيان اللي يعبّيه العضو."""
+    def __init__(self, slot: int, current: str):
+        super().__init__()
+        self.slot = slot
+        self.tmpl = discord.ui.TextInput(
+            label="نموذج الاستبيان (العضو يعبّيه كامل)", style=discord.TextStyle.paragraph,
+            max_length=4000, default=(current or DEFAULT_SURVEY)[:4000],
+            placeholder="اكتب النموذج هنا ، مثل:\nالاسم :\nالعمر :\nالخبرة :")
+        self.add_item(self.tmpl)
+
+    async def on_submit(self, inter: discord.Interaction):
+        db.execute("UPDATE app_types SET questions = ? WHERE guild_id = ? AND slot = ?",
+                   (self.tmpl.value or "", inter.guild.id, self.slot))
+        db.commit()
+        await inter.response.send_message(embed=embed(
+            "✅ انحفظ نموذج الاستبيان", "العضو بيعبّي هذا النموذج لما يقدّم .\n\nأرسل اللوحة بـ /ارسال_التقديمات ."), ephemeral=True)
+
+
 class ApplyModal(discord.ui.Modal):
     def __init__(self, t, branch=None):
         bl = app_branches(t)
@@ -3739,38 +4001,10 @@ class ApplyModal(discord.ui.Modal):
             self.add_item(ti)
 
     async def on_submit(self, inter: discord.Interaction):
-        t = self.t
         answers = [(q, ti.value) for q, ti in self.inputs]
-        cur = db.execute(
-            "INSERT INTO app_submissions (guild_id, slot, user_id, answers, status, created_at, branch) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-            (inter.guild.id, t["slot"], inter.user.id, json.dumps(answers, ensure_ascii=False), now().isoformat(),
-             str(self.branch) if self.branch is not None else None),
-        )
-        db.commit()
-        sid = cur.lastrowid
-        ch = inter.guild.get_channel(t["review_ch"])
-        bl = app_branches(t)
-        btxt = f" - {bl[self.branch]['label']}" if (self.branch is not None and self.branch < len(bl)) else ""
-        e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}{btxt}", color=0x006C35, timestamp=now())
-        e.set_author(name=str(inter.user), icon_url=inter.user.display_avatar.url)
-        e.set_thumbnail(url=inter.user.display_avatar.url)
-        e.add_field(name="المقدّم", value=f"{inter.user.mention} (`{inter.user.id}`)", inline=False)
-        if btxt:
-            e.add_field(name="الفرع", value=bl[self.branch]["label"], inline=False)
-        for q, a in answers:
-            e.add_field(name=q[:256], value=(a or "-")[:1024], inline=False)
-        e.set_footer(text=f"{config.SERVER_NAME} | رقم التقديم #{sid}")
-        v = discord.ui.View(timeout=None)
-        v.add_item(discord.ui.Button(label="قبول", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"app:acc:{sid}"))
-        v.add_item(discord.ui.Button(label="رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"app:rej:{sid}"))
-        if not ch:
-            return await inter.response.send_message(embed=err("روم المراجعة انحذف. كلّم الإدارة."), ephemeral=True)
-        ping_role = inter.guild.get_role(t["reviewer_role"]) if t["reviewer_role"] else None
-        try:
-            await ch.send(content=ping_role.mention if ping_role else None, embed=e, view=v,
-                          allowed_mentions=discord.AllowedMentions(roles=True))
-        except discord.HTTPException:
-            return await inter.response.send_message(embed=err("ما قدرت أرسل تقديمك. كلّم الإدارة."), ephemeral=True)
+        ok, errtext = await post_app_submission(inter.guild, self.t, inter.user, answers, self.branch)
+        if not ok:
+            return await inter.response.send_message(embed=err(errtext), ephemeral=True)
         await inter.response.send_message(embed=embed("✅ انرسل تقديمك", "انتظر رد الإدارة، وبيوصلك الرد في الخاص ."), ephemeral=True)
 
 
@@ -3858,7 +4092,7 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
 async def _app_precheck(inter, t, slot):
     if not t:
         await inter.response.send_message(embed=err("التقديم هذا انحذف."), ephemeral=True); return False
-    if not (t["questions"] or "").strip():
+    if app_mode(t) != "chat" and not (t["questions"] or "").strip():
         await inter.response.send_message(embed=err("التقديم هذا ما له أسئلة للحين."), ephemeral=True); return False
     pending = db.execute("SELECT 1 FROM app_submissions WHERE guild_id = ? AND slot = ? AND user_id = ? AND status = 'pending'",
                          (inter.guild.id, slot, inter.user.id)).fetchone()
@@ -3883,6 +4117,8 @@ async def handle_app_interaction(inter: discord.Interaction, cid: str):
         ids = {r.id for r in inter.user.roles}
         if t["role1"] in ids and (not t["role2"] or t["role2"] in ids):
             return await inter.response.send_message(embed=err("أنت مقبول في هذا من قبل."), ephemeral=True)
+        if app_mode(t) == "chat":
+            return await run_survey(inter, t)
         return await inter.response.send_modal(ApplyModal(t))
 
     if cid.startswith("app:branch:"):
@@ -3900,6 +4136,8 @@ async def handle_app_interaction(inter: discord.Interaction, cid: str):
         ids = {r.id for r in inter.user.roles}
         if bl[bi].get("role1") in ids:
             return await inter.response.send_message(embed=err(f"أنت في **{bl[bi]['label']}** من قبل."), ephemeral=True)
+        if app_mode(t) == "chat":
+            return await run_survey(inter, t, branch=bi)
         return await inter.response.send_modal(ApplyModal(t, branch=bi))
 
     _, action, sid = cid.split(":")
@@ -7779,7 +8017,7 @@ async def owners_warning(message: discord.Message):
 # ============================================================
 db.execute("CREATE TABLE IF NOT EXISTS staff_act (guild_id INTEGER, user_id INTEGER, last_ts REAL, warns INTEGER DEFAULT 0, "
            "last_warn REAL DEFAULT 0, PRIMARY KEY (guild_id, user_id))")
-for _c, _tb in (("branches", "app_types"), ("branch", "app_submissions")):
+for _c, _tb in (("branches", "app_types"), ("branch", "app_submissions"), ("mode", "app_types")):
     try:
         db.execute(f"ALTER TABLE {_tb} ADD COLUMN {_c} TEXT")
     except sqlite3.OperationalError:

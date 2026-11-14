@@ -74,7 +74,7 @@ except ImportError:
 # ==========================================
 
 # اسم السيرفر (يظهر في الرسائل)
-SERVER_NAME = "سعودي تايم | Saudi Time"
+SERVER_NAME = "Legend City | ليجند ستي"
 
 # العملة
 CURRENCY = "$"
@@ -460,6 +460,13 @@ class VRPBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # نخلي كل الأوامر تظهر للإدارة بس (الأعضاء العاديين ما يشوفونها)
+        _adminperm = discord.Permissions(administrator=True)
+        for _cmd in self.tree.get_commands():
+            try:
+                _cmd.default_permissions = _adminperm
+            except Exception:
+                pass
         # نرسل الأوامر لديسكورد بس إذا تغيّرت، عشان نقلل الطلبات
         import hashlib, json
         payload = json.dumps([c.to_dict(self.tree) for c in self.tree.get_commands()], sort_keys=True, ensure_ascii=False)
@@ -1139,7 +1146,7 @@ active_games = set()
 
 def flight_embed(guild: discord.Guild, host: discord.Member, a: dict) -> discord.Embed:
     desc = (
-        "مرحباً بكم أعزائنا مواطنون مدينة سعودي تايم , تم الأعلان عن رحلة جوية إلى مطار سعودي تايم الرسمي , "
+        "مرحباً بكم أعزائنا مواطنون مدينة Legend City , تم الأعلان عن رحلة جوية إلى مطار Legend City الرسمي , "
         "نرجوا الأستعداد والتجهز لموعد ركوب وإقلاع الطائرة .\n\n"
         f"**( 1 ) - كابتن الطائرة :** {a.get('host_name', host.mention)}\n"
         f"**( 2 ) - مساعد الطائرة :** {a['helper_name']}\n"
@@ -1153,7 +1160,7 @@ def flight_embed(guild: discord.Guild, host: discord.Member, a: dict) -> discord
         "🔴 - عدم إزعاج داخل الطائرة عند ركوبك للرحلة .\n"
         "🔴 - وضع الحالة مُتصل لإمكانهم أرسال دعوة اليك ."
     )
-    e = discord.Embed(title="✈️ - إعلان رحلة لدولة تايم .", description=desc, color=0x006C35, timestamp=now())
+    e = discord.Embed(title="✈️ - إعلان رحلة لدولة Legend City .", description=desc, color=0x006C35, timestamp=now())
     if guild.icon:
         e.set_thumbnail(url=guild.icon.url)
     e.set_footer(text=config.SERVER_NAME)
@@ -1763,6 +1770,7 @@ async def delete_ticket_type(inter: discord.Interaction, الرقم: app_command
     لون_الزر="لون الزر للتذاكر 11-20 (اختياري)",
     الاستلام="فيها زر استلام ولا لا (اختياري)",
     منشن_المسؤول="يمنشن المسؤول أول ما تنفتح (اختياري)",
+    الصورة="صورة جديدة تطلع داخل هذي التذكرة (اختياري)",
 )
 @app_commands.choices(
     لون_الزر=[app_commands.Choice(name=n, value=v) for n, v in
@@ -1781,6 +1789,7 @@ async def edit_ticket(
     لون_الزر: app_commands.Choice[str] = None,
     الاستلام: app_commands.Choice[int] = None,
     منشن_المسؤول: app_commands.Choice[int] = None,
+    الصورة: discord.Attachment = None,
 ):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
@@ -1804,6 +1813,16 @@ async def edit_ticket(
     )
     db.commit()
     changed = []
+    img_note = ""
+    if الصورة is not None:
+        if (الصورة.content_type or "").startswith("image/") and الصورة.size <= 8 * 1024 * 1024:
+            data = await الصورة.read()
+            db.execute("INSERT OR REPLACE INTO ticket_images (guild_id, slot, data, filename) VALUES (?, ?, ?, ?)",
+                       (inter.guild.id, الرقم, data, الصورة.filename))
+            db.commit()
+            changed.append("الصورة")
+        else:
+            img_note = "\n⚠️ الصورة غلط أو كبيرة (لازم صورة أقل من 8 ميقا) ، فما تغيّرت ."
     if الاسم is not None: changed.append("الاسم")
     if الكاتقوري: changed.append("الكاتقوري")
     if رتبة_المسؤول: changed.append("رتبة المسؤول")
@@ -1822,7 +1841,7 @@ async def edit_ticket(
             f"الكاتقوري: {cat_ch.mention if cat_ch else '—'}\n"
             f"المسؤول: <@&{role}>\n"
             f"**الشكل:** {'أزرار' if الرقم > 10 else 'منيو'}" + (f" | **لون الزر:** {colors.get(color, color)}" if الرقم > 10 else "") + "\n"
-            f"**الاستلام:** {'✅ فيها' if claim else '❌ بدون'} · **المنشن:** {'✅' if ping else '❌'}\n\n"
+            f"**الاستلام:** {'✅ فيها' if claim else '❌ بدون'} · **المنشن:** {'✅' if ping else '❌'}" + img_note + "\n\n"
             "💡 لو غيّرت الاسم أو الإيموجي أو لون الزر ، أعد إرسال اللوحة بـ /ارسال_التذاكر عشان يبان التغيير .",
         ),
         ephemeral=True,
@@ -1859,12 +1878,52 @@ def ticket_buttons_panel(guild_id: int, slots=None) -> discord.ui.View:
     الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
     الأرقام="أرقام التذاكر اللي تطلع في هاللوحة بس، مثل: 12 أو 11,13 (فاضي = كلها)",
     الوصف="الكلام اللي فوق (اختياري)",
-    الصورة="صورة تطلع في اللوحة (فاضي = صورة سعودي تايم الخضراء)",
+    الصورة="صورة تطلع في اللوحة (فاضي = صورة Legend City الخضراء)",
 )
 @app_commands.choices(الشكل=[
     app_commands.Choice(name="منيو (التذاكر 1 - 10)", value="menu"),
     app_commands.Choice(name="أزرار (التذاكر 11 - 20)", value="buttons"),
 ])
+def strip_view_emojis(view):
+    """يشيل كل الإيموجيات من أزرار/قوائم اللوحة (لو ديسكورد رفضها)."""
+    for item in list(getattr(view, "children", [])):
+        if hasattr(item, "emoji"):
+            try:
+                item.emoji = None
+            except Exception:
+                pass
+        for opt in (getattr(item, "options", None) or []):
+            try:
+                opt.emoji = None
+            except Exception:
+                pass
+    return view
+
+
+async def send_panel_safe(channel, embed, view, file_bytes=None, file_name=None):
+    """يرسل اللوحة ، ولو رفضها ديسكورد بسبب إيموجي ما يقدر عليه البوت ، يشيل الإيموجيات ويعيد.
+    يرجّع True لو انرسلت ، ويرفع discord.Forbidden لو ما عنده صلاحية إرسال."""
+    def kw():
+        d = {"embed": embed, "view": view}
+        if file_bytes is not None:
+            d["file"] = discord.File(io.BytesIO(file_bytes), filename=file_name or "panel.png")
+        return d
+    try:
+        await channel.send(**kw())
+        return True
+    except discord.Forbidden:
+        raise
+    except discord.HTTPException:
+        strip_view_emojis(view)
+        try:
+            await channel.send(**kw())
+            return True
+        except discord.Forbidden:
+            raise
+        except discord.HTTPException:
+            return False
+
+
 async def send_ticket_panel(inter: discord.Interaction, الروم: discord.TextChannel,
                             الشكل: app_commands.Choice[str] = None, الأرقام: str = None, الوصف: str = None,
                             الصورة: discord.Attachment = None):
@@ -1893,15 +1952,17 @@ async def send_ticket_panel(inter: discord.Interaction, الروم: discord.Text
         pfile, _ = ticket_image_file(inter.guild.id, -1)
         pfile.filename = "panel" + os.path.splitext(pfile.filename)[1]
     e.set_image(url=f"attachment://{pfile.filename}")
+    view = ticket_buttons_panel(inter.guild.id, slots) if buttons else ticket_select(inter.guild.id, slots)
     try:
-        await الروم.send(embed=e, file=pfile,
-                         view=ticket_buttons_panel(inter.guild.id, slots) if buttons else ticket_select(inter.guild.id, slots))
+        img_bytes = pfile.fp.read()
+    except Exception:
+        img_bytes = None
+    try:
+        ok = await send_panel_safe(الروم, e, view, img_bytes, pfile.filename)
     except discord.Forbidden:
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
-    except discord.HTTPException:
-        return await inter.response.send_message(
-            embed=err("فيه ايموجي غلط في وحدة من التذاكر. عدّلها بـ /تسطيب_تذكرة وحط ايموجي عادي مثل 🛃"), ephemeral=True
-        )
+    if not ok:
+        return await inter.response.send_message(embed=err(f"ما قدرت أرسل في {الروم.mention}. تأكد من صلاحيات البوت في الروم."), ephemeral=True)
     register_panel(inter.guild.id, "tickets_btn" if buttons else "tickets", الروم.id, {"buttons": buttons, "slots": slots, "desc": الوصف})
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التذاكر", الروم.mention), ephemeral=True)
 
@@ -2500,7 +2561,7 @@ async def quiz_start(inter: discord.Interaction, cid: str = "quiz:start"):
     await inter.response.send_message(embed=e, view=v, ephemeral=True)
 
 
-AFTER_QUIZ_DEFAULT = '# - متابعة حساب سعودي تايم\n\n> **- خطوة متابعة الحساب الرسمي :**\n\n- __تابع حساب سعودي تايم الرسمي على تيك توك .__\n\n- __صوّر شاشة تبيّن إنك متابع للحساب .__\n\n- __أرسل الصورة داخل التذكرة .__\n\n**🔗 اضغط هنا للحساب :** https://www.tiktok.com/@saudi_time1\n\n- __إدارة سعودي تايم في خدمتكم دائمًا .__'
+AFTER_QUIZ_DEFAULT = '# - متابعة حساب Legend City\n\n> **- خطوة متابعة الحساب الرسمي :**\n\n- __تابع حساب Legend City الرسمي على تيك توك .__\n\n- __صوّر شاشة تبيّن إنك متابع للحساب .__\n\n- __أرسل الصورة داخل التذكرة .__\n\n**🔗 اضغط هنا للحساب :** https://www.tiktok.com/@saudi_time1\n\n- __إدارة Legend City في خدمتكم دائمًا .__'
 
 @bot.tree.command(name="رسالة_بعد_الاختبار", description="الرسالة اللي تجي داخل التذكرة بعد ما ينجح العضو في الاختبار")
 @app_commands.describe(الكلام="الكلام الجديد (فاضي = يعرض الحالي)", تصفير="يرجّع الكلام الافتراضي")
@@ -3446,7 +3507,7 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
         e = embed("- نقاط الإدارة", f"**- مرحبا بك عزيزي الإداري في نظام نقاط {config.SERVER_NAME} .**\n\nاختر من القائمة اللي تحت .")
         view = admin_menu_view(inter.guild.id)
     elif النوع.value == "bank":
-        e = embed("🏦 - بنك سعودي تايم", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
+        e = embed("🏦 - بنك Legend City", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
                   "اختر من القائمة اللي تحت .", 0x006C35)
         view = bank_view()
     elif النوع.value == "ppts":
@@ -3828,20 +3889,18 @@ async def send_app_panel(inter: discord.Interaction, الروم: discord.TextCha
             db.commit()
         except discord.HTTPException:
             pass
+    img_bytes = fname = None
     row = db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = -99", (inter.guild.id,)).fetchone()
     if row:
         fname = "apps" + os.path.splitext(row["filename"] or ".png")[1]
-        f = discord.File(io.BytesIO(row["data"]), filename=fname)
+        img_bytes = row["data"]
         e.set_image(url=f"attachment://{fname}")
     try:
-        if f:
-            await الروم.send(embed=e, file=f, view=app_select_view(inter.guild.id))
-        else:
-            await الروم.send(embed=e, view=app_select_view(inter.guild.id))
+        ok = await send_panel_safe(الروم, e, app_select_view(inter.guild.id), img_bytes, fname)
     except discord.Forbidden:
         return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
-    except discord.HTTPException:
-        return await inter.response.send_message(embed=err("فيه ايموجي غلط في أحد التقديمات."), ephemeral=True)
+    if not ok:
+        return await inter.response.send_message(embed=err(f"ما قدرت أرسل في {الروم.mention}. تأكد من صلاحيات البوت في الروم."), ephemeral=True)
     register_panel(inter.guild.id, "apps", الروم.id, {"desc": الوصف, "title": العنوان})
     await inter.response.send_message(embed=embed("✅ انرسلت لوحة التقديمات", الروم.mention), ephemeral=True)
 
@@ -5372,10 +5431,10 @@ async def load_default_rules(inter: discord.Interaction):
 
 
 class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
-    title_in = discord.ui.TextInput(label="العنوان", default="قوانين سعودي تايم", max_length=256)
+    title_in = discord.ui.TextInput(label="العنوان", default="قوانين Legend City", max_length=256)
     body_in = discord.ui.TextInput(
         label="الكلام اللي فوق المنيو", style=discord.TextStyle.paragraph, max_length=4000,
-        default=("- تعرف علينا .\n\n📜 - نُرحب بكم في سيرفر سعودي تايم , هذه اللوحة فيها كل قوانين الأرض "
+        default=("- تعرف علينا .\n\n📜 - نُرحب بكم في سيرفر Legend City , هذه اللوحة فيها كل قوانين الأرض "
                  "اللي لازم يعرفها كل مواطن قبل ما يدخل الرول .\n\n"
                  "⚖️ - الالتزام بالقوانين واجب على الجميع , ومخالفتها تعرّضك للعقوبة .\n\n"
                  "👇 - اختر القسم من القائمة اللي تحت ويطلع لك قوانينه ."),
@@ -5389,16 +5448,17 @@ class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
         await inter.response.defer(ephemeral=True)
         e = discord.Embed(title=self.title_in.value, description=self.body_in.value, color=0x006C35)
         e.set_footer(text=config.SERVER_NAME)
-        kwargs = {"embed": e, "view": rules_menu(inter.guild.id)}
+        img_bytes = fname = None
         if self.banner:
             try:
                 f = await self.banner.to_file()
-                e.set_image(url=f"attachment://{f.filename}")
-                kwargs["file"] = f
+                fname = f.filename
+                img_bytes = f.fp.read()
+                e.set_image(url=f"attachment://{fname}")
             except discord.HTTPException:
                 pass
         try:
-            await self.channel.send(**kwargs)
+            ok = await send_panel_safe(self.channel, e, rules_menu(inter.guild.id), img_bytes, fname)
         except discord.Forbidden:
             return await inter.followup.send(embed=err(
                 f"ما عندي صلاحية أرسل في {self.channel.mention} .\n\n"
@@ -5407,9 +5467,9 @@ class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
                 "• **تضمين الروابط** (Embed Links)\n"
                 "• **إرفاق الملفات** (Attach Files)\n\n"
                 "وبعدها أعد الأمر ."), ephemeral=True)
-        except discord.HTTPException as ex:
+        if not ok:
             return await inter.followup.send(embed=err(
-                f"ما قدرت أرسل في {self.channel.mention} .\nالسبب من ديسكورد :\n`{str(ex)[:300]}`"), ephemeral=True)
+                f"ما قدرت أرسل في {self.channel.mention} . تأكد من صلاحيات البوت في الروم ."), ephemeral=True)
         await inter.followup.send(embed=embed("✅ انرسلت لوحة القوانين", self.channel.mention), ephemeral=True)
 
 
@@ -5971,6 +6031,60 @@ async def restore_media(target: discord.Guild, media: dict, ids: dict, say):
             except discord.HTTPException:
                 pass
     await say(f"💬 رجّعت **{sent}** رسالة" + (f"\n⚠️ {failed} ما رجعت، أول خطأ: `{first_err}`" if failed else ""))
+
+
+@bot.tree.command(name="تحويل_لليجند_ستي", description="يغيّر كل أسماء الرومات والرتب والسيرفر من سعودي تايم إلى ليجند ستي")
+async def rebrand_server(inter: discord.Interaction):
+    if not is_owner(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    reps = [("سعودي تايم", "ليجند ستي"), ("Saudi Time", "Legend City"),
+            ("سعودي", "ليجند"), ("تايم", "ستي")]
+
+    def conv(name):
+        out = name or ""
+        for a, b in reps:
+            out = out.replace(a, b)
+        return out
+
+    g = inter.guild
+    done = []
+    fails = []
+    # اسم السيرفر
+    nn = conv(g.name)
+    if nn != g.name:
+        try:
+            await g.edit(name=nn[:100], reason="تحويل إلى ليجند ستي")
+            done.append(f"🏠 السيرفر → **{nn}**")
+        except discord.HTTPException:
+            fails.append("السيرفر")
+    # الرومات والكاتقوريات
+    for ch in list(g.channels):
+        nn = conv(ch.name)
+        if nn != ch.name:
+            try:
+                await ch.edit(name=nn[:100], reason="تحويل إلى ليجند ستي")
+                done.append(f"#{nn}")
+                await asyncio.sleep(0.7)
+            except discord.HTTPException:
+                fails.append(ch.name)
+    # الرتب
+    for r in list(g.roles):
+        if r.is_default() or r.managed:
+            continue
+        nn = conv(r.name)
+        if nn != r.name:
+            try:
+                await r.edit(name=nn[:100], reason="تحويل إلى ليجند ستي")
+                done.append(f"@{nn}")
+                await asyncio.sleep(0.7)
+            except discord.HTTPException:
+                fails.append("رتبة: " + r.name)
+    txt = (f"✅ غيّرت **{len(done)}** اسم .\n\n" + "\n".join(done[:40]) +
+           (f"\n... و {len(done)-40} غيرهم" if len(done) > 40 else "")) if done else "ما لقيت ولا اسم فيه «سعودي» أو «تايم» ."
+    if fails:
+        txt += f"\n\n⚠️ ما قدرت أغيّر **{len(fails)}** (رتبتها فوق رتبة البوت أو صلاحية ناقصة):\n" + "، ".join(fails[:15])
+    await inter.followup.send(embed=embed("🔄 تحويل إلى ليجند ستي", txt[:4000]), ephemeral=True)
 
 
 @bot.tree.command(name="نسخ_السيرفر", description="ياخذ نسخة كاملة من السيرفر (رتب، رومات، صلاحيات، إعدادات البوت)")
@@ -7565,7 +7679,7 @@ async def react_emoji_prefix(message: discord.Message):
             f"الإيموجي الحالي : {cur}\n\n"
             "عشان تغيّره اكتب :\n`-ايموجي_الرد` وبعده الإيموجي الي تبيه (من سيرفرك ، عادي أو متحرك)\n"
             "مثال : `-ايموجي_الرد 😎` أو `-ايموجي_الرد <a:fire:123456789>`\n\n"
-            "💡 لازم الإيموجي يكون من سيرفر البوت موجود فيه ، عشان يقدر يستخدمه.").set_footer(text="سعودي تايم"))
+            "💡 لازم الإيموجي يكون من سيرفر البوت موجود فيه ، عشان يقدر يستخدمه.").set_footer(text="Legend City"))
     parsed = parse_bot_emoji(raw)
     if not parsed:
         return await message.reply("❌ ما قدرت أستخدم هذا الإيموجي. لازم يكون إيموجي من سيرفر البوت موجود فيه ، أو إيموجي عادي.")
@@ -7577,7 +7691,7 @@ async def react_emoji_prefix(message: discord.Message):
     set_text(g.id, "react_ok", raw)
     set_text(g.id, "call_emoji", raw)
     await message.reply(embed=embed("✅ تم تغيير إيموجي الرد",
-        f"الحين البوت بيتفاعل بـ {parsed} على أوامره (نداء ، سحب ، تفعيل ، تجوين ...).").set_footer(text="سعودي تايم"))
+        f"الحين البوت بيتفاعل بـ {parsed} على أوامره (نداء ، سحب ، تفعيل ، تجوين ...).").set_footer(text="Legend City"))
 
 
 async def emoji_prefix(message: discord.Message):
@@ -7669,7 +7783,7 @@ async def run_old_invites(guild: discord.Guild, owner: discord.abc.User, link: s
     targets = [i for i in old_member_ids() if guild.get_member(i) is None and i != owner.id
                and not (bot.user and i == bot.user.id)]
     e = embed("🇸🇦 سـعـودي تـايـم رجـع !", (text or
-              "حياك الله 💚\nسعودي تايم رجع بسيرفر جديد، ونبيك معنا من جديد 👑\n\n"
+              "حياك الله 💚\nLegend City رجع بسيرفر جديد، ونبيك معنا من جديد 👑\n\n"
               f"**🔗 رابط السيرفر الجديد:**\n{link}\n\nلا تتأخر… المدينة ناقصتك 🔥") + (f"\n\n{link}" if text and link not in text else ""))
     sent, failed = 0, []
     for n, uid in enumerate(targets, 1):
@@ -7900,7 +8014,7 @@ async def protection_topic(message: discord.Message):
     on = prot_on(g.id)
     pun = {"strip": "سحب كل رتبه", "kick": "طرد", "ban": "حظر"}[get_text(g.id, "prot_punish", "strip")]
     lim = prot(g.id, "prot_limit", 3)
-    e1 = discord.Embed(title="🛡️ - نظام حماية سعودي تايم", color=0x006C35, description=(
+    e1 = discord.Embed(title="🛡️ - نظام حماية Legend City", color=0x006C35, description=(
         f"**- الحالة :** {'✅ شغّال' if on else '❌ طافي'}  ·  **العقوبة :** {pun}  ·  **الحد :** {lim} بالدقيقة\n\n"
         "> نظام الحماية يراقب السيرفر **24 ساعة** عن طريق سجل التدقيق (Audit Log)، "
         "ويعرف مين سوّى كل حركة ووقتها بالثانية، ويوقف أي تخريب **خلال ثواني** .\n\n"
@@ -9174,15 +9288,15 @@ async def handle_enlist(inter: discord.Interaction, cid: str):
 # ============================================================
 # لوحة الدعم: المساعدة + الشكاوى في رسالة وحدة بزرين، وكل تذكرة لها كلام برا وداخل
 # ============================================================
-SUPPORT_TITLE = "- Saudi Time - VrP . Tickets"
+SUPPORT_TITLE = "- Legend City - VrP . Tickets"
 SUPPORT_OUT = ("🛠️ - __تذكرة المساعدة مخصصة للاستفسارات وطلب المساعدة وحل المشاكل .__\n\n"
                "⚠️ - __تذكرة الشكاوى مخصصة لرفع الشكاوى على الأعضاء أو الإدارة بشكل خاص وسري .__\n\n"
                "📌 - __يُرجى فتح التذكرة فقط للأمور التي تستدعي التدخل ، ويُمنع الإسراف في فتح التذاكر أو المنشن بدون سبب .__\n\n"
                "🔔 - __في حال وجود شكوى ، يُرجى إرفاق الأدلة الواضحة لضمان النظر فيها بالشكل المناسب .__\n\n"
-               "💚 - __إدارة سعودي تايم في خدمتكم دائمًا ، ونسعى لتوفير بيئة منظمة وممتعة للجميع .__")
+               "💚 - __إدارة Legend City في خدمتكم دائمًا ، ونسعى لتوفير بيئة منظمة وممتعة للجميع .__")
 SUPPORT_TEXTS = {
     "help_out": ("# 🛠️ قسم المساعدة والدعم الفني\n\n"
-                 "> **أهلاً بك يا غالي في سيرفر سعودي تايم! 🌟**\n"
+                 "> **أهلاً بك يا غالي في سيرفر Legend City! 🌟**\n"
                  "> تواجه مشكلة؟ عندك استفسار أو تحتاج مساعدة بشي معين؟ \n> \n"
                  "> لا تشيل هم، اضغط على الزر أدناه لفتح تذكرة مساعدة، وفريق الإدارة راح يكون معك بأسرع وقت لخدمتك! 🚀\n\n"
                  "👇 **اضغط على الزر أدناه لفتح تذكرة المساعدة**"),
@@ -9190,7 +9304,7 @@ SUPPORT_TEXTS = {
                 "> نورتنا يا غالي. تفضل اطرح مشكلتك أو استفسارك بالتفصيل، ووضح كل التفاصيل عشان نقدر نساعدك صح.\n> \n"
                 "> ⏳ *يرجى الانتظار، وسيتم الرد عليك من أحد أفراد فريق الإدارة فوراً.*"),
     "comp_out": ("# ⚠️ قسم الشكاوى والبلاغات\n\n"
-                 "> **مرحباً بك في سيرفر سعودي تايم! 🌟**\n"
+                 "> **مرحباً بك في سيرفر Legend City! 🌟**\n"
                  "> إذا تعرضت لأي إزعاج، مشكلة مع أحد الاعضاء، أو تبي تقدم شكوى إدارية بحق شخص معين:\n> \n"
                  "> اضغط على الزر أدناه لفتح تذكرة شكوى خاصة وسرية، وحقك ما راح يضيع أبداً! 🛡️\n\n"
                  "👇 **اضغط على الزر أدناه لفتح تذكرة الشكوى**"),

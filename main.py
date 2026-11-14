@@ -1872,18 +1872,6 @@ def ticket_buttons_panel(guild_id: int, slots=None) -> discord.ui.View:
     return view
 
 
-@bot.tree.command(name="ارسال_التذاكر", description="إرسال لوحة التذاكر في روم")
-@app_commands.describe(
-    الروم="الروم اللي تنرسل فيه لوحة التذاكر",
-    الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
-    الأرقام="أرقام التذاكر اللي تطلع في هاللوحة بس، مثل: 12 أو 11,13 (فاضي = كلها)",
-    الوصف="الكلام اللي فوق (اختياري)",
-    الصورة="صورة تطلع في اللوحة (فاضي = صورة Legend City الخضراء)",
-)
-@app_commands.choices(الشكل=[
-    app_commands.Choice(name="منيو (التذاكر 1 - 10)", value="menu"),
-    app_commands.Choice(name="أزرار (التذاكر 11 - 20)", value="buttons"),
-])
 def strip_view_emojis(view):
     """يشيل كل الإيموجيات من أزرار/قوائم اللوحة (لو ديسكورد رفضها)."""
     for item in list(getattr(view, "children", [])):
@@ -1924,6 +1912,18 @@ async def send_panel_safe(channel, embed, view, file_bytes=None, file_name=None)
             return False
 
 
+@bot.tree.command(name="ارسال_التذاكر", description="إرسال لوحة التذاكر في روم")
+@app_commands.describe(
+    الروم="الروم اللي تنرسل فيه لوحة التذاكر",
+    الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
+    الأرقام="أرقام التذاكر اللي تطلع في هاللوحة بس، مثل: 12 أو 11,13 (فاضي = كلها)",
+    الوصف="الكلام اللي فوق (اختياري)",
+    الصورة="صورة تطلع في اللوحة (فاضي = صورة Legend City الخضراء)",
+)
+@app_commands.choices(الشكل=[
+    app_commands.Choice(name="منيو (التذاكر 1 - 10)", value="menu"),
+    app_commands.Choice(name="أزرار (التذاكر 11 - 20)", value="buttons"),
+])
 async def send_ticket_panel(inter: discord.Interaction, الروم: discord.TextChannel,
                             الشكل: app_commands.Choice[str] = None, الأرقام: str = None, الوصف: str = None,
                             الصورة: discord.Attachment = None):

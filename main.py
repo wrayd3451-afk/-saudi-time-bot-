@@ -1292,9 +1292,8 @@ async def on_message(message: discord.Message):
         return await police_points_prefix(message, True)
     if first in (["-خصم_شرطة"],):
         return await police_points_prefix(message, False)
-    if first in (["-تسديد"], ["-تسديد_تحذير"]):
-        ok, msg = await pay_warning(message.guild, message.author)
-        return await message.reply(embed=embed("💳 تسديد التحذير", msg))
+    if first in (["-سداد"], ["-سداد_مخالفات"], ["-تسديد_مخالفات"]):
+        return await pay_fines_prefix(message)
     if first in (["-طوارئ"], ["-طوارى"]):
         if message.author.id != message.guild.owner_id and not is_trusted(message.guild, message.author.id):
             return await message.reply("❌ وضع الطوارئ لصاحب السيرفر والمستثنين بس.")
@@ -2785,6 +2784,13 @@ def is_police_msg(member) -> bool:
     return False
 
 
+def fines_view() -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="إنشاء حساب بنكي", emoji="🆕",
+                                 style=discord.ButtonStyle.success, custom_id="bank:create"))
+    return v
+
+
 async def my_fines_prefix(message: discord.Message):
     """-مخالفاتي  المواطن يشوف مخالفاته غير المسددة (العدد + المبلغ)."""
     gid = message.guild.id
@@ -2794,14 +2800,57 @@ async def my_fines_prefix(message: discord.Message):
     uid = message.author.id
     fines_ = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0 ORDER BY id DESC", (uid,)).fetchall()
     if not fines_:
-        return await message.reply(embed=embed("🧾 مخالفاتك",
-            f"{message.author.mention}\n\nما عليك أي مخالفة ✅ ، شكراً لالتزامك ."))
+        e = embed("🧾 سجلّ المخالفات", f"👤 {message.author.mention}\n\n> ✅ **سجلّك نظيف — ما عليك أي مخالفة .**\n> شكراً لالتزامك بأنظمة {config.SERVER_NAME.split('|')[0].strip()} 🤍")
+        e.set_thumbnail(url=message.author.display_avatar.url)
+        return await message.reply(embed=e)
     total = sum(f["amount"] for f in fines_)
-    lines = "\n".join(f"• #{f['id']} — {money(f['amount'])} ({f['reason'] or 'بدون سبب'})" for f in fines_[:15])
-    e = embed("🧾 مخالفاتك غير المسددة",
-              f"{message.author.mention}\n\n**عدد المخالفات :** {len(fines_)}\n**الإجمالي المطلوب :** {money(total)}\n\n{lines}")
+    lines = "\n".join(f"`#{f['id']}` ⟶ **{money(f['amount'])}** · {f['reason'] or 'بدون سبب'}" for f in fines_[:15])
+    more = f"\n*…و {len(fines_)-15} مخالفة ثانية*" if len(fines_) > 15 else ""
+    e = embed("🧾 سجلّ المخالفات غير المسددة",
+              f"👤 {message.author.mention}\n\n"
+              f"🔢 **عدد المخالفات :** `{len(fines_)}`\n"
+              f"💰 **الإجمالي المطلوب :** **{money(total)}**\n\n"
+              f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n{lines}{more}\n"
+              f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+              f"💳 **للسداد :** اكتب `-سداد` وبينخصم المبلغ من حسابك البنكي .\n"
+              f"🆕 **ما عندك حساب بنكي ؟** اضغط الزر تحت .")
+    e.set_thumbnail(url=message.author.display_avatar.url)
+    await message.reply(embed=e, view=fines_view())
+
+
+async def pay_fines_prefix(message: discord.Message):
+    """-سداد  المواطن يسدّد كل مخالفاته من رصيده البنكي إذا كان يكفي."""
+    gid = message.guild.id
+    room = get_setting(gid, "ch_fines")
+    if room and message.channel.id != room:
+        return  # خارج روم المخالفات نتجاهله
+    uid = message.author.id
+    fines_ = db.execute("SELECT * FROM fines WHERE user_id = ? AND paid = 0", (uid,)).fetchall()
+    if not fines_:
+        return await message.reply(embed=embed("💳 سداد المخالفات",
+            f"👤 {message.author.mention}\n\n> ✅ **ما عليك أي مخالفة تسدّدها .**"))
+    total = sum(f["amount"] for f in fines_)
+    p = get_player(uid)
+    bal = p["bank"] if p else 0
+    if bal < total:
+        e = err(f"رصيدك البنكي ما يكفي لسداد المخالفات .")
+        e.description += (f"\n\n💰 **المطلوب :** {money(total)}\n🏦 **رصيدك :** {money(bal)}\n"
+                          f"➖ **ناقصك :** {money(total - bal)}\n\nجهّز فلوس في حسابك وحاول مرة ثانية .")
+        e.set_thumbnail(url=message.author.display_avatar.url)
+        return await message.reply(embed=e, view=fines_view())
+    db.execute("UPDATE players SET bank = bank - ? WHERE user_id = ?", (total, uid))
+    db.execute("UPDATE fines SET paid = 1 WHERE user_id = ? AND paid = 0", (uid,))
+    db.commit()
+    p = get_player(uid)
+    e = embed("✅ تم سداد المخالفات",
+              f"👤 {message.author.mention}\n\n"
+              f"🧾 **سدّدت :** `{len(fines_)}` مخالفة\n"
+              f"💸 **المبلغ المخصوم :** **{money(total)}**\n"
+              f"🏦 **رصيدك الحين :** **{money(p['bank'] if p else 0)}**\n\n"
+              f"> سجلّك صار نظيف ✅ ، التزم بالأنظمة 🤍")
     e.set_thumbnail(url=message.author.display_avatar.url)
     await message.reply(embed=e)
+    await log(f"💳 {message.author.mention} سدّد مخالفاته ({money(total)})", message.guild)
 
 
 CRIME_ITEMS = [
@@ -3801,8 +3850,9 @@ def get_app_type(gid: int, slot: int):
     المراجعين="الرتبة اللي تقدر تقبل وترفض (اختياري، الافتراضي الإدارة)",
     الايموجي="ايموجي جنب الاسم (اختياري)",
     النوع="إلكتروني (نموذج يطلع مرة وحدة) أو استبيان (البوت يسأل سؤال سؤال في الروم)",
-    فرع1_اسم="فرع أول مثل LSPD (اختياري)", فرع1_رتبة="رتبة الفرع الأول",
-    فرع2_اسم="فرع ثاني مثل SWAT (اختياري)", فرع2_رتبة="رتبة الفرع الثاني",
+    فرع1_اسم="فرع أول مثل جوست (اختياري)", فرع1_رتبة="رتبة الفرع الأول",
+    فرع2_اسم="فرع ثاني مثل بلود (اختياري)", فرع2_رتبة="رتبة الفرع الثاني",
+    رتبة_مشتركة="رتبة تنعطى لكل الفروع مع رتبتهم (مثل رتبة مجرم للعصابتين)",
     حذف_الفروع="يشيل فروع التقديم",
 )
 @app_commands.choices(
@@ -3822,6 +3872,7 @@ async def setup_application(
     النوع: app_commands.Choice[str] = None,
     فرع1_اسم: str = None, فرع1_رتبة: discord.Role = None,
     فرع2_اسم: str = None, فرع2_رتبة: discord.Role = None,
+    رتبة_مشتركة: discord.Role = None,
     حذف_الفروع: app_commands.Choice[int] = None,
 ):
     if not admin_only(inter):
@@ -3850,11 +3901,13 @@ async def setup_application(
         db.execute("UPDATE app_types SET branches = NULL WHERE guild_id = ? AND slot = ?", (inter.guild.id, الرقم))
         branch_note = "\n🗑️ انشالت الفروع."
     elif فرع1_اسم and فرع1_رتبة and فرع2_اسم and فرع2_رتبة:
-        branches = [{"label": فرع1_اسم.strip()[:80], "emoji": "", "role1": فرع1_رتبة.id, "role2": 0},
-                    {"label": فرع2_اسم.strip()[:80], "emoji": "", "role1": فرع2_رتبة.id, "role2": 0}]
+        common = رتبة_مشتركة.id if رتبة_مشتركة else 0
+        branches = [{"label": فرع1_اسم.strip()[:80], "emoji": "", "role1": فرع1_رتبة.id, "role2": common},
+                    {"label": فرع2_اسم.strip()[:80], "emoji": "", "role1": فرع2_رتبة.id, "role2": common}]
         db.execute("UPDATE app_types SET branches = ? WHERE guild_id = ? AND slot = ?",
                    (json.dumps(branches, ensure_ascii=False), inter.guild.id, الرقم))
-        branch_note = f"\n🔀 الفروع: **{فرع1_اسم}** ← {فرع1_رتبة.mention} · **{فرع2_اسم}** ← {فرع2_رتبة.mention}"
+        branch_note = (f"\n🔀 الفروع: **{فرع1_اسم}** ← {فرع1_رتبة.mention} · **{فرع2_اسم}** ← {فرع2_رتبة.mention}"
+                       + (f"\n➕ رتبة مشتركة للكل: {رتبة_مشتركة.mention}" if رتبة_مشتركة else ""))
     db.commit()
     await inter.response.send_message(embed=embed(
         "📝 تم تسطيب التقديم",
@@ -3948,11 +4001,47 @@ def app_select_view(gid: int) -> discord.ui.View:
 
 @bot.tree.command(name="ارسال_التقديمات", description="إرسال لوحة التقديمات في روم")
 @app_commands.describe(الروم="الروم", الوصف="كلام اللوحة (اختياري)", الصورة="صورة تحت اللوحة (اختياري)",
-                       العنوان="عنوان اللوحة (اختياري)")
+                       العنوان="عنوان اللوحة (اختياري)",
+                       رقم="رقم تقديم معيّن ← ترسل لوحته لحاله بصورته ووصفه (فاضي = كل التقديمات في قائمة)")
 async def send_app_panel(inter: discord.Interaction, الروم: discord.TextChannel, الوصف: str = None,
-                         الصورة: discord.Attachment = None, العنوان: str = None):
+                         الصورة: discord.Attachment = None, العنوان: str = None,
+                         رقم: app_commands.Range[int, 1, 10] = None):
     if not admin_only(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب صلاحية الأدمن بس."), ephemeral=True)
+    if رقم is not None:
+        t = get_app_type(inter.guild.id, رقم)
+        if not t:
+            return await inter.response.send_message(embed=err(f"ما فيه تقديم رقم {رقم} . سطّبه بـ /تسطيب_تقديم"), ephemeral=True)
+        imgslot = -100 - رقم
+        if الصورة is not None and (الصورة.content_type or "").startswith("image/"):
+            try:
+                data = await الصورة.read()
+                db.execute("INSERT OR REPLACE INTO ticket_images (guild_id, slot, data, filename) VALUES (?, ?, ?, ?)",
+                           (inter.guild.id, imgslot, data, الصورة.filename))
+                db.commit()
+            except discord.HTTPException:
+                pass
+        title = العنوان or ((f"{t['emoji']} " if (t['emoji'] or '').strip() else "") + t['name'])
+        body = الوصف or f"> **- قدّم على {t['name']} .**\n- __اضغط الزر تحت وجاوب على الأسئلة .__"
+        e = discord.Embed(title=guild_emojis(inter.guild, title)[:256],
+                          description=guild_emojis(inter.guild, body)[:4000], color=0xC9A227)
+        e.set_footer(text=config.SERVER_NAME, icon_url=inter.guild.icon.url if inter.guild.icon else None)
+        img_bytes = fname = None
+        row = db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = ?", (inter.guild.id, imgslot)).fetchone()
+        if row:
+            fname = "app" + os.path.splitext(row["filename"] or ".png")[1]
+            img_bytes = row["data"]
+            e.set_image(url=f"attachment://{fname}")
+        v = discord.ui.View(timeout=None)
+        v.add_item(discord.ui.Button(label="📝 قدّم الآن", style=discord.ButtonStyle.success,
+                                     emoji=_emoji_opt(t["emoji"]), custom_id=f"app:one:{رقم}"))
+        try:
+            ok = await send_panel_safe(الروم, e, v, img_bytes, fname)
+        except discord.Forbidden:
+            return await inter.response.send_message(embed=err(f"ما أقدر أرسل في {الروم.mention}."), ephemeral=True)
+        if not ok:
+            return await inter.response.send_message(embed=err(f"ما قدرت أرسل في {الروم.mention}. تأكد من صلاحيات البوت."), ephemeral=True)
+        return await inter.response.send_message(embed=embed("✅ انرسلت لوحة التقديم", f"{t['name']} → {الروم.mention}"), ephemeral=True)
     types_ = get_app_types(inter.guild.id)
     if not types_:
         return await inter.response.send_message(embed=err("ما فيه تقديمات. سطّب بـ /تسطيب_تقديم"), ephemeral=True)
@@ -4246,6 +4335,20 @@ async def _app_precheck(inter, t, slot):
 
 
 async def handle_app_interaction(inter: discord.Interaction, cid: str):
+    if cid.startswith("app:one:"):   # لوحة تقديم واحد (زر مباشر)
+        slot = int(cid.split(":")[2])
+        t = get_app_type(inter.guild.id, slot)
+        if not await _app_precheck(inter, t, slot):
+            return
+        if app_branches(t):
+            return await inter.response.send_message(embed=embed(f"🔀 {t['name']}", "اختار الفرع اللي تبي تقدّم له 👇"),
+                                                     view=app_branch_view(inter.guild.id, slot), ephemeral=True)
+        ids = {r.id for r in inter.user.roles}
+        if t["role1"] in ids and (not t["role2"] or t["role2"] in ids):
+            return await inter.response.send_message(embed=err("أنت مقبول في هذا من قبل."), ephemeral=True)
+        if app_mode(t) == "chat":
+            return await run_survey(inter, t)
+        return await inter.response.send_modal(ApplyModal(t))
     if cid == "app:open":
         slot = int((inter.data.get("values") or ["0"])[0])
         t = get_app_type(inter.guild.id, slot)

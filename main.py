@@ -74,7 +74,7 @@ except ImportError:
 # ==========================================
 
 # اسم السيرفر (يظهر في الرسائل)
-SERVER_NAME = "Legend City | ليجند ستي"
+SERVER_NAME = "Legend Town | ليجند تاون"
 
 # العملة
 CURRENCY = "$"
@@ -506,8 +506,9 @@ class VRPBot(discord.Client):
         await self._sync_all()
         if not getattr(self, "_voice_task", None):
             self._voice_task = asyncio.create_task(voice_keeper())
-        if not getattr(self, "_act_task", None):
-            self._act_task = asyncio.create_task(staff_activity_loop())
+        # نظام التحذيرات متوقف (اتشال)
+        # if not getattr(self, "_act_task", None):
+        #     self._act_task = asyncio.create_task(staff_activity_loop())
         if not getattr(self, "_snap_task", None):
             self._snap_task = asyncio.create_task(auto_server_snapshot())
         if not getattr(self, "_backup_task", None):
@@ -1146,7 +1147,7 @@ active_games = set()
 
 def flight_embed(guild: discord.Guild, host: discord.Member, a: dict) -> discord.Embed:
     desc = (
-        "مرحباً بكم أعزائنا مواطنون مدينة Legend City , تم الأعلان عن رحلة جوية إلى مطار Legend City الرسمي , "
+        "مرحباً بكم أعزائنا مواطنون مدينة Legend Town , تم الأعلان عن رحلة جوية إلى مطار Legend Town الرسمي , "
         "نرجوا الأستعداد والتجهز لموعد ركوب وإقلاع الطائرة .\n\n"
         f"**( 1 ) - كابتن الطائرة :** {a.get('host_name', host.mention)}\n"
         f"**( 2 ) - مساعد الطائرة :** {a['helper_name']}\n"
@@ -1160,7 +1161,7 @@ def flight_embed(guild: discord.Guild, host: discord.Member, a: dict) -> discord
         "🔴 - عدم إزعاج داخل الطائرة عند ركوبك للرحلة .\n"
         "🔴 - وضع الحالة مُتصل لإمكانهم أرسال دعوة اليك ."
     )
-    e = discord.Embed(title="✈️ - إعلان رحلة لدولة Legend City .", description=desc, color=0x006C35, timestamp=now())
+    e = discord.Embed(title="✈️ - إعلان رحلة لدولة Legend Town .", description=desc, color=0x006C35, timestamp=now())
     if guild.icon:
         e.set_thumbnail(url=guild.icon.url)
     e.set_footer(text=config.SERVER_NAME)
@@ -1249,8 +1250,6 @@ async def on_message(message: discord.Message):
     if first == ["-موضوع"] and "حماي" in message.content:
         return await protection_topic(message)
     if first == ["-ارسال"] and "تهديد" in message.content:
-        if "اداره" in _norm(message.content) or "الاداره" in _norm(message.content):
-            return await staff_warning_broadcast(message)
         return await owners_warning(message)
     if first in (["-اعطاء_شرطة"], ["-إعطاء_شرطة"], ["-نقاط_شرطة"]):
         return await police_points_prefix(message, True)
@@ -1918,7 +1917,7 @@ async def send_panel_safe(channel, embed, view, file_bytes=None, file_name=None)
     الشكل="منيو (التذاكر 1-10) أو أزرار (التذاكر 11-20)",
     الأرقام="أرقام التذاكر اللي تطلع في هاللوحة بس، مثل: 12 أو 11,13 (فاضي = كلها)",
     الوصف="الكلام اللي فوق (اختياري)",
-    الصورة="صورة تطلع في اللوحة (فاضي = صورة Legend City الخضراء)",
+    الصورة="صورة تطلع في اللوحة (فاضي = صورة Legend Town الخضراء)",
 )
 @app_commands.choices(الشكل=[
     app_commands.Choice(name="منيو (التذاكر 1 - 10)", value="menu"),
@@ -2561,7 +2560,7 @@ async def quiz_start(inter: discord.Interaction, cid: str = "quiz:start"):
     await inter.response.send_message(embed=e, view=v, ephemeral=True)
 
 
-AFTER_QUIZ_DEFAULT = '# - متابعة حساب Legend City\n\n> **- خطوة متابعة الحساب الرسمي :**\n\n- __تابع حساب Legend City الرسمي على تيك توك .__\n\n- __صوّر شاشة تبيّن إنك متابع للحساب .__\n\n- __أرسل الصورة داخل التذكرة .__\n\n**🔗 اضغط هنا للحساب :** https://www.tiktok.com/@saudi_time1\n\n- __إدارة Legend City في خدمتكم دائمًا .__'
+AFTER_QUIZ_DEFAULT = '# - متابعة حساب Legend Town\n\n> **- خطوة متابعة الحساب الرسمي :**\n\n- __تابع حساب Legend Town الرسمي على تيك توك .__\n\n- __صوّر شاشة تبيّن إنك متابع للحساب .__\n\n- __أرسل الصورة داخل التذكرة .__\n\n**🔗 اضغط هنا للحساب :** https://www.tiktok.com/@saudi_time1\n\n- __إدارة Legend Town في خدمتكم دائمًا .__'
 
 @bot.tree.command(name="رسالة_بعد_الاختبار", description="الرسالة اللي تجي داخل التذكرة بعد ما ينجح العضو في الاختبار")
 @app_commands.describe(الكلام="الكلام الجديد (فاضي = يعرض الحالي)", تصفير="يرجّع الكلام الافتراضي")
@@ -3507,7 +3506,7 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
         e = embed("- نقاط الإدارة", f"**- مرحبا بك عزيزي الإداري في نظام نقاط {config.SERVER_NAME} .**\n\nاختر من القائمة اللي تحت .")
         view = admin_menu_view(inter.guild.id)
     elif النوع.value == "bank":
-        e = embed("🏦 - بنك Legend City", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
+        e = embed("🏦 - بنك Legend Town", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
                   "اختر من القائمة اللي تحت .", 0x006C35)
         view = bank_view()
     elif النوع.value == "ppts":
@@ -5431,10 +5430,10 @@ async def load_default_rules(inter: discord.Interaction):
 
 
 class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
-    title_in = discord.ui.TextInput(label="العنوان", default="قوانين Legend City", max_length=256)
+    title_in = discord.ui.TextInput(label="العنوان", default="قوانين Legend Town", max_length=256)
     body_in = discord.ui.TextInput(
         label="الكلام اللي فوق المنيو", style=discord.TextStyle.paragraph, max_length=4000,
-        default=("- تعرف علينا .\n\n📜 - نُرحب بكم في سيرفر Legend City , هذه اللوحة فيها كل قوانين الأرض "
+        default=("- تعرف علينا .\n\n📜 - نُرحب بكم في سيرفر Legend Town , هذه اللوحة فيها كل قوانين الأرض "
                  "اللي لازم يعرفها كل مواطن قبل ما يدخل الرول .\n\n"
                  "⚖️ - الالتزام بالقوانين واجب على الجميع , ومخالفتها تعرّضك للعقوبة .\n\n"
                  "👇 - اختر القسم من القائمة اللي تحت ويطلع لك قوانينه ."),
@@ -6033,13 +6032,15 @@ async def restore_media(target: discord.Guild, media: dict, ids: dict, say):
     await say(f"💬 رجّعت **{sent}** رسالة" + (f"\n⚠️ {failed} ما رجعت، أول خطأ: `{first_err}`" if failed else ""))
 
 
-@bot.tree.command(name="تحويل_لليجند_ستي", description="يغيّر كل أسماء الرومات والرتب والسيرفر من سعودي تايم إلى ليجند ستي")
+@bot.tree.command(name="تحويل_لليجند_تاون", description="يغيّر كل أسماء الرومات والرتب والسيرفر إلى ليجند تاون")
 async def rebrand_server(inter: discord.Interaction):
     if not is_owner(inter):
         return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
     await inter.response.defer(ephemeral=True)
-    reps = [("سعودي تايم", "ليجند ستي"), ("Saudi Time", "Legend City"),
-            ("سعودي", "ليجند"), ("تايم", "ستي")]
+    reps = [("سعودي تايم", "ليجند تاون"), ("Saudi Time", "Legend Town"),
+            ("ليجند ستي", "ليجند تاون"), ("Legend City", "Legend Town"),
+            ("سعودي", "ليجند"), ("تايم", "تاون"),
+            ("ستي", "تاون"), ("City", "Town")]
 
     def conv(name):
         out = name or ""
@@ -6054,7 +6055,7 @@ async def rebrand_server(inter: discord.Interaction):
     nn = conv(g.name)
     if nn != g.name:
         try:
-            await g.edit(name=nn[:100], reason="تحويل إلى ليجند ستي")
+            await g.edit(name=nn[:100], reason="تحويل إلى ليجند تاون")
             done.append(f"🏠 السيرفر → **{nn}**")
         except discord.HTTPException:
             fails.append("السيرفر")
@@ -6063,7 +6064,7 @@ async def rebrand_server(inter: discord.Interaction):
         nn = conv(ch.name)
         if nn != ch.name:
             try:
-                await ch.edit(name=nn[:100], reason="تحويل إلى ليجند ستي")
+                await ch.edit(name=nn[:100], reason="تحويل إلى ليجند تاون")
                 done.append(f"#{nn}")
                 await asyncio.sleep(0.7)
             except discord.HTTPException:
@@ -6075,7 +6076,7 @@ async def rebrand_server(inter: discord.Interaction):
         nn = conv(r.name)
         if nn != r.name:
             try:
-                await r.edit(name=nn[:100], reason="تحويل إلى ليجند ستي")
+                await r.edit(name=nn[:100], reason="تحويل إلى ليجند تاون")
                 done.append(f"@{nn}")
                 await asyncio.sleep(0.7)
             except discord.HTTPException:
@@ -6084,7 +6085,61 @@ async def rebrand_server(inter: discord.Interaction):
            (f"\n... و {len(done)-40} غيرهم" if len(done) > 40 else "")) if done else "ما لقيت ولا اسم فيه «سعودي» أو «تايم» ."
     if fails:
         txt += f"\n\n⚠️ ما قدرت أغيّر **{len(fails)}** (رتبتها فوق رتبة البوت أو صلاحية ناقصة):\n" + "، ".join(fails[:15])
-    await inter.followup.send(embed=embed("🔄 تحويل إلى ليجند ستي", txt[:4000]), ephemeral=True)
+    await inter.followup.send(embed=embed("🔄 تحويل إلى ليجند تاون", txt[:4000]), ephemeral=True)
+
+
+@bot.tree.command(name="تغيير_الرمز", description="يبدّل رمز في أسماء الرومات (TS ← ʟɢ) ويحافظ على الزخرفة")
+@app_commands.describe(
+    روم_التجربة="جرّب على روم واحد بس قبل ما تطبّق على الكل . فاضي = كل الرومات",
+    من="النص القديم اللي يتشال (الافتراضي: TS)",
+    الى="النص الجديد اللي ينحط بداله (الافتراضي: ʟɢ)",
+    يشمل_الرتب="يغيّر الرمز في الرتب كمان ؟ (الافتراضي: لا)",
+)
+async def change_symbol(inter: discord.Interaction,
+                        روم_التجربة: discord.abc.GuildChannel = None,
+                        من: str = "TS", الى: str = "ʟɢ",
+                        يشمل_الرتب: bool = False):
+    if not is_owner(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    old, new = من, الى
+    if not old:
+        return await inter.followup.send(embed=err("لازم تحدد النص القديم في خانة «من»."), ephemeral=True)
+    g = inter.guild
+    done, fails = [], []
+    chans = [روم_التجربة] if روم_التجربة else list(g.channels)
+    for ch in chans:
+        if old in (ch.name or ""):
+            nn = ch.name.replace(old, new)
+            try:
+                await ch.edit(name=nn[:100], reason="تغيير الرمز")
+                done.append(f"#{nn}")
+                await asyncio.sleep(0.7)
+            except discord.HTTPException:
+                fails.append(ch.name)
+    if يشمل_الرتب and not روم_التجربة:
+        for r in list(g.roles):
+            if r.is_default() or r.managed:
+                continue
+            if old in (r.name or ""):
+                nn = r.name.replace(old, new)
+                try:
+                    await r.edit(name=nn[:100], reason="تغيير الرمز")
+                    done.append(f"@{nn}")
+                    await asyncio.sleep(0.7)
+                except discord.HTTPException:
+                    fails.append("رتبة: " + r.name)
+    mode = "🧪 تجربة على روم واحد" if روم_التجربة else "تطبيق على الكل"
+    if done:
+        txt = f"✅ غيّرت «{old}» ← «{new}» في **{len(done)}** اسم . ({mode})\n\n" + "\n".join(done[:40])
+        if len(done) > 40:
+            txt += f"\n... و {len(done)-40} غيرهم"
+    else:
+        txt = (f"ما لقيت «{old}» في أي اسم . ({mode})\n\n"
+               "تأكد إن الرمز مكتوب بنفس الشكل بالضبط ، أو انسخه من اسم الروم وحطه في خانة «من» .")
+    if fails:
+        txt += f"\n\n⚠️ ما قدرت أغيّر **{len(fails)}** (رتبتها فوق رتبة البوت أو صلاحية ناقصة):\n" + "، ".join(fails[:15])
+    await inter.followup.send(embed=embed("🔤 تغيير الرمز", txt[:4000]), ephemeral=True)
 
 
 @bot.tree.command(name="نسخ_السيرفر", description="ياخذ نسخة كاملة من السيرفر (رتب، رومات، صلاحيات، إعدادات البوت)")
@@ -7679,7 +7734,7 @@ async def react_emoji_prefix(message: discord.Message):
             f"الإيموجي الحالي : {cur}\n\n"
             "عشان تغيّره اكتب :\n`-ايموجي_الرد` وبعده الإيموجي الي تبيه (من سيرفرك ، عادي أو متحرك)\n"
             "مثال : `-ايموجي_الرد 😎` أو `-ايموجي_الرد <a:fire:123456789>`\n\n"
-            "💡 لازم الإيموجي يكون من سيرفر البوت موجود فيه ، عشان يقدر يستخدمه.").set_footer(text="Legend City"))
+            "💡 لازم الإيموجي يكون من سيرفر البوت موجود فيه ، عشان يقدر يستخدمه.").set_footer(text="Legend Town"))
     parsed = parse_bot_emoji(raw)
     if not parsed:
         return await message.reply("❌ ما قدرت أستخدم هذا الإيموجي. لازم يكون إيموجي من سيرفر البوت موجود فيه ، أو إيموجي عادي.")
@@ -7691,7 +7746,7 @@ async def react_emoji_prefix(message: discord.Message):
     set_text(g.id, "react_ok", raw)
     set_text(g.id, "call_emoji", raw)
     await message.reply(embed=embed("✅ تم تغيير إيموجي الرد",
-        f"الحين البوت بيتفاعل بـ {parsed} على أوامره (نداء ، سحب ، تفعيل ، تجوين ...).").set_footer(text="Legend City"))
+        f"الحين البوت بيتفاعل بـ {parsed} على أوامره (نداء ، سحب ، تفعيل ، تجوين ...).").set_footer(text="Legend Town"))
 
 
 async def emoji_prefix(message: discord.Message):
@@ -7783,7 +7838,7 @@ async def run_old_invites(guild: discord.Guild, owner: discord.abc.User, link: s
     targets = [i for i in old_member_ids() if guild.get_member(i) is None and i != owner.id
                and not (bot.user and i == bot.user.id)]
     e = embed("🇸🇦 سـعـودي تـايـم رجـع !", (text or
-              "حياك الله 💚\nLegend City رجع بسيرفر جديد، ونبيك معنا من جديد 👑\n\n"
+              "حياك الله 💚\nLegend Town رجع بسيرفر جديد، ونبيك معنا من جديد 👑\n\n"
               f"**🔗 رابط السيرفر الجديد:**\n{link}\n\nلا تتأخر… المدينة ناقصتك 🔥") + (f"\n\n{link}" if text and link not in text else ""))
     sent, failed = 0, []
     for n, uid in enumerate(targets, 1):
@@ -8014,7 +8069,7 @@ async def protection_topic(message: discord.Message):
     on = prot_on(g.id)
     pun = {"strip": "سحب كل رتبه", "kick": "طرد", "ban": "حظر"}[get_text(g.id, "prot_punish", "strip")]
     lim = prot(g.id, "prot_limit", 3)
-    e1 = discord.Embed(title="🛡️ - نظام حماية Legend City", color=0x006C35, description=(
+    e1 = discord.Embed(title="🛡️ - نظام حماية Legend Town", color=0x006C35, description=(
         f"**- الحالة :** {'✅ شغّال' if on else '❌ طافي'}  ·  **العقوبة :** {pun}  ·  **الحد :** {lim} بالدقيقة\n\n"
         "> نظام الحماية يراقب السيرفر **24 ساعة** عن طريق سجل التدقيق (Audit Log)، "
         "ويعرف مين سوّى كل حركة ووقتها بالثانية، ويوقف أي تخريب **خلال ثواني** .\n\n"
@@ -8319,6 +8374,7 @@ async def on_voice_state_update(member, before, after):
 
 
 async def staff_activity_check(guild: discord.Guild):
+    return  # نظام التحذيرات متوقف (اتشال) — الحماية شغالة زي ما هي
     if get_setting(guild.id, "act_on") == 2:
         return
     days = get_setting(guild.id, "act_days") or 3
@@ -8457,42 +8513,6 @@ async def staff_warning_broadcast(message: discord.Message):
     await log(f"⛔ {a.mention} أرسل تحذير التفاعل للإدارة ({ok})", g)
 
 
-@bot.tree.command(name="تسطيب_التفاعل", description="مراقبة تفاعل الإدارة: 3 تحذيرات تلقائية ثم يوصلك تقرير")
-@app_commands.describe(التشغيل="تشغيل أو إطفاء المراقبة", الأيام="كم يوم غياب قبل التحذير الأول (الافتراضي 3)",
-                       سعر_التحذير="كم نقطة عشان يشيل التحذير (الافتراضي 20)")
-@app_commands.choices(التشغيل=[app_commands.Choice(name="تشغيل ✅", value=1), app_commands.Choice(name="إطفاء ❌", value=2)])
-async def setup_activity(inter: discord.Interaction, التشغيل: app_commands.Choice[int] = None,
-                         الأيام: app_commands.Range[int, 1, 30] = None,
-                         سعر_التحذير: app_commands.Range[int, 1, 1000] = None):
-    if inter.user.id != inter.guild.owner_id:
-        return await inter.response.send_message(embed=err("هذا الأمر لصاحب السيرفر بس."), ephemeral=True)
-    g = inter.guild
-    if التشغيل:
-        set_setting(g.id, "act_on", التشغيل.value)
-    if الأيام:
-        set_setting(g.id, "act_days", الأيام)
-    if سعر_التحذير:
-        set_setting(g.id, "warn_cost", سعر_التحذير)
-    days = get_setting(g.id, "act_days") or 3
-    rows = {r["user_id"]: r for r in db.execute("SELECT * FROM staff_act WHERE guild_id = ?", (g.id,)).fetchall()}
-    staff = [m for m in g.members if _is_tracked_staff(m)]
-    t = now().timestamp()
-    staff.sort(key=lambda m: rows[m.id]["last_ts"] if m.id in rows else t)
-    lines = []
-    for m in staff[:30]:
-        r = rows.get(m.id)
-        if r:
-            x = int((t - r["last_ts"]) // 86400)
-            lines.append(f"{'⛔' if r['warns'] >= 3 else '⚠️' if r['warns'] else '✅'} {m.mention} — آخر تفاعل <t:{int(r['last_ts'])}:R>"
-                         + (f" · تحذيرات **{r['warns']}/3**" if r["warns"] else ""))
-        else:
-            lines.append(f"🆕 {m.mention} — بدأت المراقبة")
-    e = embed("📋 تفاعل الإدارة", (
-        f"**الحالة :** {'❌ طافية' if get_setting(g.id, 'act_on') == 2 else '✅ شغالة'}\n"
-        f"**التحذير الأول بعد :** {days} أيام غياب ، وبعده كل يوم تحذير ، وبعد الثالث يوصلك تقرير في الخاص .\n"
-        f"**تسديد التحذير :** {warn_cost(g.id)} نقطة ← تنخصم وتنشال رتبة التحذير (زر في الخاص أو `-تسديد`)\n"
-        "**التفاعل :** أي رسالة في السيرفر أو دخول روم صوتي .\n\n" + ("\n".join(lines) or "ما فيه إداريين."))[:4000])
-    await inter.response.send_message(embed=e, ephemeral=True)
 
 
 # ============================================================
@@ -9288,15 +9308,15 @@ async def handle_enlist(inter: discord.Interaction, cid: str):
 # ============================================================
 # لوحة الدعم: المساعدة + الشكاوى في رسالة وحدة بزرين، وكل تذكرة لها كلام برا وداخل
 # ============================================================
-SUPPORT_TITLE = "- Legend City - VrP . Tickets"
+SUPPORT_TITLE = "- Legend Town - VrP . Tickets"
 SUPPORT_OUT = ("🛠️ - __تذكرة المساعدة مخصصة للاستفسارات وطلب المساعدة وحل المشاكل .__\n\n"
                "⚠️ - __تذكرة الشكاوى مخصصة لرفع الشكاوى على الأعضاء أو الإدارة بشكل خاص وسري .__\n\n"
                "📌 - __يُرجى فتح التذكرة فقط للأمور التي تستدعي التدخل ، ويُمنع الإسراف في فتح التذاكر أو المنشن بدون سبب .__\n\n"
                "🔔 - __في حال وجود شكوى ، يُرجى إرفاق الأدلة الواضحة لضمان النظر فيها بالشكل المناسب .__\n\n"
-               "💚 - __إدارة Legend City في خدمتكم دائمًا ، ونسعى لتوفير بيئة منظمة وممتعة للجميع .__")
+               "💚 - __إدارة Legend Town في خدمتكم دائمًا ، ونسعى لتوفير بيئة منظمة وممتعة للجميع .__")
 SUPPORT_TEXTS = {
     "help_out": ("# 🛠️ قسم المساعدة والدعم الفني\n\n"
-                 "> **أهلاً بك يا غالي في سيرفر Legend City! 🌟**\n"
+                 "> **أهلاً بك يا غالي في سيرفر Legend Town! 🌟**\n"
                  "> تواجه مشكلة؟ عندك استفسار أو تحتاج مساعدة بشي معين؟ \n> \n"
                  "> لا تشيل هم، اضغط على الزر أدناه لفتح تذكرة مساعدة، وفريق الإدارة راح يكون معك بأسرع وقت لخدمتك! 🚀\n\n"
                  "👇 **اضغط على الزر أدناه لفتح تذكرة المساعدة**"),
@@ -9304,7 +9324,7 @@ SUPPORT_TEXTS = {
                 "> نورتنا يا غالي. تفضل اطرح مشكلتك أو استفسارك بالتفصيل، ووضح كل التفاصيل عشان نقدر نساعدك صح.\n> \n"
                 "> ⏳ *يرجى الانتظار، وسيتم الرد عليك من أحد أفراد فريق الإدارة فوراً.*"),
     "comp_out": ("# ⚠️ قسم الشكاوى والبلاغات\n\n"
-                 "> **مرحباً بك في سيرفر Legend City! 🌟**\n"
+                 "> **مرحباً بك في سيرفر Legend Town! 🌟**\n"
                  "> إذا تعرضت لأي إزعاج، مشكلة مع أحد الاعضاء، أو تبي تقدم شكوى إدارية بحق شخص معين:\n> \n"
                  "> اضغط على الزر أدناه لفتح تذكرة شكوى خاصة وسرية، وحقك ما راح يضيع أبداً! 🛡️\n\n"
                  "👇 **اضغط على الزر أدناه لفتح تذكرة الشكوى**"),

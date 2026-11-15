@@ -959,6 +959,43 @@ def is_power(member) -> bool:
     return isinstance(member, discord.Member) and (member.guild_permissions.administrator or has_owner_role(member))
 
 
+# ============================================================
+# بوابة الأوامر: كل أوامر السلاش لصاحب السيرفر + الرتبة الأونرية (رئيس سيرفر) بس
+# ============================================================
+async def _tree_owner_gate(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        return True
+    u = interaction.user
+    if isinstance(u, discord.Member) and (u.id == interaction.guild.owner_id or has_owner_role(u)):
+        return True
+    try:
+        await interaction.response.send_message(
+            embed=err("🔒 أوامر البوت لصاحب السيرفر ورتبة «رئيس سيرفر» (الرتبة الأونرية) بس .\n"
+                      "حدّد الرتبة الأونرية بأمر **/تسطيب_رتب** في خانة «الاونر» ."),
+            ephemeral=True)
+    except discord.HTTPException:
+        pass
+    return False
+
+bot.tree.interaction_check = _tree_owner_gate
+
+
+@bot.tree.error
+async def _tree_error_handler(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.CheckFailure):
+        return  # انرفض من البوابة ، انرسلت رسالة بالفعل
+    try:
+        import traceback
+        traceback.print_exception(type(error), error, error.__traceback__)
+    except Exception:
+        pass
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=err("صار خطأ بسيط ، جرّب مرة ثانية ."), ephemeral=True)
+    except discord.HTTPException:
+        pass
+
+
 def admin_only(inter: discord.Interaction) -> bool:
     """الأدمن أو الرتبة الأونرية (أقوى صلاحية)"""
     return isinstance(inter.user, discord.Member) and (inter.user.guild_permissions.administrator or has_owner_role(inter.user))

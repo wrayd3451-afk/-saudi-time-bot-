@@ -1549,6 +1549,55 @@ async def send_embed(
     await inter.response.send_modal(EmbedModal(الروم, color, صورة, mention))
 
 
+@bot.tree.command(name="تغيير_صورة_الايمبد", description="يغيّر صورة إمبد موجود بدون حذفه (التفاعلات تبقى)")
+@app_commands.describe(رابط_الرسالة="رابط الرسالة (مطوّل عليها ← نسخ رابط الرسالة) أو ID الرسالة",
+                       الصورة="الصورة الجديدة اللي تبي تحطها")
+async def change_embed_image(inter: discord.Interaction, رابط_الرسالة: str, الصورة: discord.Attachment):
+    if not is_admin(inter):
+        return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
+    if not (الصورة.content_type or "").startswith("image/"):
+        return await inter.response.send_message(embed=err("المرفق لازم يكون صورة."), ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    nums = re.findall(r"\d{15,25}", رابط_الرسالة or "")
+    if not nums:
+        return await inter.followup.send(embed=err("حط رابط الرسالة أو ID صحيح ."), ephemeral=True)
+    msg_id = int(nums[-1])
+    channel = (inter.guild.get_channel(int(nums[-2])) if len(nums) >= 2 else None) or inter.channel
+    try:
+        msg = await channel.fetch_message(msg_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        # ندوّر الرسالة في كل رومات السيرفر لو الروم غلط
+        msg = None
+        for ch in inter.guild.text_channels:
+            try:
+                msg = await ch.fetch_message(msg_id); channel = ch; break
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                continue
+        if msg is None:
+            return await inter.followup.send(embed=err("ما لقيت الرسالة . تأكد من الرابط ، ولازم تكون رسالة من نفس البوت ."), ephemeral=True)
+    if msg.author.id != inter.guild.me.id:
+        return await inter.followup.send(embed=err("أقدر أعدّل بس الرسائل اللي البوت نفسه أرسلها ."), ephemeral=True)
+    try:
+        data = await الصورة.read()
+    except discord.HTTPException:
+        return await inter.followup.send(embed=err("ما قدرت أقرأ الصورة ، جرّب مرة ثانية ."), ephemeral=True)
+    fname = "embed_image" + (os.path.splitext(الصورة.filename)[1] or ".png")
+    new_file = discord.File(io.BytesIO(data), filename=fname)
+    try:
+        if msg.embeds:
+            e = msg.embeds[0]
+            e.set_image(url=f"attachment://{fname}")
+            await msg.edit(embed=e, attachments=[new_file])
+        else:
+            await msg.edit(attachments=[new_file])
+    except discord.Forbidden:
+        return await inter.followup.send(embed=err("ما عندي صلاحية أعدّل الرسالة ."), ephemeral=True)
+    except discord.HTTPException as ex:
+        return await inter.followup.send(embed=err(f"ما قدرت أعدّل : {ex}"), ephemeral=True)
+    await inter.followup.send(embed=embed("✅ تم", f"غيّرت صورة الإمبد في {channel.mention} وكل التفاعلات باقية ."), ephemeral=True)
+    await log(f"{inter.user.mention} غيّر صورة إمبد في {channel.mention}", inter.guild)
+
+
 # ============================================================
 # رسالة في الخاص لكل الأعضاء
 # ============================================================

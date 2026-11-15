@@ -549,14 +549,14 @@ def is_police(inter: discord.Interaction) -> bool:
             or is_admin(inter))
 
 
-def embed(title: str, desc: str = "", color=0x006C35) -> discord.Embed:
+def embed(title: str, desc: str = "", color=0xC9A227) -> discord.Embed:
     e = discord.Embed(title=title, description=desc, color=color, timestamp=now())
     e.set_footer(text=config.SERVER_NAME)
     return e
 
 
 def err(msg: str) -> discord.Embed:
-    return embed("❌ خطأ", msg, 0x006C35)
+    return embed("❌ خطأ", msg, 0xC9A227)
 
 
 async def log(text: str, guild=None):
@@ -566,7 +566,7 @@ async def log(text: str, guild=None):
     ch = bot.get_channel(ch_id)
     if ch:
         try:
-            await ch.send(embed=embed("📋 لوق", text, 0x006C35))
+            await ch.send(embed=embed("📋 لوق", text, 0xC9A227))
         except discord.HTTPException:
             pass
 
@@ -1161,7 +1161,7 @@ def flight_embed(guild: discord.Guild, host: discord.Member, a: dict) -> discord
         "🔴 - عدم إزعاج داخل الطائرة عند ركوبك للرحلة .\n"
         "🔴 - وضع الحالة مُتصل لإمكانهم أرسال دعوة اليك ."
     )
-    e = discord.Embed(title="✈️ - إعلان رحلة لدولة Legend Town .", description=desc, color=0x006C35, timestamp=now())
+    e = discord.Embed(title="✈️ - إعلان رحلة لدولة Legend Town .", description=desc, color=0xC9A227, timestamp=now())
     if guild.icon:
         e.set_thumbnail(url=guild.icon.url)
     e.set_footer(text=config.SERVER_NAME)
@@ -1398,7 +1398,7 @@ async def auto_reply(message: discord.Message):
         return  # الرد لرتبة معينة بس
     try:
         if row["as_embed"]:
-            e = discord.Embed(description=row["response"], color=0x006C35)
+            e = discord.Embed(description=row["response"], color=0xC9A227)
             e.set_footer(text=config.SERVER_NAME)
             await message.reply(embed=e, mention_author=False)
         else:
@@ -1544,7 +1544,7 @@ async def send_embed(
         return await inter.response.send_message(embed=err("هذا الأمر للإدارة فقط."), ephemeral=True)
     if صورة and not (صورة.content_type or "").startswith("image/"):
         return await inter.response.send_message(embed=err("المرفق لازم يكون صورة."), ephemeral=True)
-    color = EMBED_COLORS[اللون.value] if اللون else EMBED_COLORS["green"]
+    color = EMBED_COLORS[اللون.value] if اللون else EMBED_COLORS["gold"]
     mention = منشن.value if منشن and منشن.value != "none" else ""
     await inter.response.send_modal(EmbedModal(الروم, color, صورة, mention))
 
@@ -1626,7 +1626,7 @@ class BroadcastModal(discord.ui.Modal, title="📨 رسالة لكل الأعض�
         members = [m for m in (self.role.members if self.role else guild.members) if not m.bot]
         if not members:
             return await inter.followup.send(embed=err("ما لقيت أعضاء."), ephemeral=True)
-        e = discord.Embed(title=self.title_in.value or None, description=self.body_in.value, color=0x006C35, timestamp=now())
+        e = discord.Embed(title=self.title_in.value or None, description=self.body_in.value, color=0xC9A227, timestamp=now())
         e.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
         e.set_footer(text=config.SERVER_NAME)
         who = f"كل اللي معهم رتبة {self.role.mention}" if self.role else "كل أعضاء السيرفر"
@@ -2028,7 +2028,7 @@ def ticket_panel_embed(guild: discord.Guild, types_, buttons: bool, desc=None, t
     if len(types_) == 1 and not desc:  # تذكرة وحدة ولها كلام برا خاص
         custom = get_text(gid, f"tk_out_{types_[0]['slot']}", "") if "slot" in types_[0].keys() else ""
         if custom:
-            e = discord.Embed(description=custom[:4000], color=0x006C35)
+            e = discord.Embed(description=custom[:4000], color=0xC9A227)
             e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
             return e
     dot = tk(gid, "tk_dot")
@@ -2044,7 +2044,7 @@ def ticket_panel_embed(guild: discord.Guild, types_, buttons: bool, desc=None, t
     e = discord.Embed(
         title=f"{tk(gid, 'tk_title_emoji')} | {title or tk(gid, 'tk_title')}"[:256],
         description=f"{intro}\n\n{bullets}\n\n{how}\n\n{warn}"[:4000],
-        color=0x006C35, timestamp=now())
+        color=0xC9A227, timestamp=now())
     e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
     return e
 
@@ -2060,7 +2060,7 @@ def ticket_welcome_embed(guild: discord.Guild, ttype, user, num: int) -> discord
                      f"{dot} **رقم التذكرة :** `#{num}`\n"
                      f"{dot} **وقت الفتح :** <t:{int(now().timestamp())}:R>\n{sep}\n\n"
                      f"⏳ انتظر الإدارة تستلم تذكرتك، ولا تمنشن أحد ."),
-        color=0x006C35, timestamp=now())
+        color=0xC9A227, timestamp=now())
     e.set_thumbnail(url=user.display_avatar.url)
     e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
     return e
@@ -2225,7 +2225,7 @@ async def _create_ticket(inter: discord.Interaction, slot: int, ttype):
         here = re.search(r"@(here|everyone)", custom_in)
         body = guild_emojis(guild, re.sub(r"^\s*@(here|everyone)\s*", "", custom_in).strip())
         e = discord.Embed(title=f"{ttype['emoji'] or '🎫'} | {ttype['name']}", description=body[:4000],
-                          color=0x006C35, timestamp=now())
+                          color=0xC9A227, timestamp=now())
         e.add_field(name="👤 صاحب التذكرة", value=inter.user.mention)
         e.add_field(name="🎫 رقم التذكرة", value=f"`#{num}`")
         e.set_thumbnail(url=inter.user.display_avatar.url)
@@ -2614,7 +2614,7 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
                 pass
     else:
         await inter.response.edit_message(
-            embed=embed("❌ لم تنجح في الاختبار", f"جاوبت {state['right']} من {total} صح، والمطلوب {need}.", 0x006C35),
+            embed=embed("❌ لم تنجح في الاختبار", f"جاوبت {state['right']} من {total} صح، والمطلوب {need}.", 0xC9A227),
             view=None,
         )
         try:
@@ -2624,7 +2624,7 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
                 f"❗ - نُفيدك بأنك لم تتمكن من تجاوز الأختبار الخاص بـ **{config.SERVER_NAME}** , "
                 "يجب عليك مُراجعة القوانين لتتمكن من إجتياز الأختبار للمرة القادمة .\n\n"
                 f"الدرجة : **{state['right']} / {total}** ( المطلوب {need} )\n\n**( نتمنى لك التوفيق )**",
-                0x006C35,
+                0xC9A227,
             ))
         except discord.HTTPException:
             pass
@@ -2633,7 +2633,7 @@ async def quiz_answer(inter: discord.Interaction, cid: str):
         f"العضو: {inter.user.mention}\nالدرجة: **{state['right']} / {total}** (المطلوب {need})\n"
         + ("**✅ ناجح**، الإدارة تقدر تفعّله بـ `-تفعيل`" if passed else "**❌ مرفوض**، انرسل له في الخاص إنه لم ينجح")
         + ("\n\n**الأسئلة اللي غلط فيها:**\n" + "\n".join(f"• {w}" for w in state["wrong"]) if state["wrong"] else ""),
-        0x006C35 if passed else 0x006C35,
+        0xC9A227 if passed else 0xC9A227,
     )
     await inter.channel.send(embed=result)
 
@@ -2822,7 +2822,7 @@ async def inspect_command(message: discord.Message):
         "🛃 - نتيجة التفتيش",
         f"**العضو :** {member.mention}\n**ايدي العضو :** `{member.id}`\n**الصفة :** {kind}\n"
         f"**النتيجة :** {status}\n**المفتش :** {message.author.mention}",
-        0x006C35 if clean else 0x006C35,
+        0xC9A227 if clean else 0xC9A227,
     )
     dm = embed(
         "🛃 - تم تفتيشك",
@@ -2831,7 +2831,7 @@ async def inspect_command(message: discord.Message):
         f"**النتيجة :** {status}\n"
         + (f"💵 - تم سحب **{get_setting(gid, 'inspect_fee') or config.INSPECT_FEE}** {config.CURRENCY} رسوم التفتيش .\n\n**( نتمنى لك رحلة سعيدة )**"
            if clean else "\n🚫 - لا يمكنك دخول الرحلة , يجب عليك التوظف أولاً .\n\n**( نتمنى لك التوفيق )**"),
-        0x006C35 if clean else 0x006C35,
+        0xC9A227 if clean else 0xC9A227,
     )
     try:
         await member.send(embed=dm)
@@ -2890,10 +2890,10 @@ async def mute_command(message: discord.Message):
         return await message.reply(embed=err("ما أقدر أسكته. عطني صلاحية Timeout Members وخل رتبتي فوق رتبته."))
     e = embed("🔇 - تم الإسكات",
               f"**العضو :** {member.mention}\n**المدة :** {fmt_minutes(mins)}\n**السبب :** {reason}\n**بواسطة :** {message.author.mention}",
-              0x006C35)
+              0xC9A227)
     await message.reply(embed=e)
     try:
-        await member.send(embed=embed("🔇 - تم إسكاتك", f"تم إسكاتك في **{config.SERVER_NAME}** لمدة **{fmt_minutes(mins)}**\n**السبب :** {reason}", 0x006C35))
+        await member.send(embed=embed("🔇 - تم إسكاتك", f"تم إسكاتك في **{config.SERVER_NAME}** لمدة **{fmt_minutes(mins)}**\n**السبب :** {reason}", 0xC9A227))
     except discord.HTTPException:
         pass
     await log(f"{message.author.mention} سكّت {member.mention} {fmt_minutes(mins)}: {reason}", message.guild)
@@ -2941,7 +2941,7 @@ async def ban_command(message: discord.Message, ban: bool):
         if ban:
             if member:
                 try:
-                    await member.send(embed=embed("⛔ - تم حظرك", f"تم حظرك من **{config.SERVER_NAME}**\n**السبب :** {reason}", 0x006C35))
+                    await member.send(embed=embed("⛔ - تم حظرك", f"تم حظرك من **{config.SERVER_NAME}**\n**السبب :** {reason}", 0xC9A227))
                 except discord.HTTPException:
                     pass
             await message.guild.ban(discord.Object(id=uid), reason=f"{message.author}: {reason}", delete_message_seconds=0)
@@ -2953,7 +2953,7 @@ async def ban_command(message: discord.Message, ban: bool):
         return await message.reply(embed=err("ما عندي صلاحية Ban Members، أو رتبتي تحت رتبته."))
     title = "⛔ - تم الحظر" if ban else "✅ - تم فك الحظر"
     await message.reply(embed=embed(title, f"**الايدي :** `{uid}`\n" + (f"**السبب :** {reason}\n" if ban else "")
-                                    + f"**بواسطة :** {message.author.mention}", 0x006C35 if ban else 0x006C35))
+                                    + f"**بواسطة :** {message.author.mention}", 0xC9A227 if ban else 0xC9A227))
     await log(f"{message.author.mention} {'حظر' if ban else 'فك حظر'} `{uid}` {reason if ban else ''}", message.guild)
 
 
@@ -3199,7 +3199,7 @@ def points_card(guild: discord.Guild, member: discord.Member, kind: str):
     rank = points_rank(guild.id, member.id, kind)
     A = kind == "admin"  # نقاط الإدارة بدون إيموجيات
     title = "نقاط الإدارة" if A else "🚓 نقاط الشرطة"
-    e = discord.Embed(title=title, color=0x006C35, timestamp=now())
+    e = discord.Embed(title=title, color=0xC9A227, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
     e.set_thumbnail(url=member.display_avatar.url)
@@ -3233,7 +3233,7 @@ def top_embed(guild: discord.Guild, kind: str, category: str = None):
     title = "أفضل 10 في الإدارة" if A else "🏆 أفضل 10 في الشرطة"
     if category:
         title = ("" if A else "🏆 ") + f"أفضل 10 | {cat_label(guild.id, kind, category)}"
-    e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0x006C35, timestamp=now())
+    e = discord.Embed(title=title, description="\n".join(lines) or "ما فيه نقاط للحين.", color=0xC9A227, timestamp=now())
     if guild.me:
         e.set_author(name=guild.me.display_name, icon_url=guild.me.display_avatar.url)
     e.set_footer(text=config.SERVER_NAME)
@@ -3361,7 +3361,7 @@ class MDTArrestModal(discord.ui.Modal, title="🚔 قبض على مجرم"):
         db.commit()
         pts = pts_value(inter.guild.id, "pts_arrest")
         add_points(inter.guild.id, inter.user.id, "police", "arrest", pts)
-        e = embed("🚔 - تم القبض", color=0x006C35)
+        e = embed("🚔 - تم القبض", color=0xC9A227)
         e.add_field(name="المجرم", value=member.mention)
         e.add_field(name="التهمة", value=self.charge.value)
         e.add_field(name="مدة السجن", value=self.jail.value)
@@ -3375,7 +3375,7 @@ class MDTArrestModal(discord.ui.Modal, title="🚔 قبض على مجرم"):
                 "🚔 - تم القبض عليك",
                 f"**التهمة :** {self.charge.value}\n**مدة السجن :** {self.jail.value}"
                 + (f"\n**الغرامة :** {money(amount)}" if amount else "") + f"\n**الشرطي :** {inter.user.mention}",
-                0x006C35,
+                0xC9A227,
             ))
         except discord.HTTPException:
             pass
@@ -3399,7 +3399,7 @@ class MDTFineModal(discord.ui.Modal, title="🧾 مخالفة"):
         db.commit()
         pts = pts_value(inter.guild.id, "pts_fine")
         add_points(inter.guild.id, inter.user.id, "police", "fine", pts)
-        e = embed("🚨 مخالفة جديدة", color=0x006C35)
+        e = embed("🚨 مخالفة جديدة", color=0xC9A227)
         e.add_field(name="المخالف", value=member.mention)
         e.add_field(name="المبلغ", value=money(amount))
         e.add_field(name="رقم المخالفة", value=f"#{cur.lastrowid}")
@@ -3507,21 +3507,21 @@ async def send_points_panel(inter: discord.Interaction, النوع: app_commands
         view = admin_menu_view(inter.guild.id)
     elif النوع.value == "bank":
         e = embed("🏦 - بنك Legend Town", f"**- مرحبا بك في بنك {config.SERVER_NAME} .**\n\n"
-                  "اختر من القائمة اللي تحت .", 0x006C35)
+                  "اختر من القائمة اللي تحت .", 0xC9A227)
         view = bank_view()
     elif النوع.value == "ppts":
         e = embed("🚓 - نقاط الشرطة", f"**- لوحة نقاط الشرطة في {config.SERVER_NAME} .**\n\n"
                   "➕ - __إعطاء نقاط لعسكري (للقائد) .__\n➖ - __خصم نقاط من عسكري (للقائد) .__\n"
-                  "👤 - __نقاط عسكري معين .__\n🏆 - __توب أفضل عشرة .__", 0x006C35)
+                  "👤 - __نقاط عسكري معين .__\n🏆 - __توب أفضل عشرة .__", 0xC9A227)
         view = ppts_view()
     elif النوع.value == "units":
         e = embed("🚓 - اليونتات", f"**- مرحبا بك عزيزي العسكري في {config.SERVER_NAME} .**\n\n"
                   "اضغط على القطاع حقك وبيطلع لك رقم اليونت ويتغيّر اسمك تلقائي .\n\n"
-                  "🔵 **LSPD** ← يونت يبدأ بـ **D-**\n⚫ **SWAT** ← يونت يبدأ بـ **S-**", 0x006C35)
+                  "🔵 **LSPD** ← يونت يبدأ بـ **D-**\n⚫ **SWAT** ← يونت يبدأ بـ **S-**", 0xC9A227)
         view = units_view()
     else:
         e = embed("💻 - MDT الشرطة", f"**- مرحبا بك عزيزي العسكري في نظام {config.SERVER_NAME} .**\n\n"
-                  "🟢 سجّل دخول أول ما تبدأ دوامك، و 🔴 سجّل خروج إذا خلصت .", 0x006C35)
+                  "🟢 سجّل دخول أول ما تبدأ دوامك، و 🔴 سجّل خروج إذا خلصت .", 0xC9A227)
         view = mdt_view()
     try:
         await الروم.send(embed=e, view=view)
@@ -3644,7 +3644,7 @@ async def setup_police_points(inter: discord.Interaction, القبض: app_comman
         f"👮‍♂️ القيادة : " + (" ".join(f"<@&{get_setting(gid, k)}>" for k in ("role_police_leader", "role_police_leader2")
                                    if get_setting(gid, k)) or "ما انحددت")
         + "\n🎖️ **ومن رتبة عقيد وفوق** يقدرون يعطون ويخصمون بعد (عقيد، عميد، لواء، فريق، فريق أول)"
-        + "\n\n💡 يكتب `-اعطاء_شرطة @العسكري 5` أو `-خصم_شرطة @العسكري 5`"), 0x006C35), ephemeral=True)
+        + "\n\n💡 يكتب `-اعطاء_شرطة @العسكري 5` أو `-خصم_شرطة @العسكري 5`"), 0xC9A227), ephemeral=True)
 
 
 async def _edit_points(inter: discord.Interaction, kind: str, member: discord.Member, amount: int):
@@ -3877,7 +3877,7 @@ async def send_app_panel(inter: discord.Interaction, الروم: discord.TextCha
             "- __يُمنع الطقطقة أو الاستهبال في التقديم .__\n"
             "- __انتظر رد المسؤول عن القسم ، وبيوصلك في الخاص .__")) + f"\n\n{lines}"
     e = discord.Embed(title=guild_emojis(inter.guild, العنوان or "📝 - لوحة التقديمات")[:256],
-                      description=guild_emojis(inter.guild, body)[:4000], color=0x006C35)
+                      description=guild_emojis(inter.guild, body)[:4000], color=0xC9A227)
     e.set_footer(text=config.SERVER_NAME, icon_url=inter.guild.icon.url if inter.guild.icon else None)
     f = None
     if الصورة is not None and (الصورة.content_type or "").startswith("image/"):
@@ -3918,7 +3918,7 @@ async def post_app_submission(guild, t, user, answers, branch=None, body=None):
     bl = app_branches(t)
     btxt = f" - {bl[branch]['label']}" if (branch is not None and branch < len(bl)) else ""
     head = f"**المقدّم :** {user.mention} (`{user.id}`)"
-    e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}{btxt}", color=0x006C35, timestamp=now(),
+    e = discord.Embed(title=f"📝 تقديم جديد - {t['name']}{btxt}", color=0xC9A227, timestamp=now(),
                       description=(f"{head}\n\n{body}" if body else None)[:4096] if body else None)
     e.set_author(name=str(user), icon_url=user.display_avatar.url)
     e.set_thumbnail(url=user.display_avatar.url)
@@ -4127,7 +4127,7 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
                     "❌ - تم رفض تقديمك",
                     f"**- عزيزي {member.mention} .**\n\nنعتذر , تم رفض تقديمك في **{name}** ."
                     + (f"\n\n**السبب :** {reason}" if reason else "") + "\n\n**( نتمنى لك التوفيق المرة الجاية )**",
-                    0x006C35,
+                    0xC9A227,
                 ))
         except discord.HTTPException:
             pass
@@ -4135,7 +4135,7 @@ async def finish_application(inter: discord.Interaction, sid: int, accepted: boo
               f"❌ **مرفوض** بواسطة {inter.user.mention}" + (f"\nالسبب: {reason}" if reason else ""))
     try:
         e = message.embeds[0] if message.embeds else embed("📝 تقديم")
-        e.color = 0x006C35 if accepted else 0x006C35
+        e.color = 0xC9A227 if accepted else 0xC9A227
         e.add_field(name="النتيجة", value=result, inline=False)
         await message.edit(embed=e, view=None)
     except discord.HTTPException:
@@ -4385,12 +4385,12 @@ class ResignView(discord.ui.View):
             "📤 - تحديث أدوار | استقالة",
             f"**العضو :** {self.member.mention}\n**القطاع :** {SECTORS[sector]}\n"
             f"**الرتب اللي انشالت :** {' '.join(r.mention for r in remove)}\n**بواسطة :** {inter.user.mention}",
-            0x006C35,
+            0xC9A227,
         )
         await inter.response.edit_message(embed=e, view=None)
         await role_update_post(guild, e)
         try:
-            await self.member.send(embed=embed("📤 - تمت استقالتك", f"تمت استقالتك من القطاع **{SECTORS[sector]}** في **{config.SERVER_NAME}** .", 0x006C35))
+            await self.member.send(embed=embed("📤 - تمت استقالتك", f"تمت استقالتك من القطاع **{SECTORS[sector]}** في **{config.SERVER_NAME}** .", 0xC9A227))
         except discord.HTTPException:
             pass
         await log(f"{inter.user.mention} سوّى استقالة لـ {self.member.mention} ({SECTORS[sector]})", guild)
@@ -4473,7 +4473,7 @@ async def handle_unit(inter: discord.Interaction, kind: str):
             + (f"اسمك صار: **{nick}**" if changed else
                "⚠️ ما قدرت أغيّر اسمك. خل رتبة البوت فوق رتبتك، وعطه صلاحية Manage Nicknames .\n"
                "(ولو أنت صاحب السيرفر، ديسكورد ما يسمح للبوت يغيّر اسمك)"))
-    await inter.response.send_message(embed=embed(f"🚓 يونت {u['label']}", text, 0x006C35), ephemeral=True)
+    await inter.response.send_message(embed=embed(f"🚓 يونت {u['label']}", text, 0xC9A227), ephemeral=True)
     if new:
         await log(f"{inter.user.mention} أخذ يونت {u['label']} `{code}`", inter.guild)
 
@@ -4720,7 +4720,7 @@ class LoanModal(discord.ui.Modal, title="📝 طلب قرض"):
         db.commit()
         lid = cur.lastrowid
         acc = get_account(inter.user.id)
-        e = embed("📝 طلب قرض جديد", color=0x006C35)
+        e = embed("📝 طلب قرض جديد", color=0xC9A227)
         e.set_thumbnail(url=inter.user.display_avatar.url)
         e.add_field(name="العضو", value=f"{inter.user.mention} (`{inter.user.id}`)", inline=False)
         e.add_field(name="الآيبان", value=f"`{fmt_iban(acc['iban'])}`", inline=False)
@@ -4830,7 +4830,7 @@ async def handle_loan_decision(inter: discord.Interaction, cid: str):
     db.commit()
     try:
         e = inter.message.embeds[0]
-        e.color = 0x006C35 if accepted else 0x006C35
+        e.color = 0xC9A227 if accepted else 0xC9A227
         e.add_field(name="النتيجة", value=("✅ **مقبول**" if accepted else "❌ **مرفوض**") + f" بواسطة {inter.user.mention}", inline=False)
         await inter.response.edit_message(embed=e, view=None)
     except (discord.HTTPException, IndexError):
@@ -4842,7 +4842,7 @@ async def handle_loan_decision(inter: discord.Interaction, cid: str):
                 "✅ تم قبول قرضك" if accepted else "❌ تم رفض قرضك",
                 (f"انضاف لحسابك **{money(loan['amount'])}**\nسدده من البنك بزر **دفع قرض** ." if accepted
                  else f"تم رفض طلب القرض ({money(loan['amount'])})."),
-                0x006C35 if accepted else 0x006C35,
+                0xC9A227 if accepted else 0xC9A227,
             ))
         except discord.HTTPException:
             pass
@@ -4873,7 +4873,7 @@ def bank_admin_view() -> discord.ui.View:
 
 
 def bank_admin_embed(guild) -> discord.Embed:
-    e = discord.Embed(title="🏦 - لوحة تحكم البنك", color=0x006C35, description=(
+    e = discord.Embed(title="🏦 - لوحة تحكم البنك", color=0xC9A227, description=(
         "➕ - __إضافة أموال لحساب لاعب بالآيبان أو الايدي .__\n\n"
         "➖ - __سحب أموال من حساب لاعب .__\n\n"
         "📊 - __كشف الحسابات مرتبة من الأغنى .__\n\n"
@@ -5445,7 +5445,7 @@ class RulesPanelModal(discord.ui.Modal, title="📜 لوحة القوانين"):
 
     async def on_submit(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
-        e = discord.Embed(title=self.title_in.value, description=self.body_in.value, color=0x006C35)
+        e = discord.Embed(title=self.title_in.value, description=self.body_in.value, color=0xC9A227)
         e.set_footer(text=config.SERVER_NAME)
         img_bytes = fname = None
         if self.banner:
@@ -5492,7 +5492,7 @@ async def handle_rules(inter: discord.Interaction):
     else:
         lines = [l.strip() for l in r["content"].splitlines() if l.strip()]
         body = "\n\n".join(f"**{i} -** {l}" for i, l in enumerate(lines, 1))
-        e = discord.Embed(title=f"{r['emoji'] or '📜'} - {r['name']}", description=body[:4096], color=0x006C35)
+        e = discord.Embed(title=f"{r['emoji'] or '📜'} - {r['name']}", description=body[:4096], color=0xC9A227)
         e.set_footer(text=config.SERVER_NAME)
         await inter.response.send_message(embed=e, ephemeral=True)
     try:  # نرجّع المنيو فاضي
@@ -5646,7 +5646,7 @@ async def suggestion_check(message: discord.Message) -> bool:
     if not text:
         return False
     gid = message.guild.id
-    e = discord.Embed(title="💡 - اقتراح جديد", description=text[:4000], color=0x006C35, timestamp=now())
+    e = discord.Embed(title="💡 - اقتراح جديد", description=text[:4000], color=0xC9A227, timestamp=now())
     e.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
     e.add_field(name="المقترح", value=message.author.mention)
     e.set_footer(text=config.SERVER_NAME)
@@ -6236,7 +6236,7 @@ async def post_app_panel(guild: discord.Guild, ch, desc=None):
             "- __جاوب على الأسئلة بصدق ووضوح .__\n"
             "- __يُمنع الطقطقة أو الاستهبال في التقديم .__\n"
             "- __انتظر رد المسؤول عن القسم ، وبيوصلك في الخاص .__")) + f"\n\n{lines}"
-    e = discord.Embed(title="📝 - لوحة التقديمات", description=guild_emojis(guild, body)[:4000], color=0x006C35)
+    e = discord.Embed(title="📝 - لوحة التقديمات", description=guild_emojis(guild, body)[:4000], color=0xC9A227)
     e.set_footer(text=config.SERVER_NAME, icon_url=guild.icon.url if guild.icon else None)
     row = db.execute("SELECT data, filename FROM ticket_images WHERE guild_id = ? AND slot = -99", (guild.id,)).fetchone()
     if row:
@@ -7941,7 +7941,7 @@ async def rename_prefix(message: discord.Message):
         await member.edit(nick=new, reason=f"تغيير اسم بواسطة {message.author}")
     except discord.HTTPException:
         return await message.reply("❌ ما قدرت أغيّر اسمه. خل رتبة البوت فوق رتبته (وصاحب السيرفر ما يتغيّر اسمه).")
-    e = discord.Embed(title="🪪 | تـحـديـث الـمـعـرف", color=0x006C35, timestamp=now(),
+    e = discord.Embed(title="🪪 | تـحـديـث الـمـعـرف", color=0xC9A227, timestamp=now(),
                       description=(f"**الـعـضـو :** {member.mention}\n"
                                    f"**الـمـعـرف الـقـديـم :** {old}\n"
                                    f"**الـمـعـرف الـجـديـد :** {new}\n\n"
@@ -7989,7 +7989,7 @@ async def points_prefix(message: discord.Message, give: bool):
     add_points(g.id, member.id, "admin", "publish", amount if give else -amount)
     total = have + (amount if give else -amount)
     title = "تم إعطاء نقاط" if give else "تم خصم نقاط"
-    e = discord.Embed(title=title, color=0x006C35, timestamp=now(), description=(
+    e = discord.Embed(title=title, color=0xC9A227, timestamp=now(), description=(
         f"**الأونر :** {a.mention}\n"
         f"**{'المعطى' if give else 'المخصوم منه'} :** {member.mention}\n"
         f"**العدد :** {'+' if give else '-'}{amount} نقطة\n"
@@ -8007,7 +8007,7 @@ async def points_prefix(message: discord.Message, give: bool):
         except discord.HTTPException:
             pass
     try:
-        await member.send(embed=discord.Embed(title=title, color=0x006C35, description=(
+        await member.send(embed=discord.Embed(title=title, color=0xC9A227, description=(
             f"{'انعطيت' if give else 'انخصم منك'} **{amount}** نقطة نشر بواسطة {a.mention}\n"
             f"نقاط النشر حقتك الحين: **{total}**" + (f"\nالسبب: {why}" if why else ""))))
     except discord.HTTPException:
@@ -8069,7 +8069,7 @@ async def protection_topic(message: discord.Message):
     on = prot_on(g.id)
     pun = {"strip": "سحب كل رتبه", "kick": "طرد", "ban": "حظر"}[get_text(g.id, "prot_punish", "strip")]
     lim = prot(g.id, "prot_limit", 3)
-    e1 = discord.Embed(title="🛡️ - نظام حماية Legend Town", color=0x006C35, description=(
+    e1 = discord.Embed(title="🛡️ - نظام حماية Legend Town", color=0xC9A227, description=(
         f"**- الحالة :** {'✅ شغّال' if on else '❌ طافي'}  ·  **العقوبة :** {pun}  ·  **الحد :** {lim} بالدقيقة\n\n"
         "> نظام الحماية يراقب السيرفر **24 ساعة** عن طريق سجل التدقيق (Audit Log)، "
         "ويعرف مين سوّى كل حركة ووقتها بالثانية، ويوقف أي تخريب **خلال ثواني** .\n\n"
@@ -8085,7 +8085,7 @@ async def protection_topic(message: discord.Message):
         "- __الطرد الجماعي (Prune) = عقوبة فورية .__\n"
         "- __💎 طرد أو حظر أي شخص مبوست للسيرفر = حظر نهائي فوري حتى لو كان أونر ، والمبوست ينفك حظره .__\n"
         "- __أمر الحظر في البوت ما يقدر يحظر مبوست إلا صاحب السيرفر .__"))
-    e2 = discord.Embed(color=0x006C35, description=(
+    e2 = discord.Embed(color=0xC9A227, description=(
         "**🔐 - ثالثاً : حماية الصلاحيات**\n"
         "- __إعطاء رتبة صلاحيات خطيرة (Administrator ، إدارة السيرفر ، الرتب ، الرومات ، الحظر ، الطرد ، الويب هوك) = الصلاحية ترجع + عقوبة .__\n"
         "- __إعطاء أي شخص رتبة فيها صلاحيات خطيرة = الرتبة تنشال + عقوبة .__\n"
@@ -8100,7 +8100,7 @@ async def protection_topic(message: discord.Message):
         "- __المنشن الكثير أو @everyone = حذف + إسكات .__\n"
         "- __روابط السيرفرات الثانية = حذف فوري .__\n"
         "- __نفس الرسالة في 3 رومات (حساب مخترق) = حذف كل رسايله + عقوبة حتى لو كان إداري .__"))
-    e3 = discord.Embed(color=0x006C35, description=(
+    e3 = discord.Embed(color=0xC9A227, description=(
         "**🚨 - سادساً : الغارات ووضع الطوارئ**\n"
         "- __دخول 8 حسابات خلال 15 ثانية = غارة ، ويشتغل وضع الطوارئ لحاله .__\n"
         "- __وضع الطوارئ : يقفل الكتابة في كل الرومات ، يوقف الدعوات ، ويرفع التحقق لأعلى مستوى .__\n"
@@ -8261,7 +8261,7 @@ async def pay_warning(guild: discord.Guild, member: discord.Member) -> tuple:
         except discord.HTTPException:
             pass
     await log(f"💳 {member.mention} سدّد تحذير ({w}→{w - 1}) بـ {cost} نقطة", guild)
-    await owner_dm(guild, discord.Embed(title="💳 - إداري سدّد تحذير", color=0x006C35, timestamp=now(), description=(
+    await owner_dm(guild, discord.Embed(title="💳 - إداري سدّد تحذير", color=0xC9A227, timestamp=now(), description=(
         f"**الإداري :** {member.mention} ({member.display_name})\n**انخصم :** {cost} نقطة\n"
         f"**التحذيرات :** {w} ← {w - 1} / 3")))
     left = w - 1
@@ -8527,7 +8527,7 @@ def welcome_channels(guild):
 def welcome_message(member: discord.Member):
     g = member.guild
     act, rules = welcome_channels(g)
-    e = discord.Embed(title=f"💚 - حيّاك الله في {_sn()}", color=0x006C35, description=(
+    e = discord.Embed(title=f"💚 - حيّاك الله في {_sn()}", color=0xC9A227, description=(
         f"**أهلاً {member.mention} ، نوّرت السيرفر 🌟**\n"
         "> عشان تبدأ معنا وتدخل الرول بلاي ، اتبع الخطوات بالترتيب 👇\n\n"
         f"**1️⃣ - اقرأ القوانين :** {rules.mention if rules else 'روم القوانين'}\n"
@@ -8630,7 +8630,7 @@ def rob_panel(guild):
         vc = guild.get_channel(p["voice_id"])
         lines.append(f"{p['emoji'] or '💰'} **{p['name']}** — {money(p['min_amt'])} إلى {money(p['max_amt'])}\n"
                      f"> 🔊 {vc.mention if vc else 'روم محذوف'} · 👮 يحتاج {p['police']} شرطي · ⏳ كل {p['cooldown']} دقيقة")
-    e = discord.Embed(title="🦹 - نظام السرقات", color=0x006C35, description=(
+    e = discord.Embed(title="🦹 - نظام السرقات", color=0xC9A227, description=(
         "- __لازم تكون **داخل الروم الصوتي حق المكان** عشان تبدأ السرقة .__\n"
         "- __لازم يكون فيه **شرطة في الدوام** بالعدد المطلوب .__\n"
         f"- __بتطلع لك مربعات خضراء **{ROB_SHOW_SECONDS} ثواني** ، احفظ أماكنها واضغطها كلها صح .__\n"
@@ -8896,7 +8896,7 @@ async def apply_police_points(g, actor, member, amount: int, give: bool, why: st
     add_points(g.id, member.id, "police", "manual", amount if give else -amount)
     total = have + (amount if give else -amount)
     title = "🚓 تم إعطاء نقاط شرطة" if give else "🚓 تم خصم نقاط شرطة"
-    e = discord.Embed(title=title, color=0x006C35, timestamp=now(), description=(
+    e = discord.Embed(title=title, color=0xC9A227, timestamp=now(), description=(
         f"**القائد :** {actor.mention}\n"
         f"**{'العسكري' if give else 'المخصوم منه'} :** {member.mention}\n"
         f"**العدد :** {'+' if give else '-'}{amount} نقطة\n"
@@ -8905,7 +8905,7 @@ async def apply_police_points(g, actor, member, amount: int, give: bool, why: st
     e.set_footer(text=config.SERVER_NAME)
     await log(f"🚓 {actor.mention} {'أعطى' if give else 'خصم'} {amount} نقطة شرطة {'لـ' if give else 'من'} {member.mention} (المجموع {total})", g)
     try:
-        await member.send(embed=discord.Embed(title=title, color=0x006C35, description=(
+        await member.send(embed=discord.Embed(title=title, color=0xC9A227, description=(
             f"{'انعطيت' if give else 'انخصم منك'} **{amount}** نقطة شرطة بواسطة {actor.mention}\n"
             f"مجموع نقاطك الحين: **{total}**" + (f"\nالسبب: {why}" if why else ""))))
     except discord.HTTPException:
@@ -9054,7 +9054,7 @@ async def gather_prefix(message: discord.Message):
     if not assist:
         return await message.channel.send(embed=err("ما لقيت مساعد الهوست. اكتب `-تجوين` من جديد."))
 
-    e = discord.Embed(title="- تجوين", color=0x006C35, timestamp=now(), description=(
+    e = discord.Embed(title="- تجوين", color=0xC9A227, timestamp=now(), description=(
         f"**الهوست :** {host.mention}\n"
         f"**مساعد الهوست :** {assist.mention}"))
     if g.icon:
@@ -9084,7 +9084,7 @@ async def call_prefix(message: discord.Message):
     if member.bot:
         return await message.reply("❌ ما تقدر تنادي بوت.")
     jump = f"https://discord.com/channels/{g.id}/{message.channel.id}/{message.id}"
-    e = discord.Embed(color=0x006C35, timestamp=now(), description=(
+    e = discord.Embed(color=0xC9A227, timestamp=now(), description=(
         f"**عزيزي العضو {member.mention} 👋**\n\n"
         f"تم ندائك من قبل {a.mention} ، يُرجى حضورك بأسرع وقت ممكن .\n"
         "اضغط الزر تحت عشان توصل للروم مباشرة ."))
@@ -9415,7 +9415,7 @@ async def post_support_panel(guild: discord.Guild, ch, image: discord.Attachment
             set_text(guild.id, f"tk_in_{slot}", SUPPORT_TEXTS[key])
     e2 = discord.Embed(title=guild_emojis(guild, get_text(guild.id, "support_title", "") or SUPPORT_TITLE)[:256],
                        description=guild_emojis(guild, get_text(guild.id, "support_out", "") or SUPPORT_OUT)[:4000],
-                       color=0x006C35)
+                       color=0xC9A227)
     if image is not None and (image.content_type or "").startswith("image/"):
         f = discord.File(io.BytesIO(await image.read()), filename="support" + (os.path.splitext(image.filename)[1] or ".png"))
     else:
@@ -9628,7 +9628,7 @@ def radio_panel_embed(guild):
             "• أول ما تطلع أنت وكل اللي فيها ، الموجة **تنحذف تلقائي** .\n\n"
             "💡 لازم تكون داخل أي روم صوتي قبل ما تضغط ، عشان أنقلك ."
         ),
-        color=0x006C35, timestamp=now())
+        color=0xC9A227, timestamp=now())
     if guild.icon:
         e.set_thumbnail(url=guild.icon.url)
     e.set_footer(text=config.SERVER_NAME)

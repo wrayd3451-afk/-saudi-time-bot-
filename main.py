@@ -3892,7 +3892,7 @@ def seed_crime_application(guild):
     """يسطّب تقديم الإجرام تلقائياً مرة وحدة في السيرفر اللي فيه روم الإجرام."""
     if guild.get_channel(CRIME_APP_ROOM) is None:
         return  # مو السيرفر المقصود
-    if get_setting(guild.id, "crime_app_seeded3") == 1:
+    if get_setting(guild.id, "crime_app_seeded5") == 1:
         return  # اتسطّب من قبل ، ما نلمسه عشان ما نلغي تعديلاتك
     # نلقى تقديم إجرام موجود أو أول رقم فاضي
     slot = None
@@ -3913,10 +3913,10 @@ def seed_crime_application(guild):
         "VALUES (?, ?, 'إجرام', '', ?, 0, 0, 0, ?, 'chat', ?, 0) "
         "ON CONFLICT(guild_id, slot) DO UPDATE SET name='إجرام', review_ch=excluded.review_ch, "
         "questions=excluded.questions, mode='chat', branches=excluded.branches",
-        (guild.id, slot, CRIME_REVIEW_CH, "اسمك\nعمرك\nخبراتك",
+        (guild.id, slot, CRIME_REVIEW_CH, "اسمك :\nعمرك :\nخبراتك :\nليش تبي تنضم :",
          json.dumps(branches, ensure_ascii=False)),
     )
-    set_setting(guild.id, "crime_app_seeded3", 1)
+    set_setting(guild.id, "crime_app_seeded5", 1)
     db.commit()
     print(f"✅ تسطّب تقديم الإجرام في {guild.name} (رقم {slot}) — مراجع لكل عصابة")
 

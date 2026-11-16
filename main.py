@@ -3886,37 +3886,37 @@ CRIME_GHOST_ROLE = 1557553864880816179   # رتبة جوست
 CRIME_BLOOD_ROLE = 1557553874070409268   # رتبة بلود
 CRIME_GHOST_REVIEWER = 1557553867267510322  # مراجع الجوست (رئيس جوست)
 CRIME_BLOOD_REVIEWER = 1557553876918345760  # مراجع البلود (رئيس بلود)
+CRIME_EXTRA_REVIEWER = 1557553869209337898  # مراجع إضافي يراجع العصابتين
 
 
 def seed_crime_application(guild):
     """يسطّب تقديم الإجرام تلقائياً مرة وحدة في السيرفر اللي فيه روم الإجرام."""
     if guild.get_channel(CRIME_APP_ROOM) is None:
         return  # مو السيرفر المقصود
-    if get_setting(guild.id, "crime_app_seeded5") == 1:
+    if get_setting(guild.id, "crime_app_seeded7") == 1:
         return  # اتسطّب من قبل ، ما نلمسه عشان ما نلغي تعديلاتك
-    # نلقى تقديم إجرام موجود أو أول رقم فاضي
-    slot = None
+    # نحذف أي تقديم إجرام قديم أو مكرر (عشان ما يتكرر ولا يبقى واحد بأسئلة غلط)
     used = set()
     for t in get_app_types(guild.id):
-        used.add(t["slot"])
-        nm = _norm(t["name"] or "")
-        if nm.replace("ال", "") == "اجرام":
-            slot = t["slot"]
-    if slot is None:
-        slot = next((s for s in range(1, 11) if s not in used), 1)
+        nm = _norm(t["name"] or "").replace("ال", "")
+        if nm == "اجرام":
+            db.execute("DELETE FROM app_types WHERE guild_id = ? AND slot = ?", (guild.id, t["slot"]))
+        else:
+            used.add(t["slot"])
+    slot = next((s for s in range(1, 11) if s not in used), 1)
     branches = [
-        {"label": "جوست", "emoji": "", "role1": CRIME_GHOST_ROLE, "role2": CRIME_COMMON_ROLE, "reviewer": CRIME_GHOST_REVIEWER},
-        {"label": "بلود", "emoji": "", "role1": CRIME_BLOOD_ROLE, "role2": CRIME_COMMON_ROLE, "reviewer": CRIME_BLOOD_REVIEWER},
+        {"label": "جوست", "emoji": "", "role1": CRIME_GHOST_ROLE, "role2": CRIME_COMMON_ROLE,
+         "reviewers": [CRIME_GHOST_REVIEWER, CRIME_EXTRA_REVIEWER]},
+        {"label": "بلود", "emoji": "", "role1": CRIME_BLOOD_ROLE, "role2": CRIME_COMMON_ROLE,
+         "reviewers": [CRIME_BLOOD_REVIEWER, CRIME_EXTRA_REVIEWER]},
     ]
     db.execute(
         "INSERT INTO app_types (guild_id, slot, name, emoji, review_ch, role1, role2, reviewer_role, questions, mode, branches, role3) "
-        "VALUES (?, ?, 'إجرام', '', ?, 0, 0, 0, ?, 'chat', ?, 0) "
-        "ON CONFLICT(guild_id, slot) DO UPDATE SET name='إجرام', review_ch=excluded.review_ch, "
-        "questions=excluded.questions, mode='chat', branches=excluded.branches",
+        "VALUES (?, ?, 'إجرام', '', ?, 0, 0, 0, ?, 'chat', ?, 0)",
         (guild.id, slot, CRIME_REVIEW_CH, "اسمك :\nعمرك :\nخبراتك :\nليش تبي تنضم :",
          json.dumps(branches, ensure_ascii=False)),
     )
-    set_setting(guild.id, "crime_app_seeded5", 1)
+    set_setting(guild.id, "crime_app_seeded7", 1)
     db.commit()
     print(f"✅ تسطّب تقديم الإجرام في {guild.name} (رقم {slot}) — مراجع لكل عصابة")
 
@@ -4299,10 +4299,12 @@ async def post_app_submission(guild, t, user, answers, branch=None, body=None):
     v.add_item(discord.ui.Button(label="رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"app:rej:{sid}"))
     if not ch:
         return False, "روم المراجعة انحذف. كلّم الإدارة."
-    _rid = branch_reviewer_id(t, branch)
-    ping_role = guild.get_role(_rid) if _rid else None
+    _rids = branch_reviewer_ids(t, branch)
+    _proles = [guild.get_role(r) for r in _rids]
+    _proles = [r for r in _proles if r]
+    _ping = " ".join(r.mention for r in _proles) if _proles else None
     try:
-        await ch.send(content=ping_role.mention if ping_role else None, embed=e, view=v,
+        await ch.send(content=_ping, embed=e, view=v,
                       allowed_mentions=discord.AllowedMentions(roles=True))
     except discord.HTTPException:
         return False, "ما قدرت أرسل التقديم. كلّم الإدارة."
@@ -4478,27 +4480,33 @@ class RejectReasonModal(discord.ui.Modal, title="❌ سبب الرفض"):
         await finish_application(inter, self.sid, False, self.reason.value, self.message)
 
 
-def branch_reviewer_id(t, branch) -> int:
-    """رتبة مراجعة الفرع إن وجدت ، وإلا رتبة مراجعة التقديم العامة."""
+def branch_reviewer_ids(t, branch) -> list:
+    """قائمة رتب مراجعة الفرع (ممكن أكثر من رتبة) ، وإلا رتبة مراجعة التقديم العامة."""
     try:
         bl = app_branches(t)
         if branch is not None and str(branch).isdigit() and int(branch) < len(bl):
-            r = bl[int(branch)].get("reviewer")
-            if r:
-                return int(r)
+            b = bl[int(branch)]
+            ids = [int(x) for x in (b.get("reviewers") or []) if x]
+            if not ids and b.get("reviewer"):
+                ids = [int(b["reviewer"])]
+            if ids:
+                return ids
     except (ValueError, TypeError, KeyError):
         pass
-    return (t["reviewer_role"] if t and t["reviewer_role"] else 0)
+    r = (t["reviewer_role"] if t and t["reviewer_role"] else 0)
+    return [r] if r else []
 
 
-def can_review(member: discord.Member, t, reviewer_id: int = None) -> bool:
+def can_review(member: discord.Member, t, reviewer_ids=None) -> bool:
     # الأونر وصاحب السيرفر دايم يقدرون
     if member.id == member.guild.owner_id or has_owner_role(member):
         return True
-    rid = reviewer_id if reviewer_id is not None else (t["reviewer_role"] if t and t["reviewer_role"] else 0)
-    # لو محدد رتبة مراجعين (للفرع أو للتقديم) ← هي بس اللي تراجع
-    if rid:
-        return any(r.id == rid for r in member.roles)
+    ids = reviewer_ids if reviewer_ids is not None else ([t["reviewer_role"]] if t and t["reviewer_role"] else [])
+    ids = [i for i in ids if i]
+    # لو محدد رتب مراجعين (للفرع أو للتقديم) ← أي وحدة منها تقدر تراجع
+    if ids:
+        member_roles = {r.id for r in member.roles}
+        return any(i in member_roles for i in ids)
     # لو ما حدد ← الإدارة
     return is_staff_member(member)
 
@@ -4627,8 +4635,8 @@ async def handle_app_interaction(inter: discord.Interaction, cid: str):
     _, action, sid = cid.split(":")
     s = db.execute("SELECT * FROM app_submissions WHERE id = ?", (int(sid),)).fetchone()
     t = get_app_type(s["guild_id"], s["slot"]) if s else None
-    rid = branch_reviewer_id(t, s["branch"]) if s else None
-    if not can_review(inter.user, t, rid):
+    rids = branch_reviewer_ids(t, s["branch"]) if s else None
+    if not can_review(inter.user, t, rids):
         return await inter.response.send_message(embed=err("مراجعة هذا التقديم لمراجع هذا الفرع بس."), ephemeral=True)
     if action == "acc":
         await finish_application(inter, int(sid), True, "", inter.message)
